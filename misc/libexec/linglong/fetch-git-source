@@ -1,0 +1,38 @@
+#!/bin/sh
+
+# SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+#
+# SPDX-License-Identifier: LGPL-3.0-or-later
+
+set -e
+
+workdir=$1
+url=$2
+commit=$3
+# cachedir=$4
+
+# Check command tools 
+if ! command -v git
+then
+    echo "git not found, please install git first"
+    exit 1;
+fi
+mkdir -p "$workdir" || true
+cd "$workdir"
+
+# Init repo
+if [ -d ".git" ]; then
+    git remote set-url origin "$url"
+else
+    git init
+    git remote add origin "$url"
+fi
+
+# Fetch commit
+git fetch origin "$commit" --depth 1 -n
+git add :/
+git reset --hard FETCH_HEAD
+
+# Fetch submodule
+git submodule update --init --recursive --depth 1
+git submodule foreach git reset --hard HEAD

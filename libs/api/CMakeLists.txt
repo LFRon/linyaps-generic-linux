@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: 2024 UnionTech Software Technology Co., Ltd.
+#
+# SPDX-License-Identifier: LGPL-3.0-or-later
+
+pfl_add_library(
+  MERGED_HEADER_PLACEMENT
+  DISABLE_INSTALL
+  LIBRARY_TYPE
+  STATIC
+  SOURCES
+  # find -regex '\.\/.+\.[ch]\(pp\)?' -type f -printf '%P\n'| sort
+  src/linglong/api/types/helper.cpp
+  src/linglong/api/types/helper.h
+  src/linglong/api/types/v1/ApplicationConfiguration.hpp
+  src/linglong/api/types/v1/ApplicationConfigurationPermissionsBind.hpp
+  src/linglong/api/types/v1/ApplicationConfigurationPermissions.hpp
+  src/linglong/api/types/v1/ApplicationConfigurationPermissionsInnerBind.hpp
+  src/linglong/api/types/v1/ApplicationPermissionsRequest.hpp
+  src/linglong/api/types/v1/BuilderConfig.hpp
+  src/linglong/api/types/v1/BuilderProject.hpp
+  src/linglong/api/types/v1/BuilderProjectModules.hpp
+  src/linglong/api/types/v1/BuilderProjectPackage.hpp
+  src/linglong/api/types/v1/BuilderProjectSource.hpp
+  src/linglong/api/types/v1/CliContainer.hpp
+  src/linglong/api/types/v1/CommonOptions.hpp
+  src/linglong/api/types/v1/CommonResult.hpp
+  src/linglong/api/types/v1/ContainerProcessStateInfo.hpp
+  src/linglong/api/types/v1/DialogHandShakePayload.hpp
+  src/linglong/api/types/v1/DialogMessage.hpp
+  src/linglong/api/types/v1/Generators.hpp
+  src/linglong/api/types/v1/helper.hpp
+  src/linglong/api/types/v1/InteractionMessageType.hpp
+  src/linglong/api/types/v1/InteractionReply.hpp
+  src/linglong/api/types/v1/InteractionRequest.hpp
+  src/linglong/api/types/v1/LayerInfo.hpp
+  src/linglong/api/types/v1/LinglongAPIV1.hpp
+  src/linglong/api/types/v1/OciConfigurationPatch.hpp
+  src/linglong/api/types/v1/PackageInfo.hpp
+  src/linglong/api/types/v1/PackageInfoV2.hpp
+  src/linglong/api/types/v1/PackageManager1GetRepoInfoResult.hpp
+  src/linglong/api/types/v1/PackageManager1GetRepoInfoResultRepoInfo.hpp
+  src/linglong/api/types/v1/PackageManager1InstallParameters.hpp
+  src/linglong/api/types/v1/PackageManager1JobInfo.hpp
+  src/linglong/api/types/v1/PackageManager1ModifyRepoParameters.hpp
+  src/linglong/api/types/v1/PackageManager1Package.hpp
+  src/linglong/api/types/v1/PackageManager1PackageTaskResult.hpp
+  src/linglong/api/types/v1/PackageManager1RequestInteractionAdditionalMessage.hpp
+  src/linglong/api/types/v1/PackageManager1SearchParameters.hpp
+  src/linglong/api/types/v1/PackageManager1SearchResult.hpp
+  src/linglong/api/types/v1/PackageManager1UninstallParameters.hpp
+  src/linglong/api/types/v1/PackageManager1UpdateParameters.hpp
+  src/linglong/api/types/v1/RepoConfig.hpp
+  src/linglong/api/types/v1/RepositoryCache.hpp
+  src/linglong/api/types/v1/RepositoryCacheLayersItem.hpp
+  src/linglong/api/types/v1/RepositoryCacheMergedItem.hpp
+  src/linglong/api/types/v1/Sections.hpp
+  src/linglong/api/types/v1/State.hpp
+  src/linglong/api/types/v1/SubState.hpp
+  src/linglong/api/types/v1/UabLayer.hpp
+  src/linglong/api/types/v1/UabMetaInfo.hpp
+  src/linglong/api/types/v1/UpgradeListResult.hpp
+  src/linglong/api/types/v1/Version.hpp
+  src/linglong/api/types/v1/XdgDirectoryPermission.hpp
+  COMPILE_FEATURES
+  PUBLIC
+  cxx_std_17
+  LINK_LIBRARIES
+  PUBLIC
+  nlohmann_json::nlohmann_json)
