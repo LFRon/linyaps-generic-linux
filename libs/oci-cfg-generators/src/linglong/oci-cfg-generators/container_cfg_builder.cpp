@@ -1180,8 +1180,9 @@ bool ContainerCfgBuilder::buildMountLocalTime() noexcept
             isSymLink = true;
         }
         localtimeMount->emplace_back(Mount{ .destination = localtime.string(),
-                                            .options = isSymLink ? string_list{ "copy-symlink" }
-                                                                 : string_list{ "rbind", "ro" },
+                                            .options = isSymLink
+                                              ? string_list{ "rbind", "copy-symlink" }
+                                              : string_list{ "rbind", "ro" },
                                             .source = localtime,
                                             .type = "bind" });
     }
@@ -1226,7 +1227,7 @@ bool ContainerCfgBuilder::buildMountNetworkConf() noexcept
             }
 
             networkConfMount->emplace_back(Mount{ .destination = resolvConf.string(),
-                                                  .options = string_list{ "copy-symlink" },
+                                                  .options = string_list{ "rbind", "copy-symlink" },
                                                   .source = bundleResolvConf,
                                                   .type = "bind" });
         } else {
@@ -1770,9 +1771,12 @@ bool ContainerCfgBuilder::shouldFix(int node, std::filesystem::path &fixPath) no
         });
         return find != mount.options->end();
     };
-    // if file is not exist or
-    // file is not a symlink but mount with option copy-symlink
-    if (!std::filesystem::exists(hostPath, ec)
+    // node should fix if the file 
+    // 1. is /etc/localtime or
+    // 2. is not exist or
+    // 3. is not a symlink but mount with option copy-symlink
+    if (getRelativePath(0, node) == "etc/localtime"
+        || !std::filesystem::exists(hostPath, ec)
         || ((!std::filesystem::is_symlink(hostPath, ec)) && isCopySymlink(node))) {
         fixPath = std::move(hostPath);
         return true;

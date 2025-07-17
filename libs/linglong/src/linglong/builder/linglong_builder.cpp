@@ -519,10 +519,10 @@ utils::error::Result<void> Builder::buildStageFetchSource() noexcept
     if (!qEnvironmentVariableIsEmpty("LINGLONG_FETCH_CACHE")) {
         fetchCacheDir = qgetenv("LINGLONG_FETCH_CACHE");
     }
-    auto result = fetchSources(*this->project.sources,
-                               fetchCacheDir,
-                               this->workingDir.absoluteFilePath("linglong/sources"),
-                               this->cfg);
+    // clean sources directory on every build
+    auto fetchSourcesDir = QDir(this->workingDir.absoluteFilePath("linglong/sources"));
+    fetchSourcesDir.removeRecursively();
+    auto result = fetchSources(*this->project.sources, fetchCacheDir, fetchSourcesDir, this->cfg);
 
     if (!result) {
         return LINGLONG_ERR(result);
@@ -956,6 +956,12 @@ utils::error::Result<bool> Builder::buildStageBuild(const QStringList &args) noe
     process.cwd = "/project";
     process.env = { {
       "PREFIX=" + installPrefix,
+      // During the build stage, we use overlayfs where /etc/ld.so.cache is safe
+      // to serve as the dynamic library cache. This allows direct invocation of
+      // ldconfig without the -C option.
+      //
+      // Note: LINGLONG_LD_SO_CACHE is retained here solely for backward compatibility.
+      "LINGLONG_LD_SO_CACHE=/etc/ld.so.cache",
       "TRIPLET=" + triplet,
     } };
     process.noNewPrivileges = true;

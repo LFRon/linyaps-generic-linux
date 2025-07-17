@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: None
+#
+# SPDX-License-Identifier: CC0-1.0
+
+[*]
+indent_style = space
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+[*.{cpp,h,hh,cc,hpp,cxx,json}]
+indent_size = 4
+tab_width = 4
+
+[*.{xml,yaml,qrc}]
+indent_size = 2
+tab_width = 2
+quote_type = single
+
+[misc/dbus/*.conf.in]
+indent_size = 2
+tab_width = 2
+
+[CMakeLists.txt]
+indent_size = 2
+tab_width = 2

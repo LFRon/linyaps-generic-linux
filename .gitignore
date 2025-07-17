@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: None
+# SPDX-License-Identifier: CC0-1.0
+
+**/build/
+**/build-*/
+
+/.idea/
+/.vscode/
+/.cache/
+
+/tools/node_modules
+/tools/package-lock.json
+/tools/package.json
+
+/debian/*debhelper*
+/debian/debhelper-build-stamp
+/debian/files
+/debian/linglong-bin.substvars
+/debian/linglong-bin/
+/debian/linglong-box.substvars
+/debian/linglong-box/
+/debian/linglong-builder
+/debian/linglong-builder.substvars
+/debian/linglong-builder/
+/debian/tmp/
+/debian/tmp/usr
+/obj-x86_64-linux-gnu
+
+/linglong/
