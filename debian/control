@@ -37,7 +37,6 @@ Package: linglong-bin
 Architecture: any
 Depends: desktop-file-utils,
          erofsfuse,
-         pkexec,
          libglib2.0-bin,
          linglong-box (>= 1.9.0) | crun,
          shared-mime-info,
