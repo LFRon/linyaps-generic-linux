@@ -65,6 +65,30 @@ bool bindIfExist(std::vector<Mount> &mounts,
 }
 } // namespace
 
+ContainerCfgBuilder &ContainerCfgBuilder::setAnnotation(ANNOTATION key, std::string value) noexcept
+{
+    if (!config.annotations) {
+        config.annotations = std::map<std::string, std::string>();
+    }
+
+    switch (key) {
+    case ANNOTATION::APPID:
+        config.annotations->insert_or_assign("org.deepin.linglong.appID", std::move(value));
+        break;
+    case ANNOTATION::BASEDIR:
+        config.annotations->insert_or_assign("org.deepin.linglong.baseDir", std::move(value));
+        break;
+    case ANNOTATION::LAST_PID:
+        config.annotations->insert_or_assign("cn.org.linyaps.runtime.ns_last_pid",
+                                             std::move(value));
+        break;
+    default:
+        break;
+    }
+
+    return *this;
+}
+
 ContainerCfgBuilder &ContainerCfgBuilder::addUIdMapping(int64_t containerID,
                                                         int64_t hostID,
                                                         int64_t size) noexcept
@@ -219,7 +243,12 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindRun() noexcept
 
 ContainerCfgBuilder &ContainerCfgBuilder::bindTmp() noexcept
 {
-    tmpMount = Mount{};
+    tmpMount = Mount{
+        .destination = "/tmp",
+        .options = string_list{ "rbind" },
+        .source = "/tmp",
+        .type = "bind",
+    };
 
     return *this;
 }
@@ -263,7 +292,7 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindMedia() noexcept
 
             mediaMount = {
                 Mount{ .destination = destinationDir,
-                       .options = string_list{ "rbind", "rshared" },
+                       .options = string_list{ "rbind" },
                        .source = destinationDir,
                        .type = "bind" },
                 Mount{ .destination = "/media",
@@ -274,7 +303,7 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindMedia() noexcept
         } else {
             mediaMount = {
                 Mount{ .destination = "/media",
-                       .options = string_list{ "rbind", "rshared" },
+                       .options = string_list{ "rbind" },
                        .source = "/media",
                        .type = "bind" },
             };
@@ -321,7 +350,15 @@ ContainerCfgBuilder &ContainerCfgBuilder::forwardDefaultEnv() noexcept
       "GIO_LAUNCHED_DESKTOP_FILE", // 系统监视器
       "GNOME_DESKTOP_SESSION_ID",  // gnome 桌面标识，有些应用会读取此变量以使用gsettings配置,
       // 如chrome
-      "TERM" });
+      "TERM",
+      // 控制应用将渲染任务路由到 NVIDIA 独立显卡
+      "__NV_PRIME_RENDER_OFFLOAD",
+      // 控制应用使用哪个OpenGL厂商提供的驱动库来与显卡通信和渲染。
+      "__GLX_VENDOR_LIBRARY_NAME",
+      // 控制NVIDIA独立显卡在Vulkan应用程序枚举GPU时拥有更高的优先级
+      "__VK_LAYER_NV_optimus",
+      // 控制应用尝试使用非默认（通常是独立显卡）的GPU来执行OpenGL渲染任务
+      "DRI_PRIME" });
 }
 
 ContainerCfgBuilder &
@@ -563,6 +600,7 @@ bool ContainerCfgBuilder::prepare() noexcept
     config.hostname = "linglong";
 
     auto linux_ = ocppi::runtime::config::types::Linux{};
+    linux_.rootfsPropagation = RootfsPropagation::Slave;
     linux_.namespaces = std::vector<NamespaceReference>{
         NamespaceReference{ .type = NamespaceType::Pid },
         NamespaceReference{ .type = NamespaceType::Mount },
@@ -830,30 +868,6 @@ bool ContainerCfgBuilder::buildMountHome() noexcept
           .type = "bind",
         });
     }
-
-    return true;
-}
-
-bool ContainerCfgBuilder::buildTmp() noexcept
-{
-    if (!tmpMount) {
-        return true;
-    }
-
-    std::srand(std::time(0));
-    auto tmpPath = std::filesystem::temp_directory_path()
-      / ("linglong_" + std::to_string(::getuid())) / (appId + "-" + std::to_string(std::rand()));
-    std::error_code ec;
-    if (!std::filesystem::create_directories(tmpPath, ec) && ec) {
-        error_.reason = tmpPath.string() + "can't be created";
-        error_.code = BUILD_MOUNT_TMP_ERROR;
-        return false;
-    }
-
-    tmpMount = Mount{ .destination = "/tmp",
-                      .options = string_list{ "rbind" },
-                      .source = tmpPath,
-                      .type = "bind" };
 
     return true;
 }
@@ -1213,23 +1227,27 @@ bool ContainerCfgBuilder::buildMountNetworkConf() noexcept
     std::filesystem::path resolvConf{ "/etc/resolv.conf" };
     std::error_code ec;
     if (std::filesystem::exists(resolvConf, ec)) {
-        if (std::filesystem::is_symlink(resolvConf, ec) && hostRootMount) {
-            // If /etc/resolv.conf is a symlink, its target may be a relative path that is
-            // invalid inside the container. To work around this, we create a new symlink
-            // in the bundle directory pointing to the actual target, and then mount it with
-            // the 'copy-symlink' option, which tells the runtime to recreate the symlink
-            // inside the container.
-            std::array<char, PATH_MAX + 1> buf{};
-            auto *rpath = realpath(resolvConf.string().c_str(), buf.data());
-            if (rpath == nullptr) {
-                error_.reason =
-                  "Failed to read symlink " + resolvConf.string() + ": " + strerror(errno);
-                error_.code = BUILD_NETWORK_CONF_ERROR;
-                return false;
+        // /etc/resolv.conf is volatile on host, we create a new symlink in the bundle
+        // directory pointing to the actual target, and then mount it with the
+        // 'copy-symlink' option, which tells the runtime to recreate the symlink inside
+        // the container.
+        // NOTE: it's not working if /etc/resolv.conf is a symlink, and points to a
+        // different path after container started.
+        if (hostRootMount) {
+            auto target = resolvConf;
+            if (std::filesystem::is_symlink(resolvConf, ec)) {
+                std::array<char, PATH_MAX + 1> buf{};
+                auto *rpath = realpath(resolvConf.string().c_str(), buf.data());
+                if (rpath == nullptr) {
+                    error_.reason =
+                      "Failed to read symlink " + resolvConf.string() + ": " + strerror(errno);
+                    error_.code = BUILD_NETWORK_CONF_ERROR;
+                    return false;
+                }
+                target = std::filesystem::path{ rpath };
             }
 
-            std::filesystem::path target = std::filesystem::path{ "/run/host/rootfs" }
-              / std::filesystem::path{ rpath }.lexically_relative("/");
+            target = std::filesystem::path{ "/run/host/rootfs" } / target.lexically_relative("/");
             auto bundleResolvConf = bundlePath / "resolv.conf";
             std::filesystem::create_symlink(target, bundleResolvConf, ec);
             if (ec) {
@@ -1238,7 +1256,6 @@ bool ContainerCfgBuilder::buildMountNetworkConf() noexcept
                 error_.code = BUILD_NETWORK_CONF_ERROR;
                 return false;
             }
-
             networkConfMount->emplace_back(Mount{ .destination = resolvConf.string(),
                                                   .options = string_list{ "rbind", "copy-symlink" },
                                                   .source = bundleResolvConf,
@@ -2038,7 +2055,7 @@ bool ContainerCfgBuilder::build() noexcept
         return false;
     }
 
-    if (!buildTmp() || !buildPrivateDir() || !buildMountHome() || !buildPrivateMapped()) {
+    if (!buildPrivateDir() || !buildMountHome() || !buildPrivateMapped()) {
         return false;
     }
 

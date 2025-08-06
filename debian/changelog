@@ -1,5 +1,19 @@
+linglong (1.9.9-1) unstable; urgency=medium
+  * feat: set ns_last_pid annotation
+  * fix: share /tmp directory with host
+  * fix: Always use copy-symlink on /etc/resolv.conf
+  * feat(run): add option '--env'
+  * fix: fix bash completion
+  * fix: Don't bind host statics in build stage
+  * chore: clean code
+  * feat: add graphics card environment variables
+  * refactor(oci-cfg): simplify media mount options
+  * release 1.9.9-1.
+
+ -- dengbo <dengbo@deepin.org>  Wed, 06 Aug 2025 11:43:35 +0800
+
 linglong (1.9.8-1) unstable; urgency=medium
-  * fix: Correct build order and fix private mounting
+
   * release 1.9.8-1.
 
  -- dengbo <dengbo@deepin.org>  Fri, 18 Jul 2025 10:32:51 +0800
