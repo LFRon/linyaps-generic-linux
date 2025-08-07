@@ -1,6 +1,8 @@
 <!-- markdownlint-disable-next-line MD033 -->
 # <img src="./misc/image/logo.svg" alt="如意玲珑图标" width="24" height="24" style="vertical-align:middle;">如意玲珑：更先进的 Linux 跨发行版软件包管理工具集
 
+# 本仓库为适配了国际主流发行版(如Debian/Ubuntu/Fedora)等的上游代码,移除了对于deepin专门的Patch支持等
+
 ## :package: 介绍
 
 [English](README.md) | [简体中文](README.zh_CN.md)
