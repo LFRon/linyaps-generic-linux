@@ -1,13 +1,11 @@
+linglong (1.9.9-2) unstable; urgency=medium
+
+  * Revert "chore: hide linyaps desktop file"
+  * release 1.9.9-2.
+
+ -- LFRon <ronforever@qq.com>  Sun, 17 Aug 2025 19:06:35 +0800
 linglong (1.9.9-1) unstable; urgency=medium
-  * feat: set ns_last_pid annotation
-  * fix: share /tmp directory with host
-  * fix: Always use copy-symlink on /etc/resolv.conf
-  * feat(run): add option '--env'
-  * fix: fix bash completion
-  * fix: Don't bind host statics in build stage
-  * chore: clean code
-  * feat: add graphics card environment variables
-  * refactor(oci-cfg): simplify media mount options
+
   * release 1.9.9-1.
 
  -- dengbo <dengbo@deepin.org>  Wed, 06 Aug 2025 11:43:35 +0800
