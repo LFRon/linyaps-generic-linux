@@ -1,3 +1,8 @@
+linglong (1.9.9-3) unstable; urgency=medium
+
+  * Fixed from master: null pointer exception when building runtime
+
+ -- LFRon <ronforever@qq.com>  Sun, 17 Aug 2025 19:06:35 +0800
 linglong (1.9.9-2) unstable; urgency=medium
 
   * Revert "chore: hide linyaps desktop file"

@@ -762,7 +762,7 @@ utils::error::Result<void> Builder::processBuildDepends() noexcept
       .forwardDefaultEnv();
 
     // overwrite runtime overlay directory
-    if (cfgBuilder.getRuntimePath()) {
+    if (cfgBuilder.getRuntimePath() && runtimeOverlay) {
         cfgBuilder.setRuntimePath(runtimeOverlay->mergedDirPath().toStdString(), false);
     }
 
@@ -899,7 +899,7 @@ utils::error::Result<bool> Builder::buildStageBuild(const QStringList &args) noe
         cfgBuilder.isolateNetWork();
     }
 
-    if (cfgBuilder.getRuntimePath()) {
+    if (cfgBuilder.getRuntimePath() && runtimeOverlay) {
         cfgBuilder.setRuntimePath(runtimeOverlay->mergedDirPath().toStdString(), false);
     }
 
@@ -1039,7 +1039,7 @@ utils::error::Result<void> Builder::buildStagePreCommit() noexcept
         .type = "bind" })
       .forwardDefaultEnv();
 
-    if (cfgBuilder.getRuntimePath()) {
+    if (cfgBuilder.getRuntimePath() && runtimeOverlay) {
         cfgBuilder.setRuntimePath(runtimeOverlay->mergedDirPath().toStdString(), false);
     }
 
