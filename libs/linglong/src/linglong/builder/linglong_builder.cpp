@@ -18,7 +18,7 @@
 #include "linglong/package/uab_packager.h"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container.h"
-#include "linglong/utils/command/env.h"
+#include "linglong/utils/command/cmd.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/file.h"
 #include "linglong/utils/global/initialize.h"
@@ -629,8 +629,9 @@ utils::error::Result<void> Builder::buildStagePullDependency() noexcept
     }
 
     if (!this->buildOptions.skipPullDepend) {
-        if (!pullDependency(*baseRef, this->repo, "binary")) {
-            return LINGLONG_ERR("failed to pull base binary " + baseRef->toString());
+        auto ref = pullDependency(*baseRef, this->repo, "binary");
+        if (!ref.has_value()) {
+            return LINGLONG_ERR("failed to pull base binary " + baseRef->toString(), ref);
         }
 
         printReplacedText(QString("%1%2%3%4")
@@ -641,8 +642,9 @@ utils::error::Result<void> Builder::buildStagePullDependency() noexcept
                             .toStdString(),
                           2);
 
-        if (!pullDependency(*baseRef, this->repo, "develop")) {
-            return LINGLONG_ERR("failed to pull base develop " + baseRef->toString());
+        ref = pullDependency(*baseRef, this->repo, "develop");
+        if (!ref.has_value()) {
+            return LINGLONG_ERR("failed to pull base develop " + baseRef->toString(), ref);
         }
 
         printReplacedText(QString("%1%2%3%4")
@@ -654,8 +656,9 @@ utils::error::Result<void> Builder::buildStagePullDependency() noexcept
                           2);
 
         if (runtimeRef) {
-            if (!pullDependency(*runtimeRef, this->repo, "binary")) {
-                return LINGLONG_ERR("failed to pull runtime binary " + runtimeRef->toString());
+            ref = pullDependency(*runtimeRef, this->repo, "binary");
+            if (!ref.has_value()) {
+                return LINGLONG_ERR("failed to pull runtime binary " + runtimeRef->toString(), ref);
             }
 
             printReplacedText(QString("%1%2%3%4")
@@ -666,8 +669,10 @@ utils::error::Result<void> Builder::buildStagePullDependency() noexcept
                                 .toStdString(),
                               2);
 
-            if (!pullDependency(*runtimeRef, this->repo, "develop")) {
-                return LINGLONG_ERR("failed to pull runtime develop " + runtimeRef->toString());
+            ref = pullDependency(*runtimeRef, this->repo, "develop");
+            if (!ref.has_value()) {
+                return LINGLONG_ERR("failed to pull runtime develop " + runtimeRef->toString(),
+                                    ref);
             }
 
             printReplacedText(QString("%1%2%3%4")
@@ -759,10 +764,11 @@ utils::error::Result<void> Builder::processBuildDepends() noexcept
         .options = { { "rbind", "ro" } },
         .source = this->workingDir.absolutePath().toStdString(),
         .type = "bind" })
-      .forwardDefaultEnv();
+      .forwardDefaultEnv()
+      .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1");
 
     // overwrite runtime overlay directory
-    if (cfgBuilder.getRuntimePath() && runtimeOverlay) {
+    if (cfgBuilder.getRuntimePath()) {
         cfgBuilder.setRuntimePath(runtimeOverlay->mergedDirPath().toStdString(), false);
     }
 
@@ -893,13 +899,14 @@ utils::error::Result<bool> Builder::buildStageBuild(const QStringList &args) noe
       .addMask({
         "/project/linglong/output",
         "/project/linglong/overlay",
-      });
+      })
+      .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1");
 
     if (this->buildOptions.isolateNetWork) {
         cfgBuilder.isolateNetWork();
     }
 
-    if (cfgBuilder.getRuntimePath() && runtimeOverlay) {
+    if (cfgBuilder.getRuntimePath()) {
         cfgBuilder.setRuntimePath(runtimeOverlay->mergedDirPath().toStdString(), false);
     }
 
@@ -1037,9 +1044,10 @@ utils::error::Result<void> Builder::buildStagePreCommit() noexcept
         .options = { { "rbind", "rw" } },
         .source = this->workingDir.absolutePath().toStdString(),
         .type = "bind" })
-      .forwardDefaultEnv();
+      .forwardDefaultEnv()
+      .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1");
 
-    if (cfgBuilder.getRuntimePath() && runtimeOverlay) {
+    if (cfgBuilder.getRuntimePath()) {
         cfgBuilder.setRuntimePath(runtimeOverlay->mergedDirPath().toStdString(), false);
     }
 
@@ -1099,10 +1107,8 @@ utils::error::Result<void> Builder::generateAppConf() noexcept
         scriptFile = dir->filePath("app-conf-generator");
         QFile::copy(":/scripts/app-conf-generator", scriptFile);
     }
-    auto output = utils::command::Exec(
-      "bash",
-      QStringList() << "-e" << scriptFile << QString::fromStdString(this->project.package.id)
-                    << buildOutput.path());
+    auto output = utils::command::Cmd("bash").exec(
+      { "-e", scriptFile, QString::fromStdString(this->project.package.id), buildOutput.path() });
 
     return LINGLONG_OK;
 }
@@ -1752,9 +1758,8 @@ utils::error::Result<void> Builder::extractLayer(const QString &layerPath,
         return LINGLONG_ERR(layerDir);
     }
 
-    auto output = utils::command::Exec("cp",
-                                       QStringList() << "-r" << layerDir->absolutePath()
-                                                     << destDir.absolutePath());
+    auto output =
+      utils::command::Cmd("cp").exec({ "-r", layerDir->absolutePath(), destDir.absolutePath() });
     if (!output) {
         return LINGLONG_ERR(output);
     }
@@ -1910,7 +1915,8 @@ utils::error::Result<void> Builder::run(const QStringList &modules,
           .addGIdMapping(gid, gid, 1)
           .bindDefault()
           .addExtraMounts(applicationMounts)
-          .enableSelfAdjustingMount();
+          .enableSelfAdjustingMount()
+          .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1");
 
         // write ld.so.conf
         std::string triplet = curRef->arch.getTriplet().toStdString();
@@ -1973,12 +1979,15 @@ utils::error::Result<void> Builder::run(const QStringList &modules,
       .bindIPC()
       .forwardDefaultEnv()
       .addExtraMounts(applicationMounts)
-      .enableSelfAdjustingMount();
+      .enableSelfAdjustingMount()
+      .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1");
+
 #ifdef LINGLONG_FONT_CACHE_GENERATOR
-    cfgBuilder.enableFontCache();
+    cfgBuilder.enableFontCache()
 #endif
 
-    if (!cfgBuilder.build()) {
+      if (!cfgBuilder.build())
+    {
         auto err = cfgBuilder.getError();
         return LINGLONG_ERR("build cfg error: " + QString::fromStdString(err.reason));
     }
@@ -2054,7 +2063,8 @@ utils::error::Result<void> Builder::runFromRepo(const package::Reference &ref,
             .options = { { "rbind", "ro" } },
             .source = ldConfPath,
             .type = "bind" })
-          .enableSelfAdjustingMount();
+          .enableSelfAdjustingMount()
+          .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1");
 
         // write ld.so.conf
         std::string triplet = ref.arch.getTriplet().toStdString();
@@ -2108,7 +2118,8 @@ utils::error::Result<void> Builder::runFromRepo(const package::Reference &ref,
         .options = { { "rbind", "rw" } },
         .source = this->workingDir.absolutePath().toStdString(),
         .type = "bind" })
-      .enableSelfAdjustingMount();
+      .enableSelfAdjustingMount()
+      .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1");
 
     if (!cfgBuilder.build()) {
         auto err = cfgBuilder.getError();
@@ -2136,19 +2147,24 @@ utils::error::Result<void> Builder::runtimeCheck()
 {
     LINGLONG_TRACE("runtime check");
     printMessage("[Runtime Check]");
-    // Do some checks after run container
-    if (!this->buildOptions.skipCheckOutput && this->project.package.kind == "app") {
-        printMessage("Start runtime check", 2);
-        auto ret =
-          this->run(packageModules, { { QString{ LINGLONG_BUILDER_HELPER } + "/main-check.sh" } });
-        if (!ret) {
-            printMessage("Runtime check failed", 2);
-            return LINGLONG_ERR(ret);
-        }
-    } else {
-        printMessage("Skip runtime check", 2);
+    // skip runtime check for non-app packages
+    if (this->project.package.kind != "app") {
+        printMessage("Runtime check skipped", 2);
+        return LINGLONG_OK;
     }
-
+    printMessage("Start runtime check", 2);
+    // 导出uab时需要使用main-check统计的信息，所以无论是否跳过检查，都需要执行main-check
+    auto ret =
+      this->run(packageModules, { { QString{ LINGLONG_BUILDER_HELPER } + "/main-check.sh" } });
+    // ignore runtime check if skipCheckOutput is set
+    if (this->buildOptions.skipCheckOutput) {
+        printMessage("Runtime check ignored", 2);
+        return LINGLONG_OK;
+    }
+    if (!ret) {
+        printMessage("Runtime check failed", 2);
+        return LINGLONG_ERR(ret);
+    }
     printMessage("Runtime check done", 2);
     return LINGLONG_OK;
 }

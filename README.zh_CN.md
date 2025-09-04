@@ -1,4 +1,5 @@
 <!-- markdownlint-disable-next-line MD033 -->
+
 # <img src="./misc/image/logo.svg" alt="如意玲珑图标" width="24" height="24" style="vertical-align:middle;">如意玲珑：更先进的 Linux 跨发行版软件包管理工具集
 
 ## :package: 介绍
@@ -9,18 +10,21 @@
 [![Latest Release](https://img.shields.io/github/v/release/OpenAtom-Linyaps/linyaps?style=flat&color=brightgreen)](https://github.com/OpenAtom-Linyaps/linyaps/releases)
 [![Powered by Linyaps](https://img.shields.io/badge/powered%20by-Linyaps-ff69b4)](https://github.com/OpenAtom-Linyaps/linyaps)
 [![Build Status](https://build.deepin.com/projects/linglong:CI:latest/packages/linyaps/badge.svg?type=default)](https://build.deepin.com/projects/linglong:CI:latest)
+[![DeepSource](https://app.deepsource.com/gh/OpenAtom-Linyaps/linyaps.svg/?label=active+issues&show_trend=true&token=REPLACE_WITH_TOKEN)](https://app.deepsource.com/gh/OpenAtom-Linyaps/linyaps/)
 
 [![GitHub Stars](https://img.shields.io/github/stars/OpenAtom-Linyaps/linyaps?style=social)](https://github.com/OpenAtom-Linyaps/linyaps/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/OpenAtom-Linyaps/linyaps?style=social&label=Fork)](https://github.com/OpenAtom-Linyaps/linyaps/network/members)
 [![Code Size](https://img.shields.io/github/languages/code-size/OpenAtom-Linyaps/linyaps)](https://github.com/OpenAtom-Linyaps/linyaps)
 [![GitHub Issues](https://img.shields.io/github/issues/OpenAtom-Linyaps/linyaps?style=social)](https://github.com/OpenAtom-Linyaps/linyaps/issues)
 
+[![Packaging status](https://repology.org/badge/vertical-allrepos/linyaps.svg)](https://repology.org/project/linyaps/versions)
+
 **如意玲珑**（Linyaps Is Not Yet Another Packaging System）是由如意玲珑社区团队开发并开源共建的**Linux 跨发行版软件包格式**，项目以独立沙盒容器的形式实现应用包的开发、管理、分发，用于替代 deb、rpm 等传统包管理工具，让 Linux 软件运行更兼容、更安全、更高效。
 
 ### :sparkles: 亮点
 
 - **独创的非全量运行时（Runtime）设计**：基于标准化沙箱 Runtime，应用一次构建即可覆盖所有 Linux 发行版。Runtime 多版本共存且文件共享减少冗余，启动时通过动态库共享复用已加载资源，**速度提升显著，避免依赖冲突**。
-- **非特权沙箱与双层隔离**：默认无 root 权限运行，通过内核  Namespace 隔离（进程/文件系统/网络等）构建**安全沙箱**。通过 OSTree 仓库提供原子化增量更新与版本回滚，相比全量沙箱方案，**资源占用更低**。
+- **非特权沙箱与双层隔离**：默认无 root 权限运行，通过内核 Namespace 隔离（进程/文件系统/网络等）构建**安全沙箱**。通过 OSTree 仓库提供原子化增量更新与版本回滚，相比全量沙箱方案，**资源占用更低**。
 
 ### :flags: 进展
 
@@ -121,16 +125,16 @@ ll-cli run cn.org.linyaps.demo
 由于在运行时和沙箱上的优化，玲珑有着比较显著的启动时间优势：
 
 | 测试次数 | linyaps 间隔帧数 | linyaps 启动耗时（ms） | Flatpak 间隔帧数 | Flatpak 启动耗时（ms） | AppImage 间隔帧数 | AppImage 启动耗时（ms） | Snap 间隔帧数 | Snap 启动耗时（ms） |
-| -------- | ----------------- | ----------------------- | ---------------- | ---------------------- | ----------------- | ----------------------- | ------------- | ------------------- |
-| 1        | 9                 | 149.4                   | 14               | 232.4                  | 16                | 265.6                   | 42            | 697.2               |
-| 2        | 9                 | 149.4                   | 13               | 215.8                  | 17                | 282.2                   | 41            | 680.6               |
-| 3        | 8                 | 132.8                   | 9                | 149.4                  | 15                | 249                     | 40            | 664                 |
-| 4        | 9                 | 149.4                   | 13               | 215.8                  | 15                | 249                     | 41            | 680.6               |
-| 5        | 8                 | 132.8                   | 14               | 232.4                  | 16                | 265.6                   | 42            | 697.2               |
-| 6        | 8                 | 132.8                   | 13               | 215.8                  | 15                | 249                     | 39            | 664                 |
-| 7        | 9                 | 149.4                   | 12               | 199.2                  | 15                | 249                     | 39            | 647.4               |
-| 8        | 8                 | 132.8                   | 14               | 232.4                  | 16                | 265.6                   | 40            | 680.6               |
-| 平均     | 8.5               | 141.1                   | 12.8             | 213.7                  | 15.6              | 261.6                   | 40.5          | 676.2               |
+| -------- | ---------------- | ---------------------- | ---------------- | ---------------------- | ----------------- | ----------------------- | ------------- | ------------------- |
+| 1        | 9                | 149.4                  | 14               | 232.4                  | 16                | 265.6                   | 42            | 697.2               |
+| 2        | 9                | 149.4                  | 13               | 215.8                  | 17                | 282.2                   | 41            | 680.6               |
+| 3        | 8                | 132.8                  | 9                | 149.4                  | 15                | 249                     | 40            | 664                 |
+| 4        | 9                | 149.4                  | 13               | 215.8                  | 15                | 249                     | 41            | 680.6               |
+| 5        | 8                | 132.8                  | 14               | 232.4                  | 16                | 265.6                   | 42            | 697.2               |
+| 6        | 8                | 132.8                  | 13               | 215.8                  | 15                | 249                     | 39            | 664                 |
+| 7        | 9                | 149.4                  | 12               | 199.2                  | 15                | 249                     | 39            | 647.4               |
+| 8        | 8                | 132.8                  | 14               | 232.4                  | 16                | 265.6                   | 40            | 680.6               |
+| 平均     | 8.5              | 141.1                  | 12.8             | 213.7                  | 15.6              | 261.6                   | 40.5          | 676.2               |
 
 ## :incoming_envelope: 获取帮助
 

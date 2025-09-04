@@ -14,8 +14,9 @@
 
 namespace linglong::utils::command {
 
-error::Result<QString> Exec(const QString &command, const QStringList &args) noexcept;
 QStringList getUserEnv(const QStringList &filters);
+
+std::optional<std::string> getEnv(const std::string &variableName);
 
 class EnvironmentVariableGuard
 {

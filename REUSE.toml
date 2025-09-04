@@ -22,6 +22,12 @@ SPDX-FileCopyrightText = "2017-2024 University of Cincinnati, developed by Henry
 SPDX-License-Identifier = "BSD-3-Clause"
 
 [[annotations]]
+path = "external/fmt/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Copyright (c) 2012 - present, Victor Zverovich"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
 path = "external/ytj/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Chen Linxuan <me@black-desk.cn>"
@@ -118,18 +124,6 @@ SPDX-FileCopyrightText = "None"
 SPDX-License-Identifier = "CC0-1.0"
 
 [[annotations]]
-path = "tools/qdbusxml2cpp/qdbusxml2cpp_5.cpp"
-precedence = "aggregate"
-SPDX-FileCopyrightText = "2020 The Qt Company Ltd."
-SPDX-License-Identifier = "GPL-3.0-only"
-
-[[annotations]]
-path = "tools/qdbusxml2cpp/qdbusxml2cpp_6.h"
-precedence = "aggregate"
-SPDX-FileCopyrightText = "2021 The Qt Company Ltd."
-SPDX-License-Identifier = "GPL-3.0-only"
-
-[[annotations]]
 path = "libs/ocppi/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "UnionTech Software Technology Co., Ltd."
@@ -142,7 +136,7 @@ SPDX-FileCopyrightText = "None"
 SPDX-License-Identifier = "CC0-1.0"
 
 [[annotations]]
-path = "misc/share/linglong/**.json" 
+path = "misc/share/linglong/**.json"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "None"
 SPDX-License-Identifier = "CC0-1.0"
@@ -196,13 +190,13 @@ SPDX-FileCopyrightText = "AppImageCommunity"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
-path = "apps/dumb-init/src/*"
+path = "apps/ll-builder-utils/patch/libfuse.patch"
 precedence = "aggregate"
-SPDX-FileCopyrightText = "Yelp Inc."
-SPDX-License-Identifier = "MIT"
+SPDX-FileCopyrightText = "UnionTech Software Technology Co., Ltd."
+SPDX-License-Identifier = "LGPL-3.0-or-later"
 
 [[annotations]]
-path = "apps/ll-builder-utils/patch/libfuse.patch"
+path = ["misc/share/icons/**.svg"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "UnionTech Software Technology Co., Ltd."
 SPDX-License-Identifier = "LGPL-3.0-or-later"

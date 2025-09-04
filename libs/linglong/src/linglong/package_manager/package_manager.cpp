@@ -659,16 +659,6 @@ QVariantMap PackageManager::installFromLayer(const QDBusUnixFileDescriptor &fd,
               return;
           }
 
-          auto unmountLayer = utils::finally::finally([mountPoint = layerDir->absolutePath()] {
-              if (QFileInfo::exists(mountPoint)) {
-                  auto ret = utils::command::Exec("fusermount", { "-z", "-u", mountPoint });
-                  if (!ret) {
-                      qCritical() << "failed to umount " << mountPoint
-                                  << ", please umount it manually";
-                  }
-              }
-          });
-
           auto info = (*layerDir).info();
           if (!info) {
               taskRef.reportError(std::move(info).error());
@@ -937,7 +927,7 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
         taskRef.updateSubState(linglong::api::types::v1::SubState::PreAction,
                                "prepare environment");
 
-        auto mountPoint = uab->mountUab();
+        auto mountPoint = uab->unpack();
         if (!mountPoint) {
             taskRef.reportError(std::move(mountPoint).error());
             return;
@@ -2024,10 +2014,25 @@ void PackageManager::pullDependency(PackageTask &taskContext,
                                                                {
                                                                  .semanticMatching = true,
                                                                });
+        // 如果远程没有获取到runtime(可能是网络原因或者离线场景)， 应该再从本地查找，
+        // 如果本地也找不到再返回
         if (!runtime) {
-            taskContext.updateState(linglong::api::types::v1::State::Failed,
-                                    runtime.error().message());
-            return;
+            auto localRuntime = this->repo.clearReference(*fuzzyRuntime,
+                                                          {
+                                                            .forceRemote = false,
+                                                            .fallbackToRemote = false,
+                                                            .semanticMatching = true,
+                                                          });
+            if (!localRuntime) {
+                taskContext.updateState(linglong::api::types::v1::State::Failed,
+                                        runtime.error().message());
+                return;
+            }
+
+            runtime =
+              linglong::package::ReferenceWithRepo{ .repo =
+                                                      this->repo.getHighestPriorityRepos().front(),
+                                                    .reference = *localRuntime };
         }
 
         // 如果runtime已存在，则直接使用, 否则从远程拉取
@@ -2079,10 +2084,24 @@ void PackageManager::pullDependency(PackageTask &taskContext,
                                                         {
                                                           .semanticMatching = true,
                                                         });
+    // 如果远程没有获取到base(可能是网络原因或者离线场景)， 应该再从本地查找，
+    // 如果本地也找不到再返回
     if (!base) {
-        taskContext.updateState(linglong::api::types::v1::State::Failed,
-                                LINGLONG_ERRV(base).message());
-        return;
+        auto localBase = this->repo.clearReference(*fuzzyBase,
+                                                   {
+                                                     .forceRemote = false,
+                                                     .fallbackToRemote = false,
+                                                     .semanticMatching = true,
+                                                   });
+        if (!localBase) {
+            taskContext.updateState(linglong::api::types::v1::State::Failed,
+                                    LINGLONG_ERRV(base).message());
+            return;
+        }
+
+        base = linglong::package::ReferenceWithRepo{ .repo =
+                                                       this->repo.getHighestPriorityRepos().front(),
+                                                     .reference = *localBase };
     }
 
     // 如果base已存在，则直接使用, 否则从远程拉取

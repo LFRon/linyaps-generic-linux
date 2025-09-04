@@ -7,7 +7,7 @@
 #include "source_fetcher.h"
 
 #include "configure.h"
-#include "linglong/utils/command/env.h"
+#include "linglong/utils/command/cmd.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/global/initialize.h"
 
@@ -54,15 +54,13 @@ auto SourceFetcher::fetch(QDir destination) noexcept -> utils::error::Result<voi
         qDebug() << "Dumping " << scriptName << "from qrc to" << scriptFile;
         QFile::copy(":/scripts/" + scriptName, scriptFile);
     }
-    auto output = utils::command::Exec(
-      "sh",
-      {
-        scriptFile,
-        destination.absoluteFilePath(getSourceName()),
-        QString::fromStdString(*source.url),
-        QString::fromStdString(source.kind == "git" ? *source.commit : *source.digest),
-        this->cacheDir.absolutePath(),
-      });
+    auto output = utils::command::Cmd("sh").exec({
+      scriptFile,
+      destination.absoluteFilePath(getSourceName()),
+      QString::fromStdString(*source.url),
+      QString::fromStdString(source.kind == "git" ? *source.commit : *source.digest),
+      this->cacheDir.absolutePath(),
+    });
     if (!output) {
         qDebug() << "output error:" << output.error();
         return LINGLONG_ERR("stderr:", output);

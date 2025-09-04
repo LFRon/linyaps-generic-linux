@@ -152,6 +152,7 @@ int main(int argc, char **argv)
 
     QCoreApplication app(argc, argv);
     applicationInitialize();
+    initLinyapsLogSystem(argv[0]);
 
     if (argc == 1) {
         std::cout << commandParser.help() << std::endl;
@@ -521,6 +522,22 @@ ll-cli list --upgradable
       ->add_option("PRIORITY", options.repoOptions.repoPriority, _("Priority of the repo"))
       ->required()
       ->check(validatorString);
+    // add repo sub command enable mirror
+    auto *repoEnableMirror =
+      cliRepo->add_subcommand("enable-mirror", _("Enable mirror for the repo"));
+    repoEnableMirror->usage(_("Usage: ll-cli repo enable-mirror [OPTIONS] ALIAS"));
+    repoEnableMirror
+      ->add_option("ALIAS", options.repoOptions.repoAlias, _("Alias of the repo name"))
+      ->required()
+      ->check(validatorString);
+    // add repo sub command disable mirror
+    auto *repoDisableMirror =
+      cliRepo->add_subcommand("disable-mirror", _("Disable mirror for the repo"));
+    repoDisableMirror->usage(_("Usage: ll-cli repo disable-mirror [OPTIONS] ALIAS"));
+    repoDisableMirror
+      ->add_option("ALIAS", options.repoOptions.repoAlias, _("Alias of the repo name"))
+      ->required()
+      ->check(validatorString);
 
     // add sub command info
     auto *cliInfo =
@@ -581,8 +598,12 @@ ll-cli list --upgradable
     auto cliLayerDir =
       commandParser.add_subcommand("dir", "Get the layer directory of app(base or runtime)")
         ->group(CliHiddenGroup);
+    cliLayerDir->footer("This subcommand is for internal use only currently");
     cliLayerDir->add_option("APP", options.appid, _("Specify the installed app(base or runtime)"))
       ->required()
+      ->check(validatorString);
+    cliLayerDir->add_option("--module", options.module, _("Specify a module"))
+      ->type_name("MODULE")
       ->check(validatorString);
 
     auto res = transformOldExec(argc, argv);

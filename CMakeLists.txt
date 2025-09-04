@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.11.4)
 
 project(
   linglong
-  VERSION 1.9.9
+  VERSION 1.10.0
   DESCRIPTION "a container based application package manager for Linux desktop"
   HOMEPAGE_URL "https://github.com/OpenAtom-Linyaps/linyaps"
   LANGUAGES CXX C)
@@ -141,9 +141,18 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^mips" OR CMAKE_SYSTEM_PROCESSOR MATCHES
       CACHE STRING "C++ compiler flags" FORCE)
 endif()
 
+find_package(fmt 5.2.1 QUIET)
+if(NOT fmt_FOUND)
+  message(STATUS "system fmt not found, using external fmt")
+  add_library(fmt-lib INTERFACE)
+  add_library(fmt::fmt ALIAS fmt-lib)
+  target_include_directories(fmt-lib INTERFACE external/fmt/include)
+endif()
+
 # NOTE: UOS v20 do not have tl-expected packaged.
-find_package(tl-expected 1.0.0 QUIET)
+find_package(tl-expected 1.1.0 QUIET)
 if(NOT tl-expected_FOUND)
+  message(STATUS "tl-expected not found, using external tl-expected")
   # list(APPEND linglong_EXTERNALS tl-expected) # tl-expected requires 3.14
   add_library(tl-expected INTERFACE)
   add_library(tl::expected ALIAS tl-expected)
@@ -161,7 +170,10 @@ endif()
 # NOTE: UOS v20 do not have cli11 packaged.
 find_package(CLI11 2.4.1 QUIET)
 if(NOT CLI11_FOUND)
-  list(APPEND linglong_EXTERNALS "CLI11 CLI11::CLI11")
+  message(STATUS "CLI11 not found, using external CLI11")
+  add_library(CLI11 INTERFACE)
+  add_library(CLI11::CLI11 ALIAS CLI11)
+  target_include_directories(CLI11 INTERFACE ./external/CLI11)
 endif()
 
 find_package(PkgConfig REQUIRED)
@@ -262,10 +274,6 @@ endif()
 
 message(STATUS "compiling with Qt${QT_VERSION_MAJOR}")
 
-if("${QT_VERSION_MAJOR}" STREQUAL "6")
-  include(Qt6DBusMacro)
-endif()
-
 pkg_search_module(glib2 REQUIRED IMPORTED_TARGET glib-2.0)
 pkg_search_module(ostree1 REQUIRED IMPORTED_TARGET ostree-1)
 pkg_search_module(systemd REQUIRED IMPORTED_TARGET libsystemd)
@@ -277,7 +285,6 @@ set(ytj_ENABLE_INSTALL NO)
 pfl_init(AUTO)
 
 add_subdirectory(external/http)
-add_subdirectory(tools/qdbusxml2cpp)
 
 pfl_add_libraries(
   LIBS
@@ -288,7 +295,7 @@ pfl_add_libraries(
   linglong
   oci-cfg-generators
   APPS
-  dumb-init
+  ll-init
   ll-dialog
   ll-builder
   ll-cli
