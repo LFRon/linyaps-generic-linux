@@ -49,6 +49,8 @@ enum class ErrorCode : int {
     AppUninstallNotFoundFromLocal = 2102, // 本地不存在对应应用
     AppUninstallAppIsRunning = 2103,      // 卸载的app正在运行
     LayerCompatibilityError = 2104,       // 找不到兼容的layer
+    AppUninstallMultipleVersions = 2105,
+    AppUninstallBaseOrRuntime = 2106,
     /* 升级 */
     AppUpgradeFailed = 2201,          // 升级失败
     AppUpgradeNotFound = 2202,        // 本地不存在对应应用
@@ -56,6 +58,10 @@ enum class ErrorCode : int {
 
     /* 网络 */
     NetworkError = 3001, // 网络错误
+
+    /* fuzzy reference */
+    InvalidFuzzyReference = 4001,
+    UnknownArchitecture = 4002,
 };
 
 class Error
@@ -324,7 +330,7 @@ using Result = tl::expected<Value, Error>;
 // Use this macro to define trace message at the begining of function
 // 支持QString, std::string, const char*
 #define LINGLONG_TRACE(message)                                    \
-    QString linglong_trace_message = [](auto &&msg) {              \
+    const QString linglong_trace_message = [](auto &&msg) {        \
         using val_t = decltype(msg);                               \
         if constexpr (std::is_convertible_v<val_t, std::string>) { \
             return QString::fromStdString(msg);                    \

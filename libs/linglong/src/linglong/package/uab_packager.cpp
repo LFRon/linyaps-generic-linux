@@ -12,6 +12,7 @@
 #include "linglong/utils/command/cmd.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/file.h"
+#include "linglong/utils/log/log.h"
 
 #include <qglobal.h>
 #include <yaml-cpp/yaml.h>
@@ -21,6 +22,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <unordered_set>
 #include <utility>
 
@@ -211,7 +213,8 @@ utils::error::Result<void> UABPackager::include(const std::vector<std::string> &
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> UABPackager::pack(const QString &uabFilePath, bool onlyApp) noexcept
+utils::error::Result<void> UABPackager::pack(const QString &uabFilePath,
+                                             bool distributedOnly) noexcept
 {
     LINGLONG_TRACE("package uab")
 
@@ -244,7 +247,7 @@ utils::error::Result<void> UABPackager::pack(const QString &uabFilePath, bool on
         }
     }
 
-    if (auto ret = packBundle(onlyApp); !ret) {
+    if (auto ret = packBundle(distributedOnly); !ret) {
         return ret;
     }
 
@@ -333,41 +336,20 @@ prepareSymlink(const std::filesystem::path &sourceRoot,
               % QString::fromStdString(destination.parent_path().string() + ":" + ec.message()));
         }
 
+        // make sure the destination is not exists
+        std::filesystem::remove(destination, ec);
+        if (ec) {
+            return LINGLONG_ERR(
+              QString{ "remove symlink %1 error: %2" }.arg(destination.string().c_str(),
+                                                           ec.message().c_str()));
+        }
+
         std::filesystem::create_symlink(target, destination, ec);
-        while (ec) {
-            if (ec != std::errc::file_exists) {
-                return LINGLONG_ERR(
-                  QString{ "create_symlink error:%1" }.arg(QString::fromStdString(ec.message())));
-            }
-
-            // check symlink target is the same as the original target
-            auto status = std::filesystem::symlink_status(destination, ec);
-            if (ec) {
-                return LINGLONG_ERR(
-                  QString{ "symlink_status %1 error: %2" }.arg(destination.string().c_str(),
-                                                               ec.message().c_str()));
-            }
-
-            // destination already exists and is not a symlink
-            if (status.type() != std::filesystem::file_type::symlink) {
-                break;
-            }
-
-            auto curTarget = std::filesystem::read_symlink(destination, ec);
-            if (ec) {
-                return LINGLONG_ERR(
-                  QString{ "read_symlink %1 error: %2" }.arg(destination.string().c_str(),
-                                                             ec.message().c_str()));
-            }
-
-            if (curTarget != target) {
-                return LINGLONG_ERR(
-                  QString{ "symlink target is not the same as the original target" }
-                  % "original target: " % QString::fromStdString(target.string())
-                  % "current target: " % QString::fromStdString(curTarget.string()));
-            }
-
-            break;
+        if (ec) {
+            return LINGLONG_ERR(
+              QString{ "create symlink %1 -> %2 error: %3" }.arg(target.string().c_str(),
+                                                                 destination.string().c_str(),
+                                                                 ec.message().c_str()));
         }
 
         if (target.is_absolute()) {
@@ -387,43 +369,41 @@ prepareSymlink(const std::filesystem::path &sourceRoot,
     return std::make_pair(std::move(source), std::move(destination));
 }
 
-utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, bool onlyApp) noexcept
+utils::error::Result<void> UABPackager::prepareExecutableBundle(const QDir &bundleDir) noexcept
 {
-    LINGLONG_TRACE("prepare layers for make a bundle")
+    LINGLONG_TRACE("prepare layers for make a executable bundle")
+
+    this->meta.onlyApp = true;
 
     std::optional<LayerDir> base;
-    if (onlyApp) {
-        this->meta.onlyApp = true;
-        for (auto it = this->layers.begin(); it != this->layers.end();) {
-            auto infoRet = it->info();
-            if (!infoRet) {
-                return LINGLONG_ERR(QString{ "failed export layer %1:" }.arg(it->absolutePath()),
-                                    infoRet.error());
-            }
-
-            const auto &info = *infoRet;
-            // the kind of old org.deepin.base,org.deepin.foundation and com.uniontech.foundation is
-            // runtime
-            if (info.kind == "base" || info.id == "org.deepin.base"
-                || info.id == "org.deepin.foundation" || info.id == "com.uniontech.foundation") {
-                base = *it;
-                it = this->layers.erase(it);
-                continue;
-            }
-
-            if (info.kind == "runtime") {
-                // if use custom loader, only app layer will be exported
-                if (!this->loader.isEmpty()) {
-                    it = this->layers.erase(it);
-                    continue;
-                }
-            }
-            ++it;
+    for (auto it = this->layers.begin(); it != this->layers.end();) {
+        auto infoRet = it->info();
+        if (!infoRet) {
+            return LINGLONG_ERR(QString{ "failed export layer %1:" }.arg(it->absolutePath()),
+                                infoRet.error());
         }
 
-        if (!base) {
-            return LINGLONG_ERR("couldn't find base layer");
+        const auto &info = *infoRet;
+        // the kind of old org.deepin.base,org.deepin.foundation and com.uniontech.foundation is
+        // runtime
+        if (info.kind == "base" || info.id == "org.deepin.base"
+            || info.id == "org.deepin.foundation" || info.id == "com.uniontech.foundation") {
+            base = *it;
+            it = this->layers.erase(it);
+            continue;
         }
+
+        // if use custom loader, only app layer will be exported
+        if (info.kind == "runtime" && !this->loader.isEmpty()) {
+            it = this->layers.erase(it);
+            continue;
+        }
+
+        ++it;
+    }
+
+    if (!base) {
+        return LINGLONG_ERR("couldn't find base layer");
     }
 
     // export layers
@@ -431,6 +411,11 @@ utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, boo
     if (!layersDir.mkpath(".")) {
         return LINGLONG_ERR(
           QString{ "couldn't create directory %1" }.arg(layersDir.absolutePath()));
+    }
+
+    auto symlinkCount = sysconf(_SC_SYMLOOP_MAX);
+    if (symlinkCount < 0) {
+        symlinkCount = 40;
     }
 
     QFile srcLoader;
@@ -463,7 +448,6 @@ utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, boo
           layer.entryInfoList(QDir::Files | QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
         for (const auto &info : infoList) {
             const auto &componentName = info.fileName();
-
             // we will apply some filters to files later, skip
             if (componentName == "files") {
                 continue;
@@ -492,11 +476,6 @@ utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, boo
             return LINGLONG_ERR(QString{ "couldn't create directory: %1, error: %2" }.arg(
               QString::fromStdString(moduleFilesDir.string()),
               QString::fromStdString(ec.message())));
-        }
-
-        auto symlinkCount = sysconf(_SC_SYMLOOP_MAX);
-        if (symlinkCount < 0) {
-            symlinkCount = 40;
         }
 
         if (!files.empty()) {
@@ -589,7 +568,7 @@ utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, boo
         auto &layerInfoRef = this->meta.layers.emplace_back(
           linglong::api::types::v1::UabLayer{ .info = info, .minified = minified });
 
-        // third step, update meta infomation
+        // third step, update meta information
         if (info.kind == "app") {
             if (!this->loader.isEmpty()) {
                 srcLoader.setFileName(this->loader);
@@ -601,10 +580,6 @@ utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, boo
                                                [](const api::types::v1::UabLayer &layer) {
                                                    return layer.minified;
                                                });
-            if (!hasMinifiedDeps && !onlyApp) {
-                continue;
-            }
-
             // app layer is the last layer, so we could update it's packageInfo directly
             auto appInfoPath = moduleDir.absoluteFilePath("info.json");
             if (hasMinifiedDeps) {
@@ -621,10 +596,9 @@ utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, boo
             continue;
         }
 
-        // in only-App mode, after copying runtime files, append needed files from base to runtime
-        // now we only have three layers
-        if (base) {
-            QDir filesDir = base->absoluteFilePath("files");
+        // after copying runtime files, append needed files from base to runtime
+        if (info.kind == "runtime") {
+            const QDir filesDir = base->absoluteFilePath("files");
             if (!filesDir.exists()) {
                 return LINGLONG_ERR(
                   QString{ "files directory %1 doesn't exist" }.arg(filesDir.absolutePath()));
@@ -736,15 +710,41 @@ utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, boo
         return LINGLONG_ERR(destLoader);
     }
 
-    // use custom loader doesn't need extra layer and ll-box any more
-    if (!this->loader.isEmpty()) {
-        return LINGLONG_OK;
-    }
-
     // add extra data
     auto extraDir = QDir{ bundleDir.absoluteFilePath("extra") };
     if (!extraDir.mkpath(".")) {
         return LINGLONG_ERR(QString{ "couldn't create directory %1" }.arg(extraDir.absolutePath()));
+    }
+
+    // copy linglong-triplet-list
+    QFile tripletFile(base->absoluteFilePath("files/etc/linglong-triplet-list"));
+    if (tripletFile.exists()) {
+        if (!tripletFile.copy(extraDir.filePath("linglong-triplet-list"))) {
+            return LINGLONG_ERR(QString{ "couldn't copy %1 to %2: %3" }.arg(
+              tripletFile.fileName(),
+              extraDir.filePath("linglong-triplet-list"),
+              tripletFile.errorString()));
+        }
+    } else {
+        LogD("linglong-triplet-list doesn't exist in base layer: {}", base->absolutePath());
+    }
+
+    // copy base profile
+    QFile profileFile(base->absoluteFilePath("files/etc/profile.d/linglong.sh"));
+    if (profileFile.exists()) {
+        if (!profileFile.copy(extraDir.filePath("profile"))) {
+            return LINGLONG_ERR(
+              QString{ "couldn't copy %1 to %2: %3" }.arg(profileFile.fileName(),
+                                                          extraDir.filePath("profile"),
+                                                          profileFile.errorString()));
+        }
+    } else {
+        LogD("profile doesn't exist in base layer: {}", base->absolutePath());
+    }
+
+    // use custom loader doesn't need extra layer and ll-box any more
+    if (!this->loader.isEmpty()) {
+        return LINGLONG_OK;
     }
 
     // copy ll-box
@@ -762,7 +762,148 @@ utils::error::Result<void> UABPackager::prepareBundle(const QDir &bundleDir, boo
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> UABPackager::packBundle(bool onlyApp) noexcept
+utils::error::Result<void> UABPackager::prepareDistributedBundle(const QDir &bundleDir) noexcept
+{
+    LINGLONG_TRACE("prepare distributed bundle")
+
+    // export layers
+    auto layersDir = QDir{ bundleDir.absoluteFilePath("layers") };
+    if (!layersDir.mkpath(".")) {
+        return LINGLONG_ERR(
+          QString{ "couldn't create directory %1" }.arg(layersDir.absolutePath()));
+    }
+
+    // check if we can use hard links for optimization (only need to check once)
+    struct statvfs layersDirStat{};
+    if (statvfs(layersDir.absolutePath().toStdString().c_str(), &layersDirStat) == -1) {
+        return LINGLONG_ERR("couldn't stat layers directory: " + layersDir.absolutePath());
+    }
+
+    for (const auto &layer : std::as_const(this->layers)) {
+        auto infoRet = layer.info();
+        if (!infoRet) {
+            return LINGLONG_ERR(QString{ "failed export layer %1:" }.arg(layer.absolutePath()),
+                                infoRet.error());
+        }
+
+        auto info = std::move(infoRet).value();
+        LogI("info.id: {}, info.packageInfoV2Module: {}", info.id, info.packageInfoV2Module);
+        auto moduleDir =
+          QDir{ layersDir.absoluteFilePath(QString::fromStdString(info.id) % QDir::separator()
+                                           % QString::fromStdString(info.packageInfoV2Module)) };
+        if (!moduleDir.mkpath(".")) {
+            return LINGLONG_ERR(
+              QString{ "couldn't create directory %1" }.arg(moduleDir.absolutePath()));
+        }
+
+        // check if layer and target are on the same filesystem
+        struct statvfs layerStat{};
+        if (statvfs(layer.absolutePath().toStdString().c_str(), &layerStat) == -1) {
+            return LINGLONG_ERR("couldn't stat layer directory: " + layer.absolutePath());
+        }
+
+        const bool shouldCopy = layerStat.f_fsid != layersDirStat.f_fsid;
+        std::error_code ec;
+
+        if (shouldCopy) {
+            // different filesystem, need to copy files
+            std::filesystem::copy(layer.absolutePath().toStdString(),
+                                  moduleDir.absolutePath().toStdString(),
+                                  std::filesystem::copy_options::copy_symlinks
+                                    | std::filesystem::copy_options::recursive,
+                                  ec);
+            if (ec) {
+                return LINGLONG_ERR("couldn't copy from " % layer.absolutePath() % " to "
+                                    % moduleDir.absolutePath() % " "
+                                    % QString::fromStdString(ec.message()));
+            }
+        } else {
+            // same filesystem, can use hard links for optimization
+            // use recursive directory iterator to process all files
+            std::error_code localEc;
+            auto layerPath = std::filesystem::path(layer.absolutePath().toStdString());
+            auto modulePath = std::filesystem::path(moduleDir.absolutePath().toStdString());
+
+            // first, create the base directory
+            if (!std::filesystem::create_directories(modulePath, localEc) && localEc) {
+                return LINGLONG_ERR("couldn't create directory: "
+                                    % QString::fromStdString(modulePath.string()) % " "
+                                    % QString::fromStdString(localEc.message()));
+            }
+
+            // iterate through all files and directories recursively
+            for (const auto &entry :
+                 std::filesystem::recursive_directory_iterator(layerPath, localEc)) {
+                if (localEc) {
+                    return LINGLONG_ERR("couldn't iterate directory: "
+                                        % QString::fromStdString(layerPath.string()) % " "
+                                        % QString::fromStdString(localEc.message()));
+                }
+
+                auto relativePath = entry.path().lexically_relative(layerPath);
+                auto destPath = modulePath / relativePath;
+
+                if (entry.is_directory()) {
+                    // create directory if it doesn't exist
+                    std::filesystem::create_directories(destPath, localEc);
+                    if (localEc) {
+                        return LINGLONG_ERR("couldn't create directory: "
+                                            % QString::fromStdString(destPath.string()) % " "
+                                            % QString::fromStdString(localEc.message()));
+                    }
+                    continue;
+                }
+
+                // for non-directory files, create parent directories first
+                std::filesystem::create_directories(destPath.parent_path(), localEc);
+                if (localEc) {
+                    return LINGLONG_ERR("couldn't create directories: "
+                                        % QString::fromStdString(destPath.parent_path().string())
+                                        % " " % QString::fromStdString(localEc.message()));
+                }
+
+                if (entry.is_symlink()) {
+                    // handle symlinks - copy them directly to preserve the link target
+                    std::filesystem::copy(entry.path(),
+                                          destPath,
+                                          std::filesystem::copy_options::copy_symlinks,
+                                          localEc);
+                    if (localEc) {
+                        return LINGLONG_ERR("couldn't copy symlink from "
+                                            % QString::fromStdString(entry.path().string()) % " to "
+                                            % QString::fromStdString(destPath.string()) % " "
+                                            % QString::fromStdString(localEc.message()));
+                    }
+                    continue;
+                }
+
+                // regular file - try to create hard link, fallback to copy if failed
+                std::filesystem::create_hard_link(entry.path(), destPath, localEc);
+                if (localEc) {
+                    // fallback to copy if hard link fails
+                    std::filesystem::copy(entry.path(),
+                                          destPath,
+                                          std::filesystem::copy_options::copy_symlinks,
+                                          localEc);
+                    if (localEc) {
+                        return LINGLONG_ERR("couldn't copy from "
+                                            % QString::fromStdString(entry.path().string()) % " to "
+                                            % QString::fromStdString(destPath.string()) % " "
+                                            % QString::fromStdString(localEc.message()));
+                    }
+                }
+            }
+        }
+
+        // add layer info to meta
+        this->meta.layers.emplace_back(
+          linglong::api::types::v1::UabLayer{ .info = info, .minified = false });
+    }
+
+    return LINGLONG_OK;
+}
+
+utils::error::Result<void> UABPackager::packBundle(bool distributedOnly) noexcept
 {
     LINGLONG_TRACE("add layers to uab")
 
@@ -773,29 +914,32 @@ utils::error::Result<void> UABPackager::packBundle(bool onlyApp) noexcept
     }
 
     auto bundleFile = this->uab.parentDir().absoluteFilePath("bundle.ef");
-    if (!QFileInfo::exists(bundleFile)) {
-        auto ret = prepareBundle(bundleDir, onlyApp);
-        if (!ret) {
-            return ret;
-        }
+    if (QFile::exists(bundleFile) && !QFile::remove(bundleFile)) {
+        return LINGLONG_ERR(QString{ "couldn't remove file %1" }.arg(bundleFile));
+    }
 
-        if (bundleCB) {
-            ret = bundleCB(bundleFile, bundleDir.absolutePath());
-            if (!ret) {
-                return LINGLONG_ERR("bundle error", ret);
-            }
-        } else {
-            // https://github.com/erofs/erofs-utils/blob/b526c0d7da46b14f1328594cf1d1b2401770f59b/README#L171-L183
-            if (auto ret = utils::command::Cmd("mkfs.erofs")
-                             .exec({ "-z" + compressor,
-                                     "-Efragments,dedupe,ztailpacking",
-                                     "-C1048576",
-                                     "-b4096", // force 4096 block size, default is page size
-                                     bundleFile,
-                                     bundleDir.absolutePath() });
-                !ret) {
-                return LINGLONG_ERR(ret);
-            }
+    auto ret =
+      distributedOnly ? prepareDistributedBundle(bundleDir) : prepareExecutableBundle(bundleDir);
+    if (!ret) {
+        return ret;
+    }
+
+    if (bundleCB) {
+        ret = bundleCB(bundleFile, bundleDir.absolutePath());
+        if (!ret) {
+            return LINGLONG_ERR("bundle error", ret);
+        }
+    } else {
+        // https://github.com/erofs/erofs-utils/blob/b526c0d7da46b14f1328594cf1d1b2401770f59b/README#L171-L183
+        if (auto ret = utils::command::Cmd("mkfs.erofs")
+                         .exec({ "-z" + compressor,
+                                 "-Efragments,dedupe,ztailpacking",
+                                 "-C1048576",
+                                 "-b4096", // force 4096 block size, default is page size
+                                 bundleFile,
+                                 bundleDir.absolutePath() });
+            !ret) {
+            return LINGLONG_ERR(ret);
         }
     }
 
@@ -1055,41 +1199,35 @@ utils::error::Result<void> UABPackager::loadNeededFiles() noexcept
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> UABPackager::setLoader(const QString &loader) noexcept
+void UABPackager::setLoader(const QString &loader) noexcept
 {
     this->loader = loader;
-    return LINGLONG_OK;
 }
 
-utils::error::Result<void> UABPackager::setCompressor(const QString &compressor) noexcept
+void UABPackager::setCompressor(const QString &compressor) noexcept
 {
     this->compressor = compressor;
-    return LINGLONG_OK;
 }
 
-utils::error::Result<void> UABPackager::setDefaultHeader(const QString &header) noexcept
+void UABPackager::setDefaultHeader(const QString &header) noexcept
 {
     this->defaultHeader = header;
-    return LINGLONG_OK;
 }
 
-utils::error::Result<void> UABPackager::setDefaultLoader(const QString &loader) noexcept
+void UABPackager::setDefaultLoader(const QString &loader) noexcept
 {
     this->defaultLoader = loader;
-    return LINGLONG_OK;
 }
 
-utils::error::Result<void> UABPackager::setDefaultBox(const QString &box) noexcept
+void UABPackager::setDefaultBox(const QString &box) noexcept
 {
     this->defaultBox = box;
-    return LINGLONG_OK;
 }
 
-utils::error::Result<void> UABPackager::setBundleCB(
+void UABPackager::setBundleCB(
   std::function<utils::error::Result<void>(const QString &, const QString &)> bundleCB) noexcept
 {
     this->bundleCB = std::move(bundleCB);
-    return LINGLONG_OK;
 }
 
 } // namespace linglong::package

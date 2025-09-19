@@ -1,9 +1,15 @@
-linglong (1.9.10-2) unstable; urgency=medium
+linglong (1.9.12-1) unstable; urgency=medium
 
-  * fix build runtime error.
-  * release 1.9.10-2.
+  * Fix dbus problem under root user.
+  * release 1.9.12-1.
 
- -- dengbo <dengbo@deepin.org>  Fri, 22 Aug 2025 12:38:12 +0800
+ -- dengbo <dengbo@deepin.org>  Fri, 19 Sep 2025 11:12:40 +0800
+
+linglong (1.9.11-1) unstable; urgency=medium
+
+  * release 1.9.11-1.
+
+ -- dengbo <dengbo@deepin.org>  Fri, 05 Sep 2025 10:29:45 +0800
 
 linglong (1.9.10-1) unstable; urgency=medium
 

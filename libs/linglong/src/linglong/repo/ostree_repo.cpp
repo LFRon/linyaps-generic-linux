@@ -24,6 +24,7 @@
 #include "linglong/utils/file.h"
 #include "linglong/utils/finally/finally.h"
 #include "linglong/utils/gkeyfile_wrapper.h"
+#include "linglong/utils/log/log.h"
 #include "linglong/utils/packageinfo_handler.h"
 #include "linglong/utils/serialize/json.h"
 #include "linglong/utils/transaction.h"
@@ -546,12 +547,7 @@ utils::error::Result<package::Reference> clearReferenceLocal(const linglong::rep
         return LINGLONG_ERR(foundRef);
     }
 
-    auto ver = linglong::package::Version::parse(QString::fromStdString(foundRef->info.version));
-    auto arch = linglong::package::Architecture::parse(foundRef->info.arch[0]);
-    return package::Reference::create(QString::fromStdString(foundRef->info.channel),
-                                      QString::fromStdString(foundRef->info.id),
-                                      *ver,
-                                      *arch);
+    return package::Reference::fromPackageInfo(foundRef->info);
 };
 
 std::optional<package::Reference> matchReference(const api::types::v1::PackageInfoV2 &record,
@@ -1402,7 +1398,7 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
 
     auto sizes = this->getCommitSize(pullRepo.alias.value_or(pullRepo.name), refString);
     if (!sizes.has_value()) {
-        qWarning() << "get commit size error: " << sizes.error().message();
+        LogD("get commit size error: {}", sizes.error().message());
     } else if (sizes->size() >= 3) {
         data.needed_archived = sizes->at(0);
         data.needed_unpacked = sizes->at(1);

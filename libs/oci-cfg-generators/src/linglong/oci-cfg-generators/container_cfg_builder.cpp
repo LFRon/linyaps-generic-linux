@@ -269,18 +269,25 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindUserGroup() noexcept
     return *this;
 }
 
-ContainerCfgBuilder &ContainerCfgBuilder::bindMedia() noexcept
+ContainerCfgBuilder &ContainerCfgBuilder::bindRemovableStorageMounts() noexcept
 {
+    // 绑定可移动存储设备的挂载点
+    // /media: 自动挂载可移动设备（U盘、光盘等）
+    // /mnt: 系统管理员临时挂载文件系统的标准挂载点
     std::error_code ec;
-    do {
-        auto mediaDir = std::filesystem::path("/media");
-        auto status = std::filesystem::symlink_status(mediaDir, ec);
+
+    std::vector<std::string> propagationPaths{ "/media", "/mnt" };
+    removableStorageMounts = std::vector<Mount>{};
+
+    for (const auto &path : propagationPaths) {
+        auto mountPath = std::filesystem::path(path);
+        auto status = std::filesystem::symlink_status(mountPath, ec);
         if (ec) {
             break;
         }
 
         if (status.type() == std::filesystem::file_type::symlink) {
-            auto targetDir = std::filesystem::read_symlink(mediaDir, ec);
+            auto targetDir = std::filesystem::read_symlink(mountPath, ec);
             if (ec) {
                 break;
             }
@@ -290,25 +297,23 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindMedia() noexcept
                 break;
             }
 
-            mediaMount = {
-                Mount{ .destination = destinationDir,
-                       .options = string_list{ "rbind" },
-                       .source = destinationDir,
-                       .type = "bind" },
-                Mount{ .destination = "/media",
-                       .options = string_list{ "rbind", "ro", "copy-symlink" },
-                       .source = "/media",
-                       .type = "bind" },
-            };
+            removableStorageMounts->emplace_back(Mount{ .destination = destinationDir,
+                                                        .options = string_list{ "rbind" },
+                                                        .source = destinationDir,
+                                                        .type = "bind" });
+
+            removableStorageMounts->emplace_back(
+              Mount{ .destination = path,
+                     .options = string_list{ "rbind", "ro", "copy-symlink" },
+                     .source = path,
+                     .type = "bind" });
         } else {
-            mediaMount = {
-                Mount{ .destination = "/media",
-                       .options = string_list{ "rbind" },
-                       .source = "/media",
-                       .type = "bind" },
-            };
+            removableStorageMounts->emplace_back(Mount{ .destination = path,
+                                                        .options = string_list{ "rbind" },
+                                                        .source = path,
+                                                        .type = "bind" });
         }
-    } while (false);
+    }
 
     return *this;
 }
@@ -1173,7 +1178,7 @@ bool ContainerCfgBuilder::buildMountCache() noexcept
 
     std::error_code ec;
     if (!std::filesystem::exists(*appCache, ec)) {
-        error_.reason = "app cache is not exist";
+        error_.reason = "app cache does not exist";
         error_.code = BUILD_MOUNT_CACHE_ERROR;
         return false;
     }
@@ -1658,8 +1663,10 @@ bool ContainerCfgBuilder::mergeMount() noexcept
         std::move(UGMount->begin(), UGMount->end(), std::back_inserter(mounts));
     }
 
-    if (mediaMount) {
-        std::move(mediaMount->begin(), mediaMount->end(), std::back_inserter(mounts));
+    if (removableStorageMounts) {
+        std::move(removableStorageMounts->begin(),
+                  removableStorageMounts->end(),
+                  std::back_inserter(mounts));
     }
 
     if (hostRootMount) {
