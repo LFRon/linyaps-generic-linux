@@ -169,7 +169,7 @@ fetchSources(const std::vector<api::types::v1::BuilderProjectSource> &sources,
                             .arg("downloading ...")
                             .toStdString(),
                           2);
-        SourceFetcher fetcher(sources.at(pos), cfg, cacheDir);
+        SourceFetcher fetcher(sources.at(pos), cacheDir);
         auto result = fetcher.fetch(QDir(destination));
         if (!result) {
             return LINGLONG_ERR(result);
@@ -386,7 +386,9 @@ utils::error::Result<void> cmdListApp(repo::OSTreeRepo &repo)
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> cmdRemoveApp(repo::OSTreeRepo &repo, std::vector<std::string> refs)
+utils::error::Result<void> cmdRemoveApp(repo::OSTreeRepo &repo,
+                                        std::vector<std::string> refs,
+                                        bool prune)
 {
     for (const auto &ref : refs) {
         auto r = package::Reference::parse(QString::fromStdString(ref));
@@ -403,11 +405,13 @@ utils::error::Result<void> cmdRemoveApp(repo::OSTreeRepo &repo, std::vector<std:
             }
         }
     }
-    auto v = repo.prune();
-    if (!v.has_value()) {
-        std::cerr << v.error().message().toStdString();
+    if (prune) {
+        auto v = repo.prune();
+        if (!v.has_value()) {
+            std::cerr << v.error().message().toStdString();
+        }
     }
-    v = repo.mergeModules();
+    auto v = repo.mergeModules();
     if (!v.has_value()) {
         std::cerr << v.error().message().toStdString();
     }
