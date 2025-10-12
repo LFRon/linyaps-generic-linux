@@ -187,7 +187,8 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
             // 构造一个允许所有扩展环境变量的 ExtensionDefine
             api::types::v1::ExtensionDefine extDefine;
             extDefine.name     = extLayer.getReference().id;
-            extDefine.version  = extLayer.getReference().version;
+            // extDefine.version  = extLayer.getReference().version;
+            
             std::map<std::string, std::string> allowEnvMap;
             for (const auto &env : *extItem->info.extImpl->env) {
                 allowEnvMap.emplace(env.first, "");
