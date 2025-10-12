@@ -180,12 +180,30 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
         }
         // 挂载扩展层
         auto &extLayer = extensionLayers.emplace_back(*extRef, *this);
+
+        // 从扩展缓存项中读取扩展信息
+        auto extItem = extLayer.getCachedItem();
+        if (extItem && extItem->info.extImpl && extItem->info.extImpl->env) {
+            // 构造一个允许所有扩展环境变量的 ExtensionDefine
+            api::types::v1::ExtensionDefine extDefine;
+            extDefine.name     = extLayer.getReference().id;
+            extDefine.version  = extLayer.getReference().version;
+            std::map<std::string, std::string> allowEnvMap;
+            for (const auto &env : *extItem->info.extImpl->env) {
+                allowEnvMap.emplace(env.first, "");
+            }
+            extDefine.allowEnv = allowEnvMap;
+            // 让这个扩展“拥有”自己的 ExtensionDefine，这样 resolveLayer() 会注入环境变量
+            extLayer.setExtensionInfo({ extDefine, extLayer });
+        }
+
         // 解析该扩展自身声明的嵌套扩展
         auto extRet = resolveExtension(extLayer);
         if (!extRet) {
             qWarning() << "ignore failed extension layer";
-            extensionLayers.pop_back(); // 解析失败则移除
+            extensionLayers.pop_back();
         }
+
     }
 
     // all reference are cleard , we can get actual layer directory now
