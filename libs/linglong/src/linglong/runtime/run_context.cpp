@@ -4,13 +4,17 @@
 
 #include "run_context.h"
 
+#include "linglong/common/display.h"
 #include "linglong/extension/extension.h"
 #include "linglong/runtime/container_builder.h"
+#include "linglong/utils/log/log.h"
+
+#include <utility>
 
 namespace linglong::runtime {
 
 RuntimeLayer::RuntimeLayer(package::Reference ref, RunContext &context)
-    : reference(ref)
+    : reference(std::move(ref))
     , runContext(context)
     , temporary(false)
 {
@@ -23,20 +27,20 @@ RuntimeLayer::~RuntimeLayer()
     }
 }
 
-utils::error::Result<void> RuntimeLayer::resolveLayer(const QStringList &modules,
+utils::error::Result<void> RuntimeLayer::resolveLayer(const std::vector<std::string> &modules,
                                                       const std::optional<std::string> &subRef)
 {
     LINGLONG_TRACE("resolve layer");
 
     auto &repo = runContext.get().getRepo();
     utils::error::Result<package::LayerDir> layer(LINGLONG_ERR("null"));
-    if (modules.isEmpty()) {
+    if (modules.empty()) {
         layer = repo.getMergedModuleDir(reference);
     } else if (modules.size() > 1) {
         layer = repo.getMergedModuleDir(reference, modules);
         temporary = true;
     } else {
-        layer = repo.getLayerDir(reference, modules[0].toStdString(), subRef);
+        layer = repo.getLayerDir(reference, modules[0], subRef);
     }
 
     if (!layer) {
@@ -96,7 +100,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
         appLayer = RuntimeLayer(runnable, *this);
         auto runtime = options.runtimeRef.value_or(info.runtime.value_or(""));
         if (!runtime.empty()) {
-            auto runtimeFuzzyRef = package::FuzzyReference::parse(QString::fromStdString(runtime));
+            auto runtimeFuzzyRef = package::FuzzyReference::parse(runtime);
             if (!runtimeFuzzyRef) {
                 return LINGLONG_ERR(runtimeFuzzyRef);
             }
@@ -120,7 +124,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
 
     // all kinds of package has base
     auto baseRef = options.baseRef.value_or(info.base);
-    auto baseFuzzyRef = package::FuzzyReference::parse(QString::fromStdString(baseRef));
+    auto baseFuzzyRef = package::FuzzyReference::parse(baseRef);
     if (!baseFuzzyRef) {
         return LINGLONG_ERR(baseFuzzyRef);
     }
@@ -138,19 +142,59 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
 
     // resolve runtime extension
     if (runtimeLayer) {
-        resolveExtension(*runtimeLayer);
+        auto ret = resolveExtension(*runtimeLayer);
+        if (!ret) {
+            return LINGLONG_ERR(ret);
+        }
     }
 
     // resolve base extension
-    resolveExtension(*baseLayer);
+    auto ret = resolveExtension(*baseLayer);
+    if (!ret) {
+        return LINGLONG_ERR(ret);
+    }
+
+    // 新增：处理手动指定的扩展包（来自命令行或环境变量）
+    // 读取 ResolveOptions::extensionRef，如果为空则跳过
+    std::string ext = options.extensionRef.value_or("");
+    if (ext.empty()) {
+        // 兼容 CLI 未传参但环境变量有值的情况
+        const char *envExt = ::getenv("LL_FORCE_EXTENSION");
+        if (envExt && envExt[0] != '\0') {
+            ext = envExt;
+        }
+    }
+    if (!ext.empty()) {
+        // 解析扩展引用
+        auto fuzzyRef = package::FuzzyReference::parse(ext);
+        if (!fuzzyRef) {
+            return LINGLONG_ERR(fuzzyRef);
+        }
+        auto extRef = repo.clearReference(*fuzzyRef, {
+            .forceRemote = false,
+            .fallbackToRemote = false,
+            .semanticMatching = true,
+        });
+        if (!extRef) {
+            return LINGLONG_ERR("extension ref doesn't exist: " + ext);
+        }
+        // 挂载扩展层
+        auto &extLayer = extensionLayers.emplace_back(*extRef, *this);
+        // 解析该扩展自身声明的嵌套扩展
+        auto extRet = resolveExtension(extLayer);
+        if (!extRet) {
+            qWarning() << "ignore failed extension layer";
+            extensionLayers.pop_back(); // 解析失败则移除
+        }
+    }
 
     // all reference are cleard , we can get actual layer directory now
-    QStringList appModules = options.appModules.value_or(QStringList{});
-    return resolveLayer(options.depsBinaryOnly, appModules);
+    return resolveLayer(options.depsBinaryOnly,
+                        options.appModules.value_or(std::vector<std::string>{}));
 }
 
 utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProject &target,
-                                               std::filesystem::path buildOutput)
+                                               const std::filesystem::path &buildOutput)
 {
     LINGLONG_TRACE("resolve RunContext from builder project "
                    + QString::fromStdString(target.package.id));
@@ -173,7 +217,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
                             + QString::fromStdString(target.package.kind));
     }
 
-    auto baseFuzzyRef = package::FuzzyReference::parse(QString::fromStdString(target.base));
+    auto baseFuzzyRef = package::FuzzyReference::parse(target.base);
     if (!baseFuzzyRef) {
         return LINGLONG_ERR(baseFuzzyRef);
     }
@@ -190,8 +234,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
     baseLayer = RuntimeLayer(std::move(ref).value(), *this);
 
     if (target.runtime) {
-        auto runtimeFuzzyRef =
-          package::FuzzyReference::parse(QString::fromStdString(*target.runtime));
+        auto runtimeFuzzyRef = package::FuzzyReference::parse(*target.runtime);
         if (!runtimeFuzzyRef) {
             return LINGLONG_ERR(runtimeFuzzyRef);
         }
@@ -212,7 +255,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
             return LINGLONG_ERR("no cached item found: " + runtimeLayer->getReference().toString());
         }
 
-        auto fuzzyRef = package::FuzzyReference::parse(QString::fromStdString(layer->info.base));
+        auto fuzzyRef = package::FuzzyReference::parse(layer->info.base);
         if (!fuzzyRef) {
             return LINGLONG_ERR(fuzzyRef);
         }
@@ -223,13 +266,12 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
                                          .semanticMatching = true,
                                        });
         if (!ref || *ref != baseLayer->getReference()) {
-            return LINGLONG_ERR(QString{ "Base is not compatible with runtime. \n"
-                                         "- Current base: %1\n"
-                                         "- Current runtime: %2\n"
-                                         "- Base required by runtime: %3" }
-                                  .arg(baseLayer->getReference().toString(),
-                                       runtimeLayer->getReference().toString(),
-                                       layer->info.base.c_str()));
+            auto msg = fmt::format("Base is not compatible with runtime. \n - Current base: {}\n - "
+                                   "Current runtime: {}\n - Base required by runtime: {}",
+                                   baseLayer->getReference().toString(),
+                                   runtimeLayer->getReference().toString(),
+                                   layer->info.base);
+            return LINGLONG_ERR(msg);
         }
     }
 
@@ -237,7 +279,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
 }
 
 utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
-                                                    const QStringList &appModules)
+                                                    const std::vector<std::string> &appModules)
 {
     LINGLONG_TRACE("resolve layers");
 
@@ -249,9 +291,9 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
         }
     }
 
-    QStringList depsModules;
+    std::vector<std::string> depsModules;
     if (depsBinaryOnly) {
-        depsModules << "binary";
+        depsModules.emplace_back("binary");
     }
     auto ref = baseLayer->resolveLayer(depsModules, subRef);
     if (!ref.has_value()) {
@@ -318,7 +360,7 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
         }
         const auto &extInfo = extItem->info;
         if (!extInfo.extImpl) {
-            qWarning() << "no ext_impl found for " << ext.getReference().toString();
+            LogW("no ext_impl found for {}", ext.getReference().toString());
             continue;
         }
         const auto &extImpl = *extInfo.extImpl;
@@ -329,14 +371,12 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
             auto allowed = allowEnv.find(env.first);
             if (allowed == allowEnv.end()) {
                 qWarning() << "env " << QString::fromStdString(env.first) << " not allowed in "
-                           << layer.get().getReference().toString();
+                           << layer.get().getReference().toString().c_str();
                 continue;
             }
 
             std::string res =
-              replaceSubstring(env.second,
-                               "$PREFIX",
-                               "/opt/extensions/" + ext.getReference().id.toStdString());
+              replaceSubstring(env.second, "$PREFIX", "/opt/extensions/" + ext.getReference().id);
             auto &value = environment[env.first];
             if (!value.empty()) {
                 res = replaceSubstring(res, "$ORIGIN", value);
@@ -381,15 +421,12 @@ utils::error::Result<void> RunContext::resolveExtension(RuntimeLayer &layer)
             }
 
             auto fuzzyRef =
-              package::FuzzyReference::create(QString::fromStdString(info.channel),
-                                              QString::fromStdString(name),
-                                              QString::fromStdString(extension.version),
-                                              std::nullopt);
+              package::FuzzyReference::create(info.channel, name, extension.version, std::nullopt);
             auto ref = repo.clearReference(*fuzzyRef,
                                            { .fallbackToRemote = false, .semanticMatching = true });
             if (!ref) {
                 // extension is not installed, ignore it
-                qDebug() << "extension is not installed: " << fuzzyRef->toString();
+                qDebug() << "extension is not installed: " << fuzzyRef->toString().c_str();
                 continue;
             }
 
@@ -402,10 +439,66 @@ utils::error::Result<void> RunContext::resolveExtension(RuntimeLayer &layer)
     return LINGLONG_OK;
 }
 
+void RunContext::detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept
+{
+    while (true) {
+        auto *xOrgDisplayEnv = ::getenv("DISPLAY");
+        if (xOrgDisplayEnv == nullptr || xOrgDisplayEnv[0] == '\0') {
+            LogD("DISPLAY is not set, ignore it");
+            break;
+        }
+
+        auto xOrgDisplay = common::display::getXOrgDisplay(xOrgDisplayEnv);
+        if (!xOrgDisplay) {
+            LogW("failed to get XOrg display: {}, ignore it", xOrgDisplay.error());
+            break;
+        }
+
+        builder.bindXOrgSocket(xOrgDisplay.value());
+        break;
+    }
+
+    while (true) {
+        auto *xOrgAuthFileEnv = ::getenv("XAUTHORITY");
+        if (xOrgAuthFileEnv == nullptr || xOrgAuthFileEnv[0] == '\0') {
+            LogD("XAUTHORITY is not set, ignore it");
+            break;
+        }
+
+        auto xOrgAuthFile = common::display::getXOrgAuthFile(xOrgAuthFileEnv);
+        if (!xOrgAuthFile) {
+            LogW("failed to get XOrg auth file: {}, ignore it", xOrgAuthFile.error());
+            break;
+        }
+
+        builder.bindXAuthFile(xOrgAuthFile.value());
+        break;
+    }
+
+    while (true) {
+        auto *waylandDisplayEnv = ::getenv("WAYLAND_DISPLAY");
+        if (waylandDisplayEnv == nullptr || waylandDisplayEnv[0] == '\0') {
+            LogD("WAYLAND_DISPLAY is not set, ignore it");
+            break;
+        }
+
+        auto waylandDisplay = common::display::getWaylandDisplay(waylandDisplayEnv);
+        if (!waylandDisplay) {
+            LogW("failed to get Wayland display: {}, ignore it", waylandDisplay.error());
+            break;
+        }
+
+        builder.bindWaylandSocket(waylandDisplay.value());
+        break;
+    }
+}
+
 utils::error::Result<void>
 RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
 {
     LINGLONG_TRACE("fill ContainerCfgBuilder with run context");
+
+    builder.setContainerId(containerID);
 
     if (!baseLayer) {
         return LINGLONG_ERR("run context doesn't resolved");
@@ -449,7 +542,7 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
     }
 
     for (const auto &ext : extensionLayers) {
-        std::string name = ext.getReference().id.toStdString();
+        std::string name = ext.getReference().id;
         if (extensionOutput && name == targetId) {
             continue;
         }
@@ -477,7 +570,38 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
         builder.appendEnv(environment);
     }
 
+    detectDisplaySystem(builder);
+
+    for (auto ctx = securityContexts.begin(); ctx != securityContexts.end(); ++ctx) {
+        auto manager = getSecurityContextManager(ctx->first);
+        if (!manager) {
+            auto msg = "failed to get security context manager: " + fromType(ctx->first);
+            return LINGLONG_ERR(msg.c_str());
+        }
+
+        auto secCtx = manager->createSecurityContext(builder);
+        if (!secCtx) {
+            auto msg = "failed to create security context: " + fromType(ctx->first);
+            return LINGLONG_ERR(msg.c_str());
+        }
+        ctx->second = std::move(secCtx).value();
+
+        auto res = ctx->second->apply(builder);
+        if (!res) {
+            auto msg = "failed to apply security context: " + fromType(ctx->first);
+            ctx = securityContexts.erase(ctx);
+            return LINGLONG_ERR(msg.c_str(), res);
+        }
+    }
+
     return LINGLONG_OK;
+}
+
+void RunContext::enableSecurityContext(const std::vector<SecurityContextType> &ctxs)
+{
+    for (const auto &type : ctxs) {
+        securityContexts.try_emplace(type, nullptr);
+    }
 }
 
 utils::error::Result<void> RunContext::fillExtraAppMounts(generator::ContainerCfgBuilder &builder)
@@ -550,7 +674,7 @@ utils::error::Result<void> RunContext::fillExtraAppMounts(generator::ContainerCf
 
     for (auto &ext : extensionLayers) {
         if (!fillPermissionsBinds(ext)) {
-            qWarning() << "failed to apply permission binds for " << ext.getReference().toString();
+            LogW("failed to apply permission binds for {}", ext.getReference().toString());
             continue;
         }
     }
@@ -565,20 +689,20 @@ api::types::v1::ContainerProcessStateInfo RunContext::stateInfo()
     };
 
     if (baseLayer) {
-        state.base = baseLayer->getReference().toString().toStdString();
+        state.base = baseLayer->getReference().toString();
     }
 
     if (appLayer) {
-        state.app = appLayer->getReference().toString().toStdString();
+        state.app = appLayer->getReference().toString();
     }
 
     if (runtimeLayer) {
-        state.runtime = runtimeLayer->getReference().toString().toStdString();
+        state.runtime = runtimeLayer->getReference().toString();
     }
 
     state.extensions = std::vector<std::string>{};
     for (auto &ext : extensionLayers) {
-        state.extensions->push_back(ext.getReference().toString().toStdString());
+        state.extensions->push_back(ext.getReference().toString());
     }
 
     return state;

@@ -8,106 +8,106 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2025-09-10 17:13+0800\n"
+"POT-Creation-Date: 2025-09-22 11:10+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "Language: \n"
 "MIME-Version: 1.0\n"
-"Content-Type: text/plain; charset=CHARSET\n"
+"Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:74
+#: ../libs/linglong/src/linglong/cli/cli.cpp:76
 msgid "Permission denied, please check whether you are running as root."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:526
+#: ../libs/linglong/src/linglong/cli/cli.cpp:528
 msgid "To install the module, one must first install the app."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:529
+#: ../libs/linglong/src/linglong/cli/cli.cpp:531
 msgid "Module is already installed."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:532
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1259
+#: ../libs/linglong/src/linglong/cli/cli.cpp:534
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1260
 msgid "Install failed"
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:535
+#: ../libs/linglong/src/linglong/cli/cli.cpp:537
 msgid "The module could not be found remotely."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:538
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1731
+#: ../libs/linglong/src/linglong/cli/cli.cpp:540
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1732
 msgid "Uninstall failed"
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:541
+#: ../libs/linglong/src/linglong/cli/cli.cpp:543
 msgid "Upgrade failed"
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:544
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1712
+#: ../libs/linglong/src/linglong/cli/cli.cpp:546
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1713
 msgid "Application is not installed."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:547
+#: ../libs/linglong/src/linglong/cli/cli.cpp:549
 msgid "Latest version is already installed."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1233
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1527
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1234
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1528
 msgid ""
 "Network connection failed. Please:\n"
 "1. Check your internet connection\n"
 "2. Verify network proxy settings if used"
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1239
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1240
 msgid ""
 "Application already installed, If you want to replace it, try using 'll-cli "
 "install %1 --force'"
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1245
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1246
 msgid "Application %1 is not found in remote repo."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1249
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1250
 msgid "Cannot specify a version when installing a module."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1253
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1254
 msgid ""
 "The latest version has been installed. If you want to replace it, try using "
 "'ll-cli install %1/version --force'"
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1716
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1717
 msgid ""
 "Multiple versions of the package are installed. Please specify a single "
 "version to uninstall:\n"
 "%1"
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1722
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1723
 msgid ""
 "The application is currently running and cannot be uninstalled. Please turn "
 "off the application and try again."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:1727
+#: ../libs/linglong/src/linglong/cli/cli.cpp:1728
 msgid "Base or runtime cannot be uninstalled, please use 'll-cli prune'."
 msgstr ""
 
-#: ../libs/linglong/src/linglong/cli/cli.cpp:2735
+#: ../libs/linglong/src/linglong/cli/cli.cpp:2746
 msgid ""
 "The cache generation failed, please uninstall and reinstall the application."
 msgstr ""
 
 #: ../apps/ll-cli/src/main.cpp:146 ../apps/ll-cli/src/main.cpp:563
-#: ../apps/ll-builder/src/main.cpp:95
+#: ../apps/ll-builder/src/main.cpp:96
 msgid "Input parameter is empty, please input valid parameter instead"
 msgstr ""
 
@@ -357,7 +357,7 @@ msgid "Usage: ll-cli repo SUBCOMMAND [OPTIONS]"
 msgstr ""
 
 #. add repo sub command add
-#: ../apps/ll-cli/src/main.cpp:431 ../apps/ll-builder/src/main.cpp:953
+#: ../apps/ll-cli/src/main.cpp:431 ../apps/ll-builder/src/main.cpp:957
 msgid "Add a new repository"
 msgstr ""
 
@@ -366,23 +366,23 @@ msgid "Usage: ll-cli repo add [OPTIONS] NAME URL"
 msgstr ""
 
 #: ../apps/ll-cli/src/main.cpp:433 ../apps/ll-cli/src/main.cpp:445
-#: ../apps/ll-builder/src/main.cpp:955
+#: ../apps/ll-builder/src/main.cpp:959
 msgid "Specify the repo name"
 msgstr ""
 
 #: ../apps/ll-cli/src/main.cpp:436 ../apps/ll-cli/src/main.cpp:448
-#: ../apps/ll-cli/src/main.cpp:466 ../apps/ll-builder/src/main.cpp:958
-#: ../apps/ll-builder/src/main.cpp:981
+#: ../apps/ll-cli/src/main.cpp:466 ../apps/ll-builder/src/main.cpp:962
+#: ../apps/ll-builder/src/main.cpp:985
 msgid "Url of the repository"
 msgstr ""
 
 #: ../apps/ll-cli/src/main.cpp:439 ../apps/ll-cli/src/main.cpp:455
 #: ../apps/ll-cli/src/main.cpp:463 ../apps/ll-cli/src/main.cpp:474
 #: ../apps/ll-cli/src/main.cpp:486 ../apps/ll-cli/src/main.cpp:496
-#: ../apps/ll-cli/src/main.cpp:503 ../apps/ll-builder/src/main.cpp:962
-#: ../apps/ll-builder/src/main.cpp:970 ../apps/ll-builder/src/main.cpp:978
-#: ../apps/ll-builder/src/main.cpp:990 ../apps/ll-builder/src/main.cpp:999
-#: ../apps/ll-builder/src/main.cpp:1008
+#: ../apps/ll-cli/src/main.cpp:503 ../apps/ll-builder/src/main.cpp:966
+#: ../apps/ll-builder/src/main.cpp:974 ../apps/ll-builder/src/main.cpp:982
+#: ../apps/ll-builder/src/main.cpp:994 ../apps/ll-builder/src/main.cpp:1003
+#: ../apps/ll-builder/src/main.cpp:1012
 msgid "Alias of the repo name"
 msgstr ""
 
@@ -392,7 +392,7 @@ msgid "Modify repository URL"
 msgstr ""
 
 #. add repo sub command remove
-#: ../apps/ll-cli/src/main.cpp:453 ../apps/ll-builder/src/main.cpp:967
+#: ../apps/ll-cli/src/main.cpp:453 ../apps/ll-builder/src/main.cpp:971
 msgid "Remove a repository"
 msgstr ""
 
@@ -403,7 +403,7 @@ msgstr ""
 #. add repo sub command update
 #. TODO: add --repo and --url options
 #. add repo sub command update
-#: ../apps/ll-cli/src/main.cpp:461 ../apps/ll-builder/src/main.cpp:975
+#: ../apps/ll-cli/src/main.cpp:461 ../apps/ll-builder/src/main.cpp:979
 msgid "Update the repository URL"
 msgstr ""
 
@@ -411,7 +411,7 @@ msgstr ""
 msgid "Usage: ll-cli repo update [OPTIONS] NAME URL"
 msgstr ""
 
-#: ../apps/ll-cli/src/main.cpp:472 ../apps/ll-builder/src/main.cpp:987
+#: ../apps/ll-cli/src/main.cpp:472 ../apps/ll-builder/src/main.cpp:991
 msgid "Set a default repository name"
 msgstr ""
 
@@ -420,7 +420,7 @@ msgid "Usage: ll-cli repo set-default [OPTIONS] NAME"
 msgstr ""
 
 #. add repo sub command show
-#: ../apps/ll-cli/src/main.cpp:479 ../apps/ll-builder/src/main.cpp:1013
+#: ../apps/ll-cli/src/main.cpp:479 ../apps/ll-builder/src/main.cpp:1017
 msgid "Show repository information"
 msgstr ""
 
@@ -440,7 +440,7 @@ msgstr ""
 msgid "Priority of the repo"
 msgstr ""
 
-#: ../apps/ll-cli/src/main.cpp:494 ../apps/ll-builder/src/main.cpp:996
+#: ../apps/ll-cli/src/main.cpp:494 ../apps/ll-builder/src/main.cpp:1000
 msgid "Enable mirror for the repo"
 msgstr ""
 
@@ -448,7 +448,7 @@ msgstr ""
 msgid "Usage: ll-cli repo enable-mirror [OPTIONS] ALIAS"
 msgstr ""
 
-#: ../apps/ll-cli/src/main.cpp:501 ../apps/ll-builder/src/main.cpp:1005
+#: ../apps/ll-cli/src/main.cpp:501 ../apps/ll-builder/src/main.cpp:1009
 msgid "Disable mirror for the repo"
 msgstr ""
 
@@ -522,11 +522,11 @@ msgid ""
 "A CLI program to run application and manage application and runtime\n"
 msgstr ""
 
-#: ../apps/ll-cli/src/main.cpp:638 ../apps/ll-builder/src/main.cpp:753
+#: ../apps/ll-cli/src/main.cpp:638 ../apps/ll-builder/src/main.cpp:754
 msgid "Print this help message and exit"
 msgstr ""
 
-#: ../apps/ll-cli/src/main.cpp:639 ../apps/ll-builder/src/main.cpp:754
+#: ../apps/ll-cli/src/main.cpp:639 ../apps/ll-builder/src/main.cpp:755
 msgid "Expand all help"
 msgstr ""
 
@@ -542,7 +542,7 @@ msgid ""
 msgstr ""
 
 #. version flag
-#: ../apps/ll-cli/src/main.cpp:648 ../apps/ll-builder/src/main.cpp:778
+#: ../apps/ll-cli/src/main.cpp:648 ../apps/ll-builder/src/main.cpp:779
 msgid "Show version"
 msgstr ""
 
@@ -662,259 +662,263 @@ msgstr ""
 msgid "New"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:751
+#: ../apps/ll-builder/src/main.cpp:752
 msgid ""
 "linyaps builder CLI \n"
 "A CLI program to build linyaps application\n"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:756
+#: ../apps/ll-builder/src/main.cpp:757
 msgid "Usage: ll-builder [OPTIONS] [SUBCOMMAND]"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:758
+#: ../apps/ll-builder/src/main.cpp:759
 msgid ""
 "If you found any problems during use\n"
 "You can report bugs to the linyaps team under this project: https://github."
 "com/OpenAtom-Linyaps/linyaps/issues"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:782
+#: ../apps/ll-builder/src/main.cpp:783
 msgid "Create linyaps build template project"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:783
+#: ../apps/ll-builder/src/main.cpp:784
 msgid "Usage: ll-builder create [OPTIONS] NAME"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:784
+#: ../apps/ll-builder/src/main.cpp:785
 msgid "Project name"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:792
+#: ../apps/ll-builder/src/main.cpp:793
 msgid "Build a linyaps project"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:793
+#: ../apps/ll-builder/src/main.cpp:794
 msgid "Usage: ll-builder build [OPTIONS] [COMMAND...]"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:794 ../apps/ll-builder/src/main.cpp:835
-#: ../apps/ll-builder/src/main.cpp:862 ../apps/ll-builder/src/main.cpp:908
+#: ../apps/ll-builder/src/main.cpp:795 ../apps/ll-builder/src/main.cpp:836
+#: ../apps/ll-builder/src/main.cpp:866 ../apps/ll-builder/src/main.cpp:912
 msgid "File path of the linglong.yaml"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:800
+#: ../apps/ll-builder/src/main.cpp:801
 msgid "Enter the container to execute command instead of building applications"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:803
+#: ../apps/ll-builder/src/main.cpp:804
 msgid ""
 "Only use local files. This implies --skip-fetch-source and --skip-pull-"
 "depend will be set"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:808
+#: ../apps/ll-builder/src/main.cpp:809
 msgid "Build full develop packages, runtime requires"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:812
+#: ../apps/ll-builder/src/main.cpp:813
 msgid "Skip fetch sources"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:815
+#: ../apps/ll-builder/src/main.cpp:816
 msgid "Skip pull dependency"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:818
+#: ../apps/ll-builder/src/main.cpp:819
 msgid "Skip run container"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:821
+#: ../apps/ll-builder/src/main.cpp:822
 msgid "Skip commit build output"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:824
+#: ../apps/ll-builder/src/main.cpp:825
 msgid "Skip output check"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:827
+#: ../apps/ll-builder/src/main.cpp:828
 msgid "Skip strip debug symbols"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:830
+#: ../apps/ll-builder/src/main.cpp:831
 msgid "Build in an isolated network environment"
 msgstr ""
 
 #. add builder run
-#: ../apps/ll-builder/src/main.cpp:833
+#: ../apps/ll-builder/src/main.cpp:834
 msgid "Run built linyaps app"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:834
+#: ../apps/ll-builder/src/main.cpp:835
 msgid "Usage: ll-builder run [OPTIONS] [COMMAND...]"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:841
+#: ../apps/ll-builder/src/main.cpp:842
 msgid "Run specified module. eg: --modules binary,develop"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:847
+#: ../apps/ll-builder/src/main.cpp:848
 msgid "Enter the container to execute command instead of running application"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:850
+#: ../apps/ll-builder/src/main.cpp:851
 msgid "Run in debug mode (enable develop module)"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:852
+#: ../apps/ll-builder/src/main.cpp:853
 msgid "List built linyaps app"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:853
+#: ../apps/ll-builder/src/main.cpp:854
 msgid "Usage: ll-builder list [OPTIONS]"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:854
+#: ../apps/ll-builder/src/main.cpp:855
 msgid "Remove built linyaps app"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:855
+#: ../apps/ll-builder/src/main.cpp:856
 msgid "Usage: ll-builder remove [OPTIONS] [APP...]"
 msgstr ""
 
-#. build export
 #: ../apps/ll-builder/src/main.cpp:859
+msgid "Do not clean objects files before remove apps"
+msgstr ""
+
+#. build export
+#: ../apps/ll-builder/src/main.cpp:863
 msgid "Export to linyaps layer or uab"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:860
+#: ../apps/ll-builder/src/main.cpp:864
 msgid "Usage: ll-builder export [OPTIONS]"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:872
+#: ../apps/ll-builder/src/main.cpp:876
 msgid "Uab icon (optional)"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:877
+#: ../apps/ll-builder/src/main.cpp:881
 msgid "Export to linyaps layer file (deprecated)"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:880
+#: ../apps/ll-builder/src/main.cpp:884
 msgid "Use custom loader"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:887
+#: ../apps/ll-builder/src/main.cpp:891
 msgid "Don't export the develop module"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:889
+#: ../apps/ll-builder/src/main.cpp:893
 msgid "Output file"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:893
+#: ../apps/ll-builder/src/main.cpp:897
 msgid "Reference of the package"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:898
+#: ../apps/ll-builder/src/main.cpp:902
 msgid "Modules to export"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:906
+#: ../apps/ll-builder/src/main.cpp:910
 msgid "Push linyaps app to remote repo"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:907
+#: ../apps/ll-builder/src/main.cpp:911
 msgid "Usage: ll-builder push [OPTIONS]"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:911
+#: ../apps/ll-builder/src/main.cpp:915
 msgid "Remote repo url"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:914
+#: ../apps/ll-builder/src/main.cpp:918
 msgid "Remote repo name"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:917
+#: ../apps/ll-builder/src/main.cpp:921
 msgid "Push single module"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:921
+#: ../apps/ll-builder/src/main.cpp:925
 msgid "Import linyaps layer to build repo"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:922
+#: ../apps/ll-builder/src/main.cpp:926
 msgid "Usage: ll-builder import [OPTIONS] LAYER"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:923 ../apps/ll-builder/src/main.cpp:940
+#: ../apps/ll-builder/src/main.cpp:927 ../apps/ll-builder/src/main.cpp:944
 msgid "Layer file path"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:930
+#: ../apps/ll-builder/src/main.cpp:934
 msgid "Import linyaps layer dir to build repo"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:932
+#: ../apps/ll-builder/src/main.cpp:936
 msgid "Usage: ll-builder import-dir PATH"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:933
+#: ../apps/ll-builder/src/main.cpp:937
 msgid "Layer dir path"
 msgstr ""
 
 #. add build extract
-#: ../apps/ll-builder/src/main.cpp:938
+#: ../apps/ll-builder/src/main.cpp:942
 msgid "Extract linyaps layer to dir"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:939
+#: ../apps/ll-builder/src/main.cpp:943
 msgid "Usage: ll-builder extract [OPTIONS] LAYER DIR"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:943
+#: ../apps/ll-builder/src/main.cpp:947
 msgid "Destination directory"
 msgstr ""
 
 #. add build repo
-#: ../apps/ll-builder/src/main.cpp:948
+#: ../apps/ll-builder/src/main.cpp:952
 msgid "Display and manage repositories"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:949
+#: ../apps/ll-builder/src/main.cpp:953
 msgid "Usage: ll-builder repo [OPTIONS] SUBCOMMAND"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:954
+#: ../apps/ll-builder/src/main.cpp:958
 msgid "Usage: ll-builder repo add [OPTIONS] NAME URL"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:968
+#: ../apps/ll-builder/src/main.cpp:972
 msgid "Usage: ll-builder repo remove [OPTIONS] NAME"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:976
+#: ../apps/ll-builder/src/main.cpp:980
 msgid "Usage: ll-builder repo update [OPTIONS] NAME URL"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:988
+#: ../apps/ll-builder/src/main.cpp:992
 msgid "Usage: ll-builder repo set-default [OPTIONS] NAME"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:997
+#: ../apps/ll-builder/src/main.cpp:1001
 msgid "Usage: ll-builder repo enable-mirror [OPTIONS] ALIAS"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:1006
+#: ../apps/ll-builder/src/main.cpp:1010
 msgid "Usage: ll-builder repo disable-mirror [OPTIONS] ALIAS"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:1014
+#: ../apps/ll-builder/src/main.cpp:1018
 msgid "Usage: ll-builder repo show [OPTIONS]"
 msgstr ""
 
-#: ../apps/ll-builder/src/main.cpp:1019
+#: ../apps/ll-builder/src/main.cpp:1023
 msgid "linyaps build tool version "
 msgstr ""
 

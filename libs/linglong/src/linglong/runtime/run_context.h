@@ -11,6 +11,7 @@
 #include "linglong/api/types/v1/ExtensionDefine.hpp"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/repo/ostree_repo.h"
+#include "linglong/runtime/security_context.h"
 #include "linglong/utils/error/error.h"
 
 #include <filesystem>
@@ -29,8 +30,9 @@ public:
     using ExtensionRuntimeLayerInfo =
       std::pair<api::types::v1::ExtensionDefine, std::reference_wrapper<RuntimeLayer>>;
 
-    utils::error::Result<void> resolveLayer(
-      const QStringList &modules = {}, const std::optional<std::string> &subRef = std::nullopt);
+    utils::error::Result<void>
+    resolveLayer(const std::vector<std::string> &modules = {},
+                 const std::optional<std::string> &subRef = std::nullopt);
 
     utils::error::Result<api::types::v1::RepositoryCacheLayersItem> getCachedItem();
 
@@ -54,9 +56,10 @@ private:
 struct ResolveOptions
 {
     bool depsBinaryOnly{ false };
-    std::optional<QStringList> appModules;
+    std::optional<std::vector<std::string>> appModules;
     std::optional<std::string> baseRef;
     std::optional<std::string> runtimeRef;
+    std::optional<std::string> extensionRef;
 };
 
 class RunContext
@@ -73,7 +76,7 @@ public:
                                        const ResolveOptions &opts = ResolveOptions{});
 
     utils::error::Result<void> resolve(const api::types::v1::BuilderProject &target,
-                                       std::filesystem::path buildOutput);
+                                       const std::filesystem::path &buildOutput);
 
     utils::error::Result<void> fillContextCfg(generator::ContainerCfgBuilder &builder);
     api::types::v1::ContainerProcessStateInfo stateInfo();
@@ -86,6 +89,8 @@ public:
 
     const std::optional<RuntimeLayer> &getRuntimeLayer() const { return runtimeLayer; }
 
+    void enableSecurityContext(const std::vector<SecurityContextType> &ctxs);
+
     const std::optional<RuntimeLayer> &getAppLayer() const { return appLayer; }
 
     utils::error::Result<std::filesystem::path> getBaseLayerPath() const;
@@ -96,12 +101,14 @@ public:
     bool hasRuntime() const { return !!runtimeLayer; }
 
 private:
-    utils::error::Result<void> resolveLayer(bool depsBinaryOnly, const QStringList &appModules);
+    utils::error::Result<void> resolveLayer(bool depsBinaryOnly,
+                                            const std::vector<std::string> &appModules);
     utils::error::Result<void> resolveExtension(RuntimeLayer &layer);
     utils::error::Result<void> fillExtraAppMounts(generator::ContainerCfgBuilder &builder);
+    void detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept;
 
     repo::OSTreeRepo &repo;
-
+    std::unordered_map<SecurityContextType, std::unique_ptr<SecurityContext>> securityContexts;
     std::optional<RuntimeLayer> baseLayer;
     std::optional<RuntimeLayer> runtimeLayer;
     std::optional<RuntimeLayer> appLayer;

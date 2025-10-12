@@ -18,6 +18,7 @@
 #include "linglong/utils/gettext.h"
 #include "linglong/utils/global/initialize.h"
 #include "linglong/utils/log/log.h"
+#include "linglong/utils/namespace.h"
 #include "linglong/utils/serialize/yaml.h"
 #include "ocppi/cli/crun/Crun.hpp"
 
@@ -86,7 +87,11 @@ void initDefaultBuildConfig()
     linglong::api::types::v1::BuilderConfig config;
     config.version = 1;
     config.repo = cacheLocation.filePath("linglong-builder").toStdString();
-    linglong::builder::saveConfig(config, configFilePath);
+    auto ret = linglong::builder::saveConfig(config, configFilePath);
+    if (!ret) {
+        qCritical() << "failed to save default build config file" << configFilePath << ":"
+                    << ret.error();
+    }
 }
 
 std::string validateNonEmptyString(const std::string &parameter)
@@ -107,8 +112,7 @@ parseProjectConfig(const std::filesystem::path &filename)
     if (!project) {
         return project;
     }
-    auto version =
-      linglong::package::VersionV1::parse(QString::fromStdString(project->package.version));
+    auto version = linglong::package::VersionV1::parse(project->package.version);
     if (!version || !version->tweak) {
         return LINGLONG_ERR("Please ensure the package.version number has three parts formatted as "
                             "'MAJOR.MINOR.PATCH.TWEAK'");
@@ -159,23 +163,20 @@ getProjectYAMLPath(const std::filesystem::path &projectDir, const std::string &u
     if (!usePath.empty()) {
         std::filesystem::path path = std::filesystem::canonical(usePath, ec);
         if (ec) {
-            return LINGLONG_ERR(QString("invalid file path %1 error: %2")
-                                  .arg(usePath.c_str())
-                                  .arg(ec.message().c_str()));
+            return LINGLONG_ERR(
+              fmt::format("invalid file path {} error: {}", usePath, ec.message()));
         }
         return path;
     }
 
     auto arch = linglong::package::Architecture::currentCPUArchitecture();
     if (arch && *arch != linglong::package::Architecture()) {
-        std::filesystem::path path =
-          projectDir / ("linglong." + arch->toString().toStdString() + ".yaml");
+        std::filesystem::path path = projectDir / ("linglong." + arch->toStdString() + ".yaml");
         if (std::filesystem::exists(path, ec)) {
             return path;
         }
         if (ec) {
-            return LINGLONG_ERR(
-              QString("path %1 error: %2").arg(path.c_str()).arg(ec.message().c_str()));
+            return LINGLONG_ERR(fmt::format("path {} error: {}", path, ec.message()));
         }
     }
 
@@ -184,8 +185,7 @@ getProjectYAMLPath(const std::filesystem::path &projectDir, const std::string &u
         return path;
     }
     if (ec) {
-        return LINGLONG_ERR(
-          QString("path %1 error: %2").arg(path.c_str()).arg(ec.message().c_str()));
+        return LINGLONG_ERR(fmt::format("path {} error: {}", path, ec.message()));
     }
 
     return LINGLONG_ERR("project yaml file not found");
@@ -287,33 +287,27 @@ int handleBuild(linglong::builder::Builder &builder, const BuildCommandOptions &
 
 int handleRun(linglong::builder::Builder &builder, const RunCommandOptions &options)
 {
-    qInfo() << "Handling run command";
+    LogI("Handling run command");
 
-    QStringList modules = { "binary" };
+    std::vector<std::string> modules = { "binary" };
     if (options.debugMode) {
-        modules.push_back("develop");
+        modules.emplace_back("develop");
     }
     if (!options.execModules.empty()) {
-        for (const std::string &module : options.execModules) {
-            modules.append(QString::fromStdString(module));
-        }
-    }
-    modules.removeDuplicates(); // Ensure modules are unique
-
-    QStringList commandList;
-    if (!options.commands.empty()) {
-        for (const auto &command : options.commands) {
-            commandList.append(QString::fromStdString(command));
+        for (const auto &module : options.execModules) {
+            if (std::find(modules.begin(), modules.end(), module) == modules.end()) {
+                modules.emplace_back(module);
+            }
         }
     }
 
-    auto result = builder.run(modules, commandList, options.debugMode);
+    auto result = builder.run(modules, options.commands, options.debugMode);
     if (!result) {
-        qCritical() << "Run failed: " << result.error();
+        LogE("Run failed: {}", result.error());
         return result.error().code();
     }
 
-    qInfo() << "Run completed successfully.";
+    LogI("Run completed successfully.");
     return 0;
 }
 
@@ -1023,6 +1017,28 @@ You can report bugs to the linyaps team under this project: https://github.com/O
         return 0;
     }
 
+    // build command need run in namespace because:
+    // 1. fuse-overlayfs should run in new user_namespaces and
+    // run with CAP_DAC_OVERRIDE capbilities.
+    // 2. mount needs CAP_SYS_ADMIN capbilities in the
+    // user_namespaces associated with current mount_namespaces,
+    if (buildBuilder->parsed()) {
+        auto res = linglong::utils::needRunInNamespace();
+        if (!res) {
+            LogE("failed to check need run in namespace {}", res.error());
+            return -1;
+        }
+
+        if (*res) {
+            auto res = linglong::utils::runInNamespace(argc, argv);
+            if (!res) {
+                LogE("failed to run in namespace {}", res.error());
+                return -1;
+            }
+            return *res;
+        }
+    }
+
     if (buildCreate->parsed()) {
         return handleCreate(createOpts);
     }
@@ -1145,7 +1161,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     }
 
     linglong::builder::Builder builder(std::move(project),
-                                       QDir(cwd.c_str()),
+                                       cwd,
                                        repo,
                                        *containerBuilder,
                                        *builderCfg);

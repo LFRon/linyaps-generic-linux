@@ -9,6 +9,8 @@
 #include "configure.h"
 #include "linglong/api/types/v1/Generators.hpp"
 #include "linglong/api/types/v1/OciConfigurationPatch.hpp"
+#include "linglong/common/display.h"
+#include "linglong/common/xdg.h"
 #include "ocppi/runtime/config/types/Generators.hpp"
 #include "sha256.h"
 
@@ -31,6 +33,7 @@ namespace linglong::generator {
 
 using string_list = std::vector<std::string>;
 
+using ocppi::runtime::config::types::Capabilities;
 using ocppi::runtime::config::types::Config;
 using ocppi::runtime::config::types::Hook;
 using ocppi::runtime::config::types::Hooks;
@@ -42,6 +45,7 @@ using ocppi::runtime::config::types::Process;
 using ocppi::runtime::config::types::RootfsPropagation;
 
 namespace {
+
 bool bindIfExist(std::vector<Mount> &mounts,
                  std::filesystem::path source,
                  std::string destination = "",
@@ -81,6 +85,9 @@ ContainerCfgBuilder &ContainerCfgBuilder::setAnnotation(ANNOTATION key, std::str
     case ANNOTATION::LAST_PID:
         config.annotations->insert_or_assign("cn.org.linyaps.runtime.ns_last_pid",
                                              std::move(value));
+        break;
+    case ANNOTATION::WAYLAND_SOCKET:
+        config.annotations->insert_or_assign("cn.org.linyaps.runtime.ws.path", std::move(value));
         break;
     default:
         break;
@@ -127,6 +134,7 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindDefault() noexcept
     bindProc();
     bindDev();
     bindTmp();
+    bindRun();
 
     return *this;
 }
@@ -219,26 +227,56 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindCgroup() noexcept
 
 ContainerCfgBuilder &ContainerCfgBuilder::bindRun() noexcept
 {
-    std::string containerXDGRuntimeDir = std::string("/run/user/") + std::to_string(::getuid());
-
-    runMount = {
-        Mount{ .destination = "/run",
-               .options = string_list{ "nosuid", "strictatime", "mode=0755", "size=65536k" },
-               .source = "tmpfs",
-               .type = "tmpfs" },
-        Mount{ .destination = "/run/user",
-               .options = string_list{ "nodev", "nosuid", "mode=700" },
-               .source = "tmpfs",
-               .type = "tmpfs" },
-        Mount{ .destination = containerXDGRuntimeDir,
-               .options = string_list{ "nodev", "nosuid", "mode=700" },
-               .source = "tmpfs",
-               .type = "tmpfs" },
-    };
-
-    environment["XDG_RUNTIME_DIR"] = containerXDGRuntimeDir;
+    runMount = { Mount{ .destination = "/run",
+                        .options = string_list{ "nosuid", "nodev", "mode=0755", "size=65536k" },
+                        .source = "tmpfs",
+                        .type = "tmpfs" } };
 
     return *this;
+}
+
+ContainerCfgBuilder &ContainerCfgBuilder::bindXDGRuntime() noexcept
+{
+    containerXDGRuntimeDir = std::filesystem::path{ "/run/user" } / std::to_string(::geteuid());
+
+    return *this;
+}
+
+bool ContainerCfgBuilder::buildXDGRuntime() noexcept
+{
+    if (!containerXDGRuntimeDir) {
+        return true;
+    }
+
+    if (!runMount) {
+        error_.reason = "/run is not bind";
+        error_.code = BUILD_XDGRUNTIME_ERROR;
+        return false;
+    }
+
+    auto hostXDGRuntimeMountPoint = common::xdg::getAppXDGRuntimeDir(appId);
+    std::error_code ec;
+    std::filesystem::create_directories(hostXDGRuntimeMountPoint, ec);
+    if (ec) {
+        error_.reason = "failed to create directories for container XDG_RUNTIME_DIR";
+        error_.code = BUILD_XDGRUNTIME_ERROR;
+        return false;
+    }
+
+    std::filesystem::permissions(hostXDGRuntimeMountPoint, std::filesystem::perms::owner_all, ec);
+    if (ec) {
+        error_.reason = "failed to set permissions for container XDG_RUNTIME_DIR";
+        error_.code = BUILD_XDGRUNTIME_ERROR;
+        return false;
+    }
+
+    runMount->emplace_back(Mount{ .destination = *containerXDGRuntimeDir,
+                                  .options = string_list{ "bind" },
+                                  .source = hostXDGRuntimeMountPoint,
+                                  .type = "bind" });
+    environment["XDG_RUNTIME_DIR"] = *containerXDGRuntimeDir;
+
+    return true;
 }
 
 ContainerCfgBuilder &ContainerCfgBuilder::bindTmp() noexcept
@@ -249,6 +287,8 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindTmp() noexcept
         .source = "/tmp",
         .type = "bind",
     };
+
+    isolateTmp = false;
 
     return *this;
 }
@@ -321,7 +361,6 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindRemovableStorageMounts() noexcept
 ContainerCfgBuilder &ContainerCfgBuilder::forwardDefaultEnv() noexcept
 {
     return forwardEnv(std::vector<std::string>{
-      "DISPLAY",
       "LANG",
       "LANGUAGE",
       "XDG_SESSION_DESKTOP",
@@ -333,21 +372,19 @@ ContainerCfgBuilder &ContainerCfgBuilder::forwardDefaultEnv() noexcept
       "XDG_CURRENT_DESKTOP",
       "XIM",
       "XDG_SESSION_TYPE",
-      "XDG_RUNTIME_DIR",
       "CLUTTER_IM_MODULE",
       "QT4_IM_MODULE",
       "GTK_IM_MODULE",
       "all_proxy",
-      "auto_proxy",      // 网络系统代理自动代理
-      "http_proxy",      // 网络系统代理手动http代理
-      "https_proxy",     // 网络系统代理手动https代理
-      "ftp_proxy",       // 网络系统代理手动ftp代理
-      "SOCKS_SERVER",    // 网络系统代理手动socks代理
-      "no_proxy",        // 网络系统代理手动配置代理
-      "USER",            // wine应用会读取此环境变量
-      "QT_IM_MODULE",    // 输入法
-      "LINGLONG_ROOT",   // 玲珑安装位置
-      "WAYLAND_DISPLAY", // 导入wayland相关环境变量
+      "auto_proxy",    // 网络系统代理自动代理
+      "http_proxy",    // 网络系统代理手动http代理
+      "https_proxy",   // 网络系统代理手动https代理
+      "ftp_proxy",     // 网络系统代理手动ftp代理
+      "SOCKS_SERVER",  // 网络系统代理手动socks代理
+      "no_proxy",      // 网络系统代理手动配置代理
+      "USER",          // wine应用会读取此环境变量
+      "QT_IM_MODULE",  // 输入法
+      "LINGLONG_ROOT", // 玲珑安装位置
       "QT_QPA_PLATFORM",
       "QT_WAYLAND_SHELL_INTEGRATION",
       "GDMSESSION",
@@ -618,19 +655,27 @@ bool ContainerCfgBuilder::prepare() noexcept
     config.hostname = "linglong";
 
     auto linux_ = ocppi::runtime::config::types::Linux{};
-    linux_.rootfsPropagation = RootfsPropagation::Slave;
     linux_.namespaces = std::vector<NamespaceReference>{
         NamespaceReference{ .type = NamespaceType::Pid },
         NamespaceReference{ .type = NamespaceType::Mount },
         NamespaceReference{ .type = NamespaceType::Uts },
-        NamespaceReference{ .type = NamespaceType::User },
     };
+    if (!disableUserNamespaceEnabled) {
+        linux_.namespaces->push_back(NamespaceReference{ .type = NamespaceType::User });
+    }
     if (isolateNetWorkEnabled) {
         linux_.namespaces->push_back(NamespaceReference{ .type = NamespaceType::Network });
     }
     config.linux_ = std::move(linux_);
 
     auto process = Process{ .args = string_list{ "bash" }, .cwd = "/" };
+    if (capabilities) {
+        process.capabilities = Capabilities{
+            .bounding = capabilities,
+            .effective = capabilities,
+            .permitted = capabilities,
+        };
+    }
     config.process = std::move(process);
 
     config.root = { .path = basePath, .readonly = basePathRo };
@@ -644,6 +689,12 @@ bool ContainerCfgBuilder::buildIdMappings() noexcept
     config.linux_->gidMappings = std::move(gidMappings);
 
     return true;
+}
+
+ContainerCfgBuilder &ContainerCfgBuilder::setContainerId(std::string containerId) noexcept
+{
+    this->containerId = std::move(containerId);
+    return *this;
 }
 
 bool ContainerCfgBuilder::buildMountRuntime() noexcept
@@ -951,19 +1002,91 @@ bool ContainerCfgBuilder::buildPrivateMapped() noexcept
     return true;
 }
 
+ContainerCfgBuilder &
+ContainerCfgBuilder::bindXOrgSocket(const std::filesystem::path &socket) noexcept
+{
+    xOrgSocket = socket;
+    return *this;
+}
+
+ContainerCfgBuilder &
+ContainerCfgBuilder::bindXAuthFile(const std::filesystem::path &authFile) noexcept
+{
+    xAuthFile = authFile;
+    return *this;
+}
+
+ContainerCfgBuilder &
+ContainerCfgBuilder::bindWaylandSocket(const std::filesystem::path &socket) noexcept
+{
+    waylandSocket = socket;
+    return *this;
+}
+
+bool ContainerCfgBuilder::buildDisplaySystem() noexcept
+{
+    displayMount = std::vector<Mount>{};
+
+    if (xOrgSocket) {
+        if (!xOrgSocket->empty()) {
+            displayMount->emplace_back(
+              Mount{ .destination = "/tmp/.X11-unix",
+                     .options = string_list{ "nodev", "nosuid", "mode=700" },
+                     .source = "tmpfs",
+                     .type = "tmpfs" });
+            displayMount->emplace_back(Mount{ .destination = "/tmp/.X11-unix/X0",
+                                              .options = string_list{ "bind" },
+                                              .source = xOrgSocket.value(),
+                                              .type = "bind" });
+            environment["DISPLAY"] = ":0";
+        } else {
+            // remote display, use env DISPLAY from host
+            if (auto *display = ::getenv("DISPLAY"); display != nullptr) {
+                environment["DISPLAY"] = display;
+            }
+        }
+    }
+
+    if (xAuthFile) {
+        if (!runMount) {
+            error_.reason = "must enable run mount first";
+            error_.code = BUILD_PARAM_ERROR;
+            return false;
+        }
+
+        auto xAuthPath = "/run/linglong/Xauthority";
+        displayMount->emplace_back(Mount{ .destination = xAuthPath,
+                                          .options = string_list{ "bind" },
+                                          .source = xAuthFile.value(),
+                                          .type = "bind" });
+        environment["XAUTHORITY"] = xAuthPath;
+    }
+
+    if (waylandSocket) {
+        auto waylandSocketPath = containerXDGRuntimeDir
+          ? (*containerXDGRuntimeDir / "wayland-0")
+          : std::filesystem::path{ "/run/linglong/wayland-0" };
+        displayMount->emplace_back(Mount{ .destination = waylandSocketPath,
+                                          .options = string_list{ "bind" },
+                                          .source = waylandSocket.value(),
+                                          .type = "bind" });
+        environment["WAYLAND_DISPLAY"] = waylandSocketPath;
+    }
+
+    return true;
+}
+
 bool ContainerCfgBuilder::buildMountIPC() noexcept
 {
     if (!ipcMount) {
         return true;
     }
 
-    if (!runMount) {
-        error_.reason = "/run is not bind";
+    if (!containerXDGRuntimeDir) {
+        error_.reason = "must enable xdg runtime mount first";
         error_.code = BUILD_MOUNT_IPC_ERROR;
         return false;
     }
-
-    bindIfExist(*ipcMount, "/tmp/.X11-unix", "", false);
 
     // TODO 应该参考规范文档实现更完善的地址解析支持
     // https://dbus.freedesktop.org/doc/dbus-specification.html#addresses
@@ -1006,80 +1129,39 @@ bool ContainerCfgBuilder::buildMountIPC() noexcept
     }();
 
     [this]() {
-        auto *XDGRuntimeDirEnv = getenv("XDG_RUNTIME_DIR"); // NOLINT
-        if (XDGRuntimeDirEnv == nullptr) {
-            return;
-        }
-
-        auto hostXDGRuntimeDir = std::filesystem::path{ XDGRuntimeDirEnv };
-        auto status = std::filesystem::status(hostXDGRuntimeDir);
-        using perm = std::filesystem::perms;
-        if (status.permissions() != perm::owner_all) {
-            std::cerr << "The Unix permission of " << hostXDGRuntimeDir << "must be 0700."
-                      << std::endl;
-            return;
-        }
-
-        struct stat64 buf;
-        if (::stat64(hostXDGRuntimeDir.string().c_str(), &buf) != 0) {
-            std::cerr << "Failed to get state of " << hostXDGRuntimeDir << ": " << ::strerror(errno)
-                      << std::endl;
-            return;
-        }
-
-        if (buf.st_uid != ::getuid()) {
-            std::cerr << hostXDGRuntimeDir << " doesn't belong to current user." << std::endl;
-            return;
-        }
-
-        auto cognitiveXDGRuntimeDir = std::filesystem::path{ environment["XDG_RUNTIME_DIR"] };
+        auto hostXDGRuntimeDir = common::xdg::getXDGRuntimeDir();
 
         bindIfExist(*ipcMount,
                     hostXDGRuntimeDir / "pulse",
-                    (cognitiveXDGRuntimeDir / "pulse").string(),
+                    (*containerXDGRuntimeDir / "pulse").string(),
                     false);
         bindIfExist(*ipcMount,
                     hostXDGRuntimeDir / "gvfs",
-                    (cognitiveXDGRuntimeDir / "gvfs").string(),
+                    (*containerXDGRuntimeDir / "gvfs").string(),
                     false);
-
-        [this, &hostXDGRuntimeDir, &cognitiveXDGRuntimeDir]() {
-            auto *waylandDisplayEnv = getenv("WAYLAND_DISPLAY"); // NOLINT
-            if (waylandDisplayEnv == nullptr) {
-                return;
-            }
-
-            auto socketPath = std::filesystem::path(hostXDGRuntimeDir) / waylandDisplayEnv;
-            std::error_code ec;
-            if (!std::filesystem::exists(socketPath, ec)) {
-                return;
-            }
-            ipcMount->emplace_back(ocppi::runtime::config::types::Mount{
-              .destination = cognitiveXDGRuntimeDir / waylandDisplayEnv,
-              .options = string_list{ "rbind" },
-              .source = socketPath,
-              .type = "bind" });
-        }();
 
         // TODO 应该参考规范文档实现更完善的地址解析支持
         // https://dbus.freedesktop.org/doc/dbus-specification.html#addresses
-        [this, &cognitiveXDGRuntimeDir]() {
+        [this]() {
             std::string sessionBusEnv;
-            if (auto cStr = std::getenv("DBUS_SESSION_BUS_ADDRESS"); cStr != nullptr) {
+            if (auto cStr = ::getenv("DBUS_SESSION_BUS_ADDRESS"); cStr != nullptr) {
                 sessionBusEnv = cStr;
             }
+
             if (sessionBusEnv.empty()) {
                 std::cerr << "Couldn't get DBUS_SESSION_BUS_ADDRESS" << std::endl;
                 return;
             }
+
             // address 可能是 unix:path=/xxxx,giud=xxx 这种格式
             // 所以先将options部分提取出来，挂载时不需要关心
             std::string options;
-            auto optionsPos = sessionBusEnv.find(",");
+            auto optionsPos = sessionBusEnv.find(',');
             if (optionsPos != std::string::npos) {
                 options = sessionBusEnv.substr(optionsPos);
                 sessionBusEnv.resize(optionsPos);
             }
+
             auto sessionBus = std::string_view{ sessionBusEnv };
             auto suffix = std::string_view{ "unix:path=" };
             if (sessionBus.rfind(suffix, 0) != 0U) {
@@ -1093,64 +1175,31 @@ bool ContainerCfgBuilder::buildMountIPC() noexcept
                 return;
             }
 
-            auto cognitiveSessionBus = cognitiveXDGRuntimeDir / "bus";
+            auto containerSessionBusAddress = *containerXDGRuntimeDir / "bus";
             ipcMount->emplace_back(ocppi::runtime::config::types::Mount{
-              .destination = cognitiveSessionBus,
+              .destination = containerSessionBusAddress.string(),
               .options = string_list{ "rbind" },
               .source = socketPath,
               .type = "bind",
             });
             // 将提取的options再拼到容器中的环境变量
             environment["DBUS_SESSION_BUS_ADDRESS"] =
-              "unix:path=" + cognitiveSessionBus.string() + options;
+              "unix:path=" + containerSessionBusAddress.string() + options;
         }();
 
-        [this, &hostXDGRuntimeDir, &cognitiveXDGRuntimeDir]() {
+        [this, &hostXDGRuntimeDir]() {
             auto dconfPath = std::filesystem::path(hostXDGRuntimeDir) / "dconf";
             if (!std::filesystem::exists(dconfPath)) {
                 std::cerr << "dconf directory not found at " << dconfPath << "." << std::endl;
                 return;
             }
             ipcMount->emplace_back(ocppi::runtime::config::types::Mount{
-              .destination = cognitiveXDGRuntimeDir / "dconf",
+              .destination = *containerXDGRuntimeDir / "dconf",
               .options = string_list{ "rbind" },
               .source = dconfPath.string(),
               .type = "bind",
             });
         }();
-    }();
-
-    [this]() mutable {
-        if (!homePath) {
-            return;
-        }
-
-        auto hostXauthFile = *homePath / ".Xauthority";
-        auto cognitiveXauthFile = homePath->string() + "/.Xauthority";
-
-        auto *xauthFileEnv = ::getenv("XAUTHORITY"); // NOLINT
-        std::error_code ec;
-        if (xauthFileEnv != nullptr && std::filesystem::exists(xauthFileEnv, ec)) {
-            hostXauthFile = std::filesystem::path{ xauthFileEnv };
-        }
-
-        if (!std::filesystem::exists(hostXauthFile, ec)) {
-            if (ec) {
-                std::cerr << "failed to check XAUTHORITY file " << hostXauthFile << ":"
-                          << ec.message() << std::endl;
-                return;
-            }
-
-            std::cerr << "XAUTHORITY file not found at " << hostXauthFile << ":" << ec.message()
-                      << std::endl;
-            return;
-        }
-
-        ipcMount->emplace_back(Mount{ .destination = cognitiveXauthFile,
-                                      .options = string_list{ "rbind" },
-                                      .source = hostXauthFile,
-                                      .type = "bind" });
-        environment["XAUTHORITY"] = cognitiveXauthFile;
     }();
 
     return true;
@@ -1218,8 +1267,13 @@ bool ContainerCfgBuilder::buildMountLocalTime() noexcept
                                             .type = "bind" });
     }
 
-    bindIfExist(*localtimeMount, "/usr/share/zoneinfo");
-    bindIfExist(*localtimeMount, "/etc/timezone");
+    auto *tzdir_env = getenv("TZDIR");
+    if (tzdir_env != nullptr && tzdir_env[0] != '\0') {
+        bindIfExist(*localtimeMount, tzdir_env);
+    } else {
+        bindIfExist(*localtimeMount, "/usr/share/zoneinfo");
+        bindIfExist(*localtimeMount, "/etc/timezone");
+    }
 
     return true;
 }
@@ -1667,6 +1721,10 @@ bool ContainerCfgBuilder::mergeMount() noexcept
         std::move(homeMount->begin(), homeMount->end(), std::back_inserter(mounts));
     }
 
+    if (displayMount) {
+        std::move(displayMount->begin(), displayMount->end(), std::back_inserter(mounts));
+    }
+
     if (ipcMount) {
         std::move(ipcMount->begin(), ipcMount->end(), std::back_inserter(mounts));
     }
@@ -1915,7 +1973,14 @@ bool ContainerCfgBuilder::constructMountpointsTree() noexcept
         const auto &mount = mounts[i];
 
         std::filesystem::path destination = std::filesystem::path{ mount.destination };
-        if (destination.empty() || !destination.is_absolute()) {
+        if (destination.empty()) {
+            error_.reason = "empty mount destination is invalid, source is "
+              + mount.source.value_or("[no source]");
+            error_.code = BUILD_MOUNT_ERROR;
+            return false;
+        }
+
+        if (!destination.is_absolute()) {
             error_.reason = destination.string() + " as mount destination is invalid";
             error_.code = BUILD_MOUNT_ERROR;
             return false;
@@ -1957,8 +2022,8 @@ void ContainerCfgBuilder::tryFixMountpointsTree() noexcept
         node = nodesToProcess[idx++];
     } while (true);
 
-    // Traverse the nodes to be processed in reverse order to ensure child nodes are handled before
-    // their parent nodes.
+    // Traverse the nodes to be processed in reverse order to ensure child nodes are handled
+    // before their parent nodes.
     for (auto it = nodesToProcess.rbegin(); it != nodesToProcess.rend(); ++it) {
         std::filesystem::path fixPath;
         if (shouldFix(*it, fixPath)) {
@@ -2009,14 +2074,14 @@ bool ContainerCfgBuilder::selfAdjustingMount() noexcept
     mounts = std::move(config.mounts).value();
 
     // Some apps depends on files which doesn't exist in runtime layer or base layer, we have to
-    // mount host files to container, or create the file on demand, but the layer is readonly. We
-    // make a workaround by mount the suitable target's ancestor directory as tmpfs.
+    // mount host files to container, or create the file on demand, but the layer is readonly.
+    // We make a workaround by mount the suitable target's ancestor directory as tmpfs.
     if (!constructMountpointsTree()) {
         return false;
     }
 
-    // Remounting as tmpfs requires an alternate rootfs context to avoid obscuring underlying files,
-    // so adjust root and change root path to bundlePath/rootfs
+    // Remounting as tmpfs requires an alternate rootfs context to avoid obscuring underlying
+    // files, so adjust root and change root path to bundlePath/rootfs
     adjustNode(0, config.root->path, "");
     auto rootfs = bundlePath / "rootfs";
     std::error_code ec;
@@ -2060,11 +2125,19 @@ bool ContainerCfgBuilder::build() noexcept
         return false;
     }
 
+    if (!buildXDGRuntime()) {
+        return false;
+    }
+
     if (!buildPrivateDir() || !buildMountHome() || !buildPrivateMapped()) {
         return false;
     }
 
     if (!buildMountIPC() || !buildMountLocalTime() || !buildMountNetworkConf()) {
+        return false;
+    }
+
+    if (!buildDisplaySystem()) {
         return false;
     }
 

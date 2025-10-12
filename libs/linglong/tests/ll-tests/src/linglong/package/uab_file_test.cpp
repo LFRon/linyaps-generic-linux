@@ -2,10 +2,11 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "../mocks/uab_file_mock.h"
 #include "linglong/api/types/v1/Generators.hpp"
+#include "linglong/common/strings.h"
 #include "linglong/package/uab_file.h"
 #include "linglong/package/uab_packager.h"
 #include "linglong/utils/command/cmd.h"
@@ -23,43 +24,10 @@ using namespace linglong;
 
 namespace linglong::package {
 
-class MockUabFile : public package::UABFile
-{
-public:
-    MOCK_METHOD(utils::error::Result<void>, mkdirDir, (const std::string &path), (noexcept));
-    MOCK_METHOD(bool, isFileReadable, (const std::string &path), (const));
-    MOCK_METHOD(bool, checkCommandExists, (const std::string &command), (const));
-
-    explicit MockUabFile(const std::string &path)
-        : UABFile()
-    {
-        auto fd = ::open(path.c_str(), O_RDONLY);
-        EXPECT_NE(fd, -1) << "Failed to open uab file" << strerror(errno);
-        this->open(fd, QIODevice::ReadOnly, FileHandleFlag::AutoCloseHandle);
-        elf_version(EV_CURRENT);
-        auto *elf = elf_begin(fd, ELF_C_READ, nullptr);
-        this->UABFile::e = elf;
-        // 使用 lambda 表达式调用基类方法
-        ON_CALL(*this, checkCommandExists(testing::_))
-          .WillByDefault(testing::Invoke([this](const std::string &command) {
-              return this->UABFile::checkCommandExists(command);
-          }));
-        ON_CALL(*this, isFileReadable(testing::_))
-          .WillByDefault(testing::Invoke([this](const std::string &path) {
-              return this->UABFile::isFileReadable(path);
-          }));
-        ON_CALL(*this, mkdirDir(testing::_))
-          .WillByDefault(
-            testing::Invoke([this](const std::string &path) -> utils::error::Result<void> {
-                return this->UABFile::mkdirDir(path);
-            }));
-    }
-};
-
 class UabFileTest : public ::testing::Test
 {
 protected:
-    static void SetUpTestSuite()
+    static void SetUpTestCase()
     {
         char tempPath[] = "/var/tmp/linglong-uab-file-test-XXXXXX";
         testDir = mkdtemp(tempPath);
@@ -139,7 +107,7 @@ protected:
         }
     }
 
-    static void TearDownTestSuite()
+    static void TearDownTestCase()
     {
         std::error_code ec;
         std::filesystem::remove_all(testDir, ec);
@@ -177,18 +145,28 @@ TEST_F(UabFileTest, UnpackFuseOffset)
 
 TEST_F(UabFileTest, UnpackFuse)
 {
+    {
+        auto ret = utils::command::Cmd("erofsfuse").exists();
+        if (!ret) {
+#ifdef GTEST_SKIP
+            GTEST_SKIP() << "Skipping this test.";
+#else
+            return;
+#endif
+        }
+    }
     auto uab = MockUabFile(uabFile);
-    EXPECT_CALL(uab, mkdirDir(testing::_))
-      .WillOnce([]() {
-          LINGLONG_TRACE("test");
-          return LINGLONG_ERR("Cannot create directory in /var/tmp");
-      })
-      .WillOnce([](const std::string &path) -> utils::error::Result<void> {
-          LINGLONG_TRACE("test");
-          std::filesystem::create_directories(path);
-          return LINGLONG_OK;
-      });
-    EXPECT_CALL(uab, isFileReadable(testing::_)).WillOnce(testing::Return(false));
+    uab.wrapIsFileReadableFunc = []([[maybe_unused]] const std::string &path) {
+        return false;
+    };
+    uab.wrapMkdirDirFunc = [](const std::string &path) -> utils::error::Result<void> {
+        LINGLONG_TRACE("test");
+        if (common::strings::hasPrefix(path, "/var/tmp")) {
+            return LINGLONG_ERR("Cannot create directory in /var/tmp");
+        }
+        std::filesystem::create_directories(path);
+        return LINGLONG_OK;
+    };
     auto unpackRet = uab.unpack();
     ASSERT_TRUE(unpackRet.has_value()) << "Failed to unpack uab file";
 
@@ -199,9 +177,12 @@ TEST_F(UabFileTest, UnpackFuse)
 TEST_F(UabFileTest, UnpackFsck)
 {
     auto uab = MockUabFile(uabFile);
-    EXPECT_CALL(uab, checkCommandExists(testing::_))
-      .WillOnce(testing::Return(false))
-      .WillOnce(testing::Return(true));
+    uab.wrapCheckCommandExistsFunc = [](const std::string &command) {
+        if (command == "erofsfuse") {
+            return false;
+        }
+        return true;
+    };
     auto unpackRet = uab.unpack();
     ASSERT_TRUE(unpackRet.has_value()) << "Failed to unpack uab file";
 

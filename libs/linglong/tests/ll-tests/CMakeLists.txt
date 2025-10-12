@@ -12,6 +12,7 @@ pfl_add_executable(
   DISABLE_INSTALL
   SOURCES
   # find -regex '\./src/.+\.[ch]\(pp\)?' -type f -printf '%P\n'| sort
+  src/linglong/package/architecture_test.cpp
   src/linglong/package/fallback_version_test.cpp
   src/linglong/package/reference_test.cpp
   src/linglong/package/version_test.cpp
@@ -24,24 +25,32 @@ pfl_add_executable(
   src/linglong/package/uab_file_test.cpp
   src/linglong/package/layer_packager_test.cpp
   src/linglong/builder/source_fetcher_test.cpp
-  src/linglong/mocks/command.h
+  src/linglong/builder/linglong_builder_test.cpp
+  src/linglong/mocks/command_mock.h
+  src/linglong/mocks/ostree_repo_mock.h
+  src/linglong/mocks/linglong_builder_mock.h
+  src/linglong/mocks/layer_packager_mock.h
+  src/linglong/mocks/uab_file_mock.h
   src/linglong/utils/error/result_test.cpp
+  src/linglong/utils/file.cpp
+  src/linglong/utils/namespce.cpp
   src/linglong/utils/log.cpp
   src/linglong/utils/sha256_test.cpp
   src/linglong/utils/transaction_test.cpp
   src/linglong/utils/command_test.cpp
   src/linglong/utils/bash_command_helper_test.cpp
   src/linglong/repo/config_test.cpp
+  src/linglong/repo/ostree_repo_test.cpp
+  src/linglong/repo/client_factory_test.cpp
   src/main.cpp
   COMPILE_FEATURES
   PUBLIC
   cxx_std_17
   LINK_LIBRARIES
   PRIVATE
-  GTest::gmock
+  GTest::gtest
   linglong::linglong
-  PkgConfig::CRYPTO
-  Qt${QT_VERSION_MAJOR}::DBusPrivate)
+  PkgConfig::CRYPTO)
 
 include(GoogleTest)
 get_real_target_name(tests linglong::linglong::ll-tests)

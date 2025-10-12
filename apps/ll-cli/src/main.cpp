@@ -200,6 +200,12 @@ ll-cli run org.deepin.demo -- bash -x /path/to/bash/script)"));
                    _("Specify the runtime used by the application to run"))
       ->type_name("REF")
       ->check(validatorString);
+    cliRun
+      ->add_option("--extension",
+                   runOptions.extension,
+                   _("Specify the extension used by the application to run"))
+      ->type_name("REF")
+      ->check(validatorString);
     cliRun->add_option("COMMAND", runOptions.commands, _("Run commands in a running sandbox"));
 }
 
@@ -804,7 +810,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     }
 
     // check oci runtime
-    auto path = QStandardPaths::findExecutable(ociRuntimeCLI);
+    auto path = QStandardPaths::findExecutable(ociRuntimeCLI, { BINDIR });
     if (path.isEmpty()) {
         qCritical() << ociRuntimeCLI << "not found";
         return -1;

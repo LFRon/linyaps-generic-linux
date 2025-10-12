@@ -33,7 +33,7 @@ set(ENABLE_LINGLONG_INSTALLER
     CACHE BOOL "enable linglong installer")
 
 set(ENABLE_TESTING
-    OFF
+    ON
     CACHE BOOL "enable testing")
 
 set(LINGLONG_USERNAME
@@ -64,6 +64,10 @@ if(NOT LINGLONG_EXPORT_PATH MATCHES ".*share$")
       "LINGLONG_EXPORT_PATH '${LINGLONG_EXPORT_PATH}' must end with 'share'")
   set(LINGLONG_EXPORT_PATH "share")
 endif()
+
+set(LINGLONG_ENABLE_WAYLAND_SEC_CTX_SUPPORT
+    OFF
+    CACHE BOOL "enable linglong wayland security context support")
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(PFL)
@@ -189,6 +193,13 @@ if(ENABLE_TESTING)
   endif()
 endif()
 
+if(LINGLONG_ENABLE_WAYLAND_SEC_CTX_SUPPORT)
+  message(STATUS "enable linglong wayland security context support")
+  pkg_search_module(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
+  pkg_search_module(WAYLAND_PROTOCOLS REQUIRED IMPORTED_TARGET wayland-protocols)
+  find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+endif()
+
 function(get_real_target_name output target)
   get_target_property("${output}" "${target}" ALIASED_TARGET)
   if("${output}" STREQUAL "")
@@ -278,6 +289,7 @@ pkg_search_module(glib2 REQUIRED IMPORTED_TARGET glib-2.0)
 pkg_search_module(ostree1 REQUIRED IMPORTED_TARGET ostree-1)
 pkg_search_module(systemd REQUIRED IMPORTED_TARGET libsystemd)
 pkg_search_module(ELF REQUIRED IMPORTED_TARGET libelf)
+pkg_search_module(cap REQUIRED IMPORTED_TARGET libcap)
 
 set(ytj_ENABLE_TESTING NO)
 set(ytj_ENABLE_INSTALL NO)
@@ -289,6 +301,7 @@ add_subdirectory(external/http)
 pfl_add_libraries(
   LIBS
   api
+  common
   dbus-api
   utils
   ocppi

@@ -32,8 +32,8 @@
 #include "linglong/repo/config.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/runtime/run_context.h"
-#include "linglong/utils/bash_quote.h"
 #include "linglong/utils/bash_command_helper.h"
+#include "linglong/utils/bash_quote.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/finally/finally.h"
 #include "linglong/utils/gettext.h"
@@ -71,7 +71,7 @@
 
 using namespace linglong::utils::error;
 
-static const std::string permissionNotifyMsg =
+const auto permissionNotifyMsg =
   _("Permission denied, please check whether you are running as root.");
 
 namespace {
@@ -326,9 +326,10 @@ bool delegateToContainerInit(const std::string &containerID,
 
 namespace linglong::cli {
 
-void Cli::onTaskPropertiesChanged(QString interface,                                   // NOLINT
-                                  QVariantMap changed_properties,                      // NOLINT
-                                  [[maybe_unused]] QStringList invalidated_properties) // NOLINT
+void Cli::onTaskPropertiesChanged(
+  const QString &interface,                                   // NOLINT
+  const QVariantMap &changed_properties,                      // NOLINT
+  [[maybe_unused]] const QStringList &invalidated_properties) // NOLINT
 {
     if (interface != task->interface()) {
         return;
@@ -399,7 +400,9 @@ void Cli::onTaskPropertiesChanged(QString interface,                            
     printProgress();
 }
 
-void Cli::interaction(QDBusObjectPath object_path, int messageID, QVariantMap additionalMessage)
+void Cli::interaction(const QDBusObjectPath &object_path,
+                      int messageID,
+                      const QVariantMap &additionalMessage)
 {
     LINGLONG_TRACE("interactive with user")
     if (object_path.path() != taskObjectPath) {
@@ -461,8 +464,11 @@ void Cli::interaction(QDBusObjectPath object_path, int messageID, QVariantMap ad
     dbusReply.waitForFinished();
     if (dbusReply.isError()) {
         if (dbusReply.error().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
             return;
         }
 
@@ -471,15 +477,15 @@ void Cli::interaction(QDBusObjectPath object_path, int messageID, QVariantMap ad
     }
 }
 
-void Cli::onTaskAdded([[maybe_unused]] QDBusObjectPath object_path)
+void Cli::onTaskAdded(const QDBusObjectPath &object_path)
 {
     qDebug() << "task added" << object_path.path();
 }
 
-void Cli::onTaskRemoved(QDBusObjectPath object_path,
+void Cli::onTaskRemoved(const QDBusObjectPath &object_path,
                         int state,
                         int subState,
-                        QString message,
+                        const QString &message,
                         double percentage,
                         int code)
 {
@@ -500,15 +506,18 @@ void Cli::onTaskRemoved(QDBusObjectPath object_path,
 
     this->lastState = static_cast<api::types::v1::State>(state);
     this->lastSubState = static_cast<api::types::v1::SubState>(subState);
-    this->lastMessage = std::move(message);
+    this->lastMessage = message;
     this->lastPercentage = percentage;
     this->lastErrorCode = static_cast<utils::error::ErrorCode>(code);
 
     if (this->lastSubState == api::types::v1::SubState::AllDone) {
         this->printProgress();
     } else if (this->lastSubState == api::types::v1::SubState::PackageManagerDone) {
-        this->notifier->notify(
+        auto ret = this->notifier->notify(
           api::types::v1::InteractionRequest{ .summary = this->lastMessage.toStdString() });
+        if (!ret) {
+            this->printer.printErr(ret.error());
+        }
     }
 
     Q_EMIT taskDone();
@@ -541,8 +550,11 @@ void Cli::printProgress() noexcept
         case utils::error::ErrorCode::AppUpgradeFailed:
             this->printer.printMessage(_("Upgrade failed"));
             break;
-        case utils::error::ErrorCode::AppUpgradeNotFound:
+        case utils::error::ErrorCode::AppUpgradeLocalNotFound:
             this->printer.printMessage(_("Application is not installed."));
+            break;
+        case utils::error::ErrorCode::AppUpgradeRemoteNotFound:
+            this->printer.printMessage(_("Remote application is not found."));
             break;
         case utils::error::ErrorCode::AppUpgradeLatestInstalled:
             this->printer.printMessage(_("Latest version is already installed."));
@@ -644,7 +656,7 @@ int Cli::run(const RunOptions &options)
         }
     });
 
-    auto fuzzyRef = package::FuzzyReference::parse(QString::fromStdString(options.appid));
+    auto fuzzyRef = package::FuzzyReference::parse(options.appid);
     if (!fuzzyRef) {
         this->printer.printErr(fuzzyRef.error());
         return -1;
@@ -664,10 +676,20 @@ int Cli::run(const RunOptions &options)
     linglong::runtime::ResolveOptions opts;
     opts.baseRef = options.base;
     opts.runtimeRef = options.runtime;
+    // 首先使用命令行传入的扩展；若未指定，则读取环境变量
+    if (options.extension) {
+        opts.extensionRef = options.extension.value();
+    } else {
+        const char *envExt = ::getenv("LL_FORCE_EXTENSION");
+        if (envExt && envExt[0] != '\0') {
+            opts.extensionRef = std::string(envExt);
+        }
+    }
 
     LogD("start resolve run context with base {} and runtime {}",
          opts.baseRef.value_or("null"),
-         opts.runtimeRef.value_or("null"));
+         opts.runtimeRef.value_or("null"),
+         opts.extensionRef.value_or("null"));
 
     auto res = runContext.resolve(*curAppRef, opts);
     if (!res) {
@@ -728,7 +750,7 @@ int Cli::run(const RunOptions &options)
     auto containers = getCurrentContainers().value_or(std::vector<api::types::v1::CliContainer>{});
     for (const auto &container : containers) {
         qDebug() << "found running container: " << container.package.c_str();
-        if (container.package != curAppRef->toString().toStdString()) {
+        if (container.package != curAppRef->toString()) {
             continue;
         }
 
@@ -750,7 +772,29 @@ int Cli::run(const RunOptions &options)
         return -1;
     }
 
+    runContext.enableSecurityContext(runtime::getDefaultSecurityContexts());
+
     linglong::generator::ContainerCfgBuilder cfgBuilder;
+    cfgBuilder.setAppId(curAppRef->id)
+      .setAnnotation(generator::ANNOTATION::LAST_PID, std::to_string(pid))
+      .addUIdMapping(uid, uid, 1)
+      .addGIdMapping(gid, gid, 1)
+      .bindDefault()
+      .bindDevNode()
+      .bindCgroup()
+      .bindXDGRuntime()
+      .bindUserGroup()
+      .bindRemovableStorageMounts()
+      .bindHostRoot()
+      .bindHostStatics()
+      .bindHome(homeEnv)
+      .enablePrivateDir()
+      .mapPrivate(std::string{ homeEnv } + "/.ssh", true)
+      .mapPrivate(std::string{ homeEnv } + "/.gnupg", true)
+      .bindIPC()
+      .forwardDefaultEnv()
+      .enableSelfAdjustingMount();
+
     res = runContext.fillContextCfg(cfgBuilder);
     if (!res) {
         this->printer.printErr(res.error());
@@ -765,30 +809,11 @@ int Cli::run(const RunOptions &options)
         return -1;
     }
 
-    cfgBuilder.setAppId(curAppRef->id.toStdString())
-      .setAnnotation(generator::ANNOTATION::LAST_PID, std::to_string(pid))
-      .addUIdMapping(uid, uid, 1)
-      .addGIdMapping(gid, gid, 1)
-      .bindDefault()
-      .bindDevNode()
-      .bindCgroup()
-      .bindRun()
-      .bindUserGroup()
-      .bindRemovableStorageMounts()
-      .bindHostRoot()
-      .bindHostStatics()
-      .bindHome(homeEnv)
-      .enablePrivateDir()
-      .mapPrivate(std::string{ homeEnv } + "/.ssh", true)
-      .mapPrivate(std::string{ homeEnv } + "/.gnupg", true)
-      .bindIPC()
-      .forwardDefaultEnv()
-      .enableSelfAdjustingMount()
-      .addExtraMount(
-        ocppi::runtime::config::types::Mount{ .destination = "/run/linglong/init",
-                                              .options = std::vector<std::string>{ "bind" },
-                                              .source = socketDir.string(),
-                                              .type = "bind" });
+    cfgBuilder.addExtraMount(
+      ocppi::runtime::config::types::Mount{ .destination = "/run/linglong/init",
+                                            .options = std::vector<std::string>{ "bind" },
+                                            .source = socketDir.string(),
+                                            .type = "bind" });
 
     for (const auto &env : options.envs) {
         auto split = env.cbegin() + env.find('='); // already checked by CLI
@@ -814,10 +839,7 @@ int Cli::run(const RunOptions &options)
         return -1;
     }
 
-    auto container =
-      this->containerBuilder.create(cfgBuilder,
-                                    QString::fromStdString(runContext.getContainerId()));
-
+    auto container = this->containerBuilder.create(cfgBuilder);
     if (!container) {
         this->printer.printErr(container.error());
         return -1;
@@ -989,15 +1011,14 @@ int Cli::kill(const KillOptions &options)
 
     std::vector<std::string> containerIDList;
     for (const auto &container : *containers) {
-        auto fuzzyRef = package::FuzzyReference::parse(QString::fromStdString(container.package));
+        auto fuzzyRef = package::FuzzyReference::parse(container.package);
         if (!fuzzyRef) {
             this->printer.printErr(fuzzyRef.error());
             continue;
         }
 
         // support matching container id based on appid or fuzzy ref
-        if (fuzzyRef->id.toStdString() == options.appid
-            || fuzzyRef->toString().toStdString() == options.appid) {
+        if (fuzzyRef->id == options.appid || fuzzyRef->toString() == options.appid) {
             containerIDList.emplace_back(container.id);
         }
     }
@@ -1082,8 +1103,12 @@ int Cli::installFromFile(const QFileInfo &fileInfo,
     pendingReply.waitForFinished();
     if (pendingReply.isError()) {
         if (pendingReply.error().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
+
             return -1;
         }
         auto err = LINGLONG_ERRV(pendingReply.error().message());
@@ -1176,18 +1201,18 @@ int Cli::install(const InstallOptions &options)
         return -1;
     }
 
-    auto fuzzyRef = package::FuzzyReference::parse(app);
+    auto fuzzyRef = package::FuzzyReference::parse(app.toStdString());
     if (!fuzzyRef) {
         this->printer.printErr(fuzzyRef.error());
         return -1;
     }
 
-    params.package.id = fuzzyRef->id.toStdString();
+    params.package.id = fuzzyRef->id;
     if (fuzzyRef->channel) {
-        params.package.channel = fuzzyRef->channel->toStdString();
+        params.package.channel = fuzzyRef->channel;
     }
     if (fuzzyRef->version) {
-        params.package.version = fuzzyRef->version->toStdString();
+        params.package.version = fuzzyRef->version;
     }
 
     if (!options.module.empty()) {
@@ -1206,8 +1231,11 @@ int Cli::install(const InstallOptions &options)
 
     if (pendingReply.isError()) {
         if (pendingReply.error().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
             return -1;
         }
 
@@ -1311,7 +1339,7 @@ int Cli::upgrade(const UpgradeOptions &options)
 
     std::vector<package::FuzzyReference> fuzzyRefs;
     if (!options.appid.empty()) {
-        auto fuzzyRef = package::FuzzyReference::parse(QString::fromStdString(options.appid));
+        auto fuzzyRef = package::FuzzyReference::parse(options.appid);
         if (!fuzzyRef) {
             this->printer.printErr(fuzzyRef.error());
             return -1;
@@ -1346,9 +1374,8 @@ int Cli::upgrade(const UpgradeOptions &options)
             return -1;
         }
         for (const auto &item : *list) {
-            auto fuzzyRef = package::FuzzyReference::parse(
-              QString("%1/%2").arg(QString::fromStdString(item.id),
-                                   QString::fromStdString(item.oldVersion)));
+            auto fuzzyRef =
+              package::FuzzyReference::parse(fmt::format("{}/{}", item.id, item.oldVersion));
             if (!fuzzyRef) {
                 this->printer.printErr(fuzzyRef.error());
                 return -1;
@@ -1365,12 +1392,12 @@ int Cli::upgrade(const UpgradeOptions &options)
     api::types::v1::PackageManager1UpdateParameters params;
     for (const auto &fuzzyRef : fuzzyRefs) {
         api::types::v1::PackageManager1Package package;
-        package.id = fuzzyRef.id.toStdString();
+        package.id = fuzzyRef.id;
         if (fuzzyRef.channel) {
-            package.channel = fuzzyRef.channel->toStdString();
+            package.channel = fuzzyRef.channel;
         }
         if (fuzzyRef.version) {
-            package.version = fuzzyRef.version->toStdString();
+            package.version = fuzzyRef.version;
         }
         params.packages.emplace_back(std::move(package));
     }
@@ -1380,8 +1407,11 @@ int Cli::upgrade(const UpgradeOptions &options)
 
     if (pendingReply.isError()) {
         if (pendingReply.error().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
             return -1;
         }
 
@@ -1450,7 +1480,7 @@ int Cli::search(const SearchOptions &options)
         // 检查repo是否存在
         auto it = std::find_if(repoConfig.repos.begin(),
                                repoConfig.repos.end(),
-                               [this, &options](const api::types::v1::Repo &repo) {
+                               [&options](const api::types::v1::Repo &repo) {
                                    return repo.alias.value_or(repo.name) == options.repo.value();
                                });
         if (it == repoConfig.repos.end()) {
@@ -1477,8 +1507,11 @@ int Cli::search(const SearchOptions &options)
     pendingReply.waitForFinished();
     if (pendingReply.isError()) {
         if (pendingReply.error().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
             return -1;
         }
 
@@ -1569,6 +1602,7 @@ int Cli::search(const SearchOptions &options)
           if (!options.showAllVersion) {
               filterPackageInfosByVersion(allPackages);
           }
+
           this->printer.printSearchResult(allPackages);
           loop.exit(0);
       });
@@ -1621,8 +1655,11 @@ int Cli::prune()
 
     if (pendingReply.isError()) {
         if (pendingReply.error().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
             return -1;
         }
 
@@ -1656,19 +1693,19 @@ int Cli::uninstall(const UninstallOptions &options)
         return -1;
     }
 
-    auto fuzzyRef = package::FuzzyReference::parse(QString::fromStdString(options.appid));
+    auto fuzzyRef = package::FuzzyReference::parse(options.appid);
     if (!fuzzyRef) {
         this->printer.printErr(fuzzyRef.error());
         return -1;
     }
 
     auto params = api::types::v1::PackageManager1UninstallParameters{};
-    params.package.id = fuzzyRef->id.toStdString();
+    params.package.id = fuzzyRef->id;
     if (fuzzyRef->channel) {
-        params.package.channel = fuzzyRef->channel->toStdString();
+        params.package.channel = fuzzyRef->channel;
     }
     if (fuzzyRef->version) {
-        params.package.version = fuzzyRef->version->toStdString();
+        params.package.version = fuzzyRef->version;
     }
     if (!options.module.empty()) {
         params.package.packageManager1PackageModule = options.module;
@@ -1679,8 +1716,11 @@ int Cli::uninstall(const UninstallOptions &options)
 
     if (pendingReply.isError()) {
         if (pendingReply.error().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
             return -1;
         }
 
@@ -1701,9 +1741,12 @@ int Cli::uninstall(const UninstallOptions &options)
     if (resultCode != utils::error::ErrorCode::Success) {
         auto err = LINGLONG_ERRV(QString::fromStdString(result->message), result->code);
         if (result->type == "notification") {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .appName = "ll-cli",
                                                   .summary = result->message });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
             return -1;
         }
 
@@ -1826,7 +1869,7 @@ Cli::listUpgradable(const std::string &type)
     filterPackageInfosByType(localPkgs, type);
 
     std::vector<api::types::v1::UpgradeListResult> upgradeList;
-    auto fullFuzzyRef = package::FuzzyReference::parse(QString::fromStdString("."));
+    auto fullFuzzyRef = package::FuzzyReference::parse(".");
     if (!fullFuzzyRef) {
         return LINGLONG_ERR(fullFuzzyRef);
     }
@@ -1861,7 +1904,7 @@ Cli::listUpgradable(const std::string &type)
             continue;
         }
 
-        auto oldVersion = package::Version::parse(pkg.version.c_str());
+        auto oldVersion = package::Version::parse(pkg.version);
         if (!oldVersion) {
             qDebug() << "failed to parse old version:" << oldVersion.error().message();
             continue;
@@ -1872,15 +1915,14 @@ Cli::listUpgradable(const std::string &type)
         }
 
         if (!reference) {
-            qDebug() << "Failed to find the package: " << fuzzy->id
-                     << ", maybe it is local package, skip it.";
+            LogD("Failed to find the package: {}, maybe it is local package, skip it.", fuzzy->id);
             continue;
         }
 
-        upgradeList.emplace_back(api::types::v1::UpgradeListResult{
-          .id = pkg.id,
-          .newVersion = reference->version.toString().toStdString(),
-          .oldVersion = oldVersion->toString().toStdString() });
+        upgradeList.emplace_back(
+          api::types::v1::UpgradeListResult{ .id = pkg.id,
+                                             .newVersion = reference->version.toString(),
+                                             .oldVersion = oldVersion->toString() });
     }
     return upgradeList;
 }
@@ -1893,8 +1935,12 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
     // check error here, this operation could be failed
     if (this->pkgMan.lastError().isValid()) {
         if (this->pkgMan.lastError().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
+
             return -1;
         }
 
@@ -2065,8 +2111,11 @@ int Cli::setRepoConfig(const QVariantMap &config)
     this->pkgMan.setConfiguration(config);
     if (this->pkgMan.lastError().isValid()) {
         if (this->pkgMan.lastError().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
+            auto ret = this->notifier->notify(
               api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
             return -1;
         }
 
@@ -2094,7 +2143,7 @@ int Cli::info(const InfoOptions &options)
 
     // 如果是app，显示app 包信息
     if (!isLayerFile) {
-        auto fuzzyRef = package::FuzzyReference::parse(app);
+        auto fuzzyRef = package::FuzzyReference::parse(app.toStdString());
         if (!fuzzyRef) {
             this->printer.printErr(fuzzyRef.error());
             return -1;
@@ -2149,7 +2198,7 @@ int Cli::content(const ContentOptions &options)
 
     QStringList contents{};
 
-    auto fuzzyRef = package::FuzzyReference::parse(QString::fromStdString(options.appid));
+    auto fuzzyRef = package::FuzzyReference::parse(options.appid);
     if (!fuzzyRef) {
         this->printer.printErr(fuzzyRef.error());
         return -1;
@@ -2357,11 +2406,9 @@ void Cli::filterPackageInfosByType(std::vector<api::types::v1::PackageInfoDispla
                list.end());
 }
 
-utils::error::Result<void> Cli::filterPackageInfosByVersion(
+void Cli::filterPackageInfosByVersion(
   std::map<std::string, std::vector<api::types::v1::PackageInfoV2>> &list) noexcept
 {
-    LINGLONG_TRACE("filter package infos from version");
-
     for (const auto &[pkgRepo, packages] : list) {
         std::map<std::string, api::types::v1::PackageInfoV2> temp;
         for (const auto &pkgInfo : packages) {
@@ -2376,13 +2423,13 @@ utils::error::Result<void> Cli::filterPackageInfosByVersion(
                 continue;
             }
 
-            auto oldVersion = package::Version::parse(it->second.version.c_str());
+            auto oldVersion = package::Version::parse(it->second.version);
             if (!oldVersion) {
                 qWarning() << "failed to parse old version:" << oldVersion.error().message();
                 continue;
             }
 
-            auto newVersion = package::Version::parse(pkgInfo.version.c_str());
+            auto newVersion = package::Version::parse(pkgInfo.version);
             if (!newVersion) {
                 qWarning() << "failed to parse new version:" << newVersion.error().message();
                 continue;
@@ -2411,8 +2458,6 @@ utils::error::Result<void> Cli::filterPackageInfosByVersion(
             list.emplace(pkgRepo, std::move(filteredPackages));
         }
     }
-
-    return LINGLONG_OK;
 }
 
 utils::error::Result<void> Cli::runningAsRoot()
@@ -2663,7 +2708,7 @@ int Cli::generateCache(const package::Reference &ref)
                            loop.exit(0);
                        });
 
-    auto pendingReply = this->pkgMan.GenerateCache(ref.toString());
+    auto pendingReply = this->pkgMan.GenerateCache(QString::fromStdString(ref.toString()));
     pendingReply.waitForFinished();
     if (pendingReply.isError()) {
         auto err = LINGLONG_ERRV(pendingReply.error().message());
@@ -2713,7 +2758,7 @@ utils::error::Result<std::filesystem::path> Cli::ensureCache(
             }
 
             // If the ld.so.conf exists, check if it is consistent with the current configuration.
-            auto ldConf = cfgBuilder.ldConf(appRef.arch.getTriplet().toStdString());
+            auto ldConf = cfgBuilder.ldConf(appRef.arch.getTriplet());
             std::stringstream oldCache;
             std::ifstream ifs(ldSoConf, std::ios::binary | std::ios::in);
             if (!ifs.is_open()) {
@@ -2740,9 +2785,12 @@ utils::error::Result<std::filesystem::path> Cli::ensureCache(
 
     auto ret = this->generateCache(appRef);
     if (ret != 0) {
-        this->notifier->notify(api::types::v1::InteractionRequest{
+        auto ret = this->notifier->notify(api::types::v1::InteractionRequest{
           .summary =
             _("The cache generation failed, please uninstall and reinstall the application.") });
+        if (!ret) {
+            qWarning() << "failed to notify" << ret.error();
+        }
     }
     process.close();
 
@@ -2806,7 +2854,7 @@ int Cli::dir(const DirOptions &options)
 {
     LINGLONG_TRACE("command dir");
 
-    auto fuzzyRef = package::FuzzyReference::parse(QString::fromStdString(options.appid));
+    auto fuzzyRef = package::FuzzyReference::parse(options.appid);
     if (!fuzzyRef) {
         this->printer.printErr(fuzzyRef.error());
         return -1;

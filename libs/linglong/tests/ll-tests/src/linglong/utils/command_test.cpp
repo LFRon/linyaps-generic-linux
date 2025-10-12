@@ -2,23 +2,10 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "linglong/utils/command/cmd.h"
 #include "linglong/utils/error/error.h"
-
-class MockCmd : public linglong::utils::command::Cmd
-{
-public:
-    MockCmd(const QString &command)
-        : Cmd(command)
-    {
-    }
-
-    MOCK_METHOD(linglong::utils::error::Result<QString>, exec, (const QStringList &), (const));
-    MOCK_METHOD(linglong::utils::error::Result<bool>, exists, (), (noexcept));
-};
 
 TEST(command, Exec)
 {
@@ -45,19 +32,23 @@ TEST(command, Exec)
 TEST(command, commandExists)
 {
     auto ret = linglong::utils::command::Cmd("ls").exists();
-    EXPECT_TRUE(ret.has_value()) << ret.error().message().toStdString();
-    EXPECT_TRUE(*ret) << "ls command should exist";
+    EXPECT_TRUE(ret) << "ls command should exist";
     ret = linglong::utils::command::Cmd("nonexistent").exists();
-    EXPECT_TRUE(ret.has_value()) << ret.error().message().toStdString();
-    EXPECT_FALSE(*ret) << "nonexistent should not exist";
+    EXPECT_FALSE(ret) << "nonexistent should not exist";
 }
 
 TEST(command, setEnv)
 {
     linglong::utils::command::Cmd cmd("bash");
+    // test set
     cmd.setEnv("LINGLONG_TEST_SETENV", "OK");
+    auto existsRef = cmd.exists();
+    EXPECT_TRUE(existsRef);
+    // test unset
+    cmd.setEnv("PATH", "");
     auto ret = cmd.exec({ "-c", "export" });
     EXPECT_TRUE(ret.has_value()) << ret.error().message().toStdString();
     auto retStr = *ret;
-    EXPECT_TRUE(retStr.contains("LINGLONG_TEST_SETENV=")) << retStr.toStdString();
+    EXPECT_TRUE(retStr.contains("declare -x LINGLONG_TEST_SETENV=")) << retStr.toStdString();
+    EXPECT_FALSE(retStr.contains("declare -x PATH=\"")) << retStr.toStdString();
 }

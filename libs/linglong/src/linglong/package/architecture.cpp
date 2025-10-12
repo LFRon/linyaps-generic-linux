@@ -21,7 +21,7 @@ Architecture::Architecture(Value value)
 {
 }
 
-QString Architecture::toString() const noexcept
+std::string Architecture::toStdString() const noexcept
 {
     switch (this->v) {
     case X86_64:
@@ -39,15 +39,15 @@ QString Architecture::toString() const noexcept
     case UNKNOW:
         [[fallthrough]];
     default:
-        return "unknow";
+        return "unknown";
     }
 }
 
-QString Architecture::getTriplet() const noexcept
+std::string Architecture::getTriplet() const noexcept
 {
     switch (this->v) {
     case UNKNOW:
-        return "unknow";
+        return "unknown";
     case X86_64:
         return "x86_64-linux-gnu";
     case ARM64:
@@ -61,7 +61,7 @@ QString Architecture::getTriplet() const noexcept
     case MIPS64:
         return "mips64el-linux-gnuabi64";
     }
-    return "unknow";
+    return "unknown";
 }
 
 utils::error::Result<Architecture> Architecture::parse(const std::string &raw) noexcept

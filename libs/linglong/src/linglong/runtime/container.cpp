@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2022 UnionTech Software Technology Co., Ltd.
+ * SPDX-FileCopyrightText: 2022 - 2025 UnionTech Software Technology Co., Ltd.
  *
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
@@ -118,12 +118,12 @@ void mergeProcessConfig(ocppi::runtime::config::types::Process &dst,
 namespace linglong::runtime {
 
 Container::Container(ocppi::runtime::config::types::Config cfg,
-                     QString appID,
-                     QString conatinerID,
+                     std::string appId,
+                     std::string containerId,
                      ocppi::cli::CLI &cli)
     : cfg(std::move(cfg))
-    , id(std::move(conatinerID))
-    , appID(std::move(appID))
+    , id(std::move(containerId))
+    , appId(std::move(appId))
     , cli(cli)
 {
     Q_ASSERT(cfg.process.has_value());
@@ -132,14 +132,14 @@ Container::Container(ocppi::runtime::config::types::Config cfg,
 utils::error::Result<void> Container::run(const ocppi::runtime::config::types::Process &process,
                                           ocppi::runtime::RunOption &opt) noexcept
 {
-    LINGLONG_TRACE(QString("run container %1").arg(this->id));
+    LINGLONG_TRACE(QString("run container %1").arg(QString::fromStdString(this->id)));
 
     std::error_code ec;
     std::filesystem::path runtimeDir =
       QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation).toStdString();
 
     // bundle dir should created before container run
-    auto bundle = runtimeDir / "linglong" / this->id.toStdString();
+    auto bundle = runtimeDir / "linglong" / this->id;
 #ifdef LINGLONG_FONT_CACHE_GENERATOR
     if (!bundle.mkpath("conf.d")) {
         return LINGLONG_ERR("make conf.d directory");
@@ -154,7 +154,7 @@ utils::error::Result<void> Container::run(const ocppi::runtime::config::types::P
                   break;
               }
 
-              auto archive = runtimeDir / "linglong/debug" / this->id.toStdString();
+              auto archive = runtimeDir / "linglong/debug" / this->id;
               std::filesystem::rename(bundle, archive, ec);
               if (ec) {
                   qCritical() << "failed to rename bundle directory:" << ec.message().c_str();
@@ -261,7 +261,7 @@ utils::error::Result<void> Container::run(const ocppi::runtime::config::types::P
     // 禁用crun自己创建cgroup，便于AM识别和管理玲珑应用
     opt.GlobalOption::extra.emplace_back("--cgroup-manager=disabled");
 
-    auto result = this->cli.run(this->id.toStdString(), bundle, opt);
+    auto result = this->cli.run(this->id, bundle, opt);
 
     if (!result) {
         return LINGLONG_ERR("cli run", result);
