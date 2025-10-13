@@ -1,9 +1,16 @@
+linglong (1.9.13-3) unstable; urgency=medium
+
+  * feat: Allow load mutiple extensions.
+  * fix some known bugs.
+
+ -- LFRon <ronforever@qq.com>  Mon, 13 Oct 2025 22:39:17 +0800
+
 linglong (1.9.13-2) unstable; urgency=medium
 
   * feat: enable loading extensions by using env "LL_FORCE_EXTENSION".
   * fix some known bugs.
 
- -- dengbo <ronforever@qq.com>  Sun, 12 Oct 2025 22:39:17 +0800
+ -- LFRon <ronforever@qq.com>  Sun, 12 Oct 2025 22:39:17 +0800
 
 linglong (1.9.13-1) unstable; urgency=medium
 

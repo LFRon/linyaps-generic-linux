@@ -1690,7 +1690,8 @@ utils::error::Result<void> Builder::importLayer(repo::OSTreeRepo &ostree, const 
 
 utils::error::Result<void> Builder::run(std::vector<std::string> modules,
                                         std::vector<std::string> args,
-                                        bool debug)
+                                        bool debug,
+                                        std::vector<std::string> extensions)
 {
     LINGLONG_TRACE("run application");
 
@@ -1708,6 +1709,23 @@ utils::error::Result<void> Builder::run(std::vector<std::string> modules,
     linglong::runtime::ResolveOptions opts;
     opts.depsBinaryOnly = !debug;
     opts.appModules = std::move(modules);
+    // 设置扩展列表；若为空则可读取环境变量 fallback
+    if (!extensions.empty()) {
+        opts.extensionRefs = extensions;
+    } else {
+        const char *envExt = ::getenv("LL_FORCE_EXTENSION");
+        if (envExt && envExt[0] != '\0') {
+            std::stringstream ss(envExt);
+            std::string token;
+            std::vector<std::string> envList;
+            while (std::getline(ss, token, ',')) {
+                if (!token.empty()) envList.push_back(token);
+            }
+            if (!envList.empty()) {
+                opts.extensionRefs = envList;
+            }
+        }
+    }
     auto res = runContext.resolve(*curRef, opts);
     if (!res) {
         return LINGLONG_ERR(res);

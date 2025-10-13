@@ -59,7 +59,7 @@ struct ResolveOptions
     std::optional<std::vector<std::string>> appModules;
     std::optional<std::string> baseRef;
     std::optional<std::string> runtimeRef;
-    std::optional<std::string> extensionRef;
+    std::optional<std::vector<std::string>> extensionRefs;
 };
 
 class RunContext

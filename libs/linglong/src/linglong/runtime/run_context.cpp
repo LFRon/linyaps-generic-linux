@@ -154,57 +154,55 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
         return LINGLONG_ERR(ret);
     }
 
-    // 新增：处理手动指定的扩展包（来自命令行或环境变量）
-    // 读取 ResolveOptions::extensionRef，如果为空则跳过
-    std::string ext = options.extensionRef.value_or("");
-    if (ext.empty()) {
-        // 兼容 CLI 未传参但环境变量有值的情况
-        const char *envExt = ::getenv("LL_FORCE_EXTENSION");
-        if (envExt && envExt[0] != '\0') {
-            ext = envExt;
-        }
-    }
-    if (!ext.empty()) {
-        // 解析扩展引用
-        auto fuzzyRef = package::FuzzyReference::parse(ext);
-        if (!fuzzyRef) {
-            return LINGLONG_ERR(fuzzyRef);
-        }
-        auto extRef = repo.clearReference(*fuzzyRef, {
-            .forceRemote = false,
-            .fallbackToRemote = false,
-            .semanticMatching = true,
-        });
-        if (!extRef) {
-            return LINGLONG_ERR("extension ref doesn't exist: " + ext);
-        }
-        // 挂载扩展层
-        auto &extLayer = extensionLayers.emplace_back(*extRef, *this);
-
-        // 从扩展缓存项中读取扩展信息
-        auto extItem = extLayer.getCachedItem();
-        if (extItem && extItem->info.extImpl && extItem->info.extImpl->env) {
-            // 构造一个允许所有扩展环境变量的 ExtensionDefine
-            api::types::v1::ExtensionDefine extDefine;
-            extDefine.name     = extLayer.getReference().id;
-            // extDefine.version  = extLayer.getReference().version;
-            
-            std::map<std::string, std::string> allowEnvMap;
-            for (const auto &env : *extItem->info.extImpl->env) {
-                allowEnvMap.emplace(env.first, "");
+    // 手动解析多个扩展
+    if (options.extensionRefs && !options.extensionRefs->empty()) {
+        // 遍历每个扩展引用，可根据需要调整顺序
+        for (const auto &ext : *options.extensionRefs) {
+            // 解析扩展引用
+            auto fuzzyRef = package::FuzzyReference::parse(ext);
+            if (!fuzzyRef) {
+                return LINGLONG_ERR(fuzzyRef);
             }
-            extDefine.allowEnv = allowEnvMap;
-            // 让这个扩展“拥有”自己的 ExtensionDefine，这样 resolveLayer() 会注入环境变量
-            extLayer.setExtensionInfo({ extDefine, extLayer });
-        }
+            auto extRef = repo.clearReference(*fuzzyRef, {
+                .forceRemote = false,
+                .fallbackToRemote = false,
+                .semanticMatching = true,
+            });
+            if (!extRef) {
+                return LINGLONG_ERR("extension ref doesn't exist: " + ext);
+            }
+            // 挂载扩展层
+            auto &extLayer = extensionLayers.emplace_back(*extRef, *this);
 
-        // 解析该扩展自身声明的嵌套扩展
-        auto extRet = resolveExtension(extLayer);
-        if (!extRet) {
-            qWarning() << "ignore failed extension layer";
-            extensionLayers.pop_back();
-        }
+            // 读取扩展包的 env 定义
+            auto extItem = extLayer.getCachedItem();
+            // 手动加载扩展后，构造 ExtensionDefine
+            if (extItem && extItem->info.extImpl && extItem->info.extImpl->env) {
+                api::types::v1::ExtensionDefine extDefine;
+                extDefine.name = extLayer.getReference().id;
+                std::map<std::string, std::string> allowEnv;
+                for (const auto &envPair : *extItem->info.extImpl->env) {
+                    // 取系统环境中该变量的值作为默认值；没有则填空
+                    const char *sysVal = ::getenv(envPair.first.c_str());
+                    if (sysVal && sysVal[0] != '\0') {
+                        allowEnv.emplace(envPair.first, sysVal);
+                    } else {
+                        allowEnv.emplace(envPair.first, "");
+                    }
+                }
+                extDefine.allowEnv = allowEnv;
+                // 设置扩展信息，让 resolveLayer() 按照 allowEnv 注入变量
+                extLayer.setExtensionInfo({ extDefine, extLayer });
+            }
 
+
+            // 解析该扩展内声明的其它扩展
+            auto ret = resolveExtension(extLayer);
+            if (!ret) {
+                qWarning() << "ignore failed extension layer";
+                extensionLayers.pop_back();
+            }
+        }
     }
 
     // all reference are cleard , we can get actual layer directory now
@@ -401,6 +399,12 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
                 res = replaceSubstring(res, "$ORIGIN", value);
             } else if (!allowed->second.empty()) {
                 res = replaceSubstring(res, "$ORIGIN", allowed->second);
+            } else {
+                // 当旧值和默认值都为空时，去除 $ORIGIN 并删除末尾多余的 ':'
+                res = replaceSubstring(res, "$ORIGIN", "");
+                while (!res.empty() && res.back() == ':') {
+                    res.pop_back();
+                }
             }
             value = res;
             qDebug() << "environment[" << QString::fromStdString(env.first)

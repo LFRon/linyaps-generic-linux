@@ -676,20 +676,33 @@ int Cli::run(const RunOptions &options)
     linglong::runtime::ResolveOptions opts;
     opts.baseRef = options.base;
     opts.runtimeRef = options.runtime;
-    // 首先使用命令行传入的扩展；若未指定，则读取环境变量
-    if (options.extension) {
-        opts.extensionRef = options.extension.value();
+    // 处理多个扩展
+    if (!options.extensions.empty()) {
+        opts.extensionRefs = options.extensions;
     } else {
         const char *envExt = ::getenv("LL_FORCE_EXTENSION");
         if (envExt && envExt[0] != '\0') {
-            opts.extensionRef = std::string(envExt);
+            // 将环境变量按逗号拆分
+            std::stringstream ss(envExt);
+            std::string token;
+            std::vector<std::string> envList;
+            while (std::getline(ss, token, ',')) {
+                if (!token.empty()) envList.push_back(token);
+            }
+            if (!envList.empty()) {
+                opts.extensionRefs = envList;
+            }
         }
     }
 
-    LogD("start resolve run context with base {} and runtime {}",
-         opts.baseRef.value_or("null"),
-         opts.runtimeRef.value_or("null"),
-         opts.extensionRef.value_or("null"));
+    // 调整日志输出，打印扩展列表（用逗号拼接）
+    std::string extStr = opts.extensionRefs
+        ? linglong::common::strings::join(*opts.extensionRefs, ',')
+        : "null";
+    LogD("start resolve run context with base {}, runtime {}, extensions {}",
+        opts.baseRef.value_or("null"),
+        opts.runtimeRef.value_or("null"),
+        extStr);
 
     auto res = runContext.resolve(*curAppRef, opts);
     if (!res) {
