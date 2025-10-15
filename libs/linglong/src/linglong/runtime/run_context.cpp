@@ -156,52 +156,14 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
 
     // 手动解析多个扩展
     if (options.extensionRefs && !options.extensionRefs->empty()) {
-        // 遍历每个扩展引用，可根据需要调整顺序
-        for (const auto &ext : *options.extensionRefs) {
-            // 解析扩展引用
-            auto fuzzyRef = package::FuzzyReference::parse(ext);
-            if (!fuzzyRef) {
-                return LINGLONG_ERR(fuzzyRef);
-            }
-            auto extRef = repo.clearReference(*fuzzyRef, {
-                .forceRemote = false,
-                .fallbackToRemote = false,
-                .semanticMatching = true,
-            });
-            if (!extRef) {
-                return LINGLONG_ERR("extension ref doesn't exist: " + ext);
-            }
-            // 挂载扩展层
-            auto &extLayer = extensionLayers.emplace_back(*extRef, *this);
+        auto manualExtensionDef = makeManualExtensionDefine(*options.extensionRefs);
+        if (!manualExtensionDef) {
+            return LINGLONG_ERR(manualExtensionDef);
+        }
 
-            // 读取扩展包的 env 定义
-            auto extItem = extLayer.getCachedItem();
-            // 手动加载扩展后，构造 ExtensionDefine
-            if (extItem && extItem->info.extImpl && extItem->info.extImpl->env) {
-                api::types::v1::ExtensionDefine extDefine;
-                extDefine.name = extLayer.getReference().id;
-                std::map<std::string, std::string> allowEnv;
-                for (const auto &envPair : *extItem->info.extImpl->env) {
-                    // 取系统环境中该变量的值作为默认值；没有则填空
-                    const char *sysVal = ::getenv(envPair.first.c_str());
-                    if (sysVal && sysVal[0] != '\0') {
-                        allowEnv.emplace(envPair.first, sysVal);
-                    } else {
-                        allowEnv.emplace(envPair.first, "");
-                    }
-                }
-                extDefine.allowEnv = allowEnv;
-                // 设置扩展信息，让 resolveLayer() 按照 allowEnv 注入变量
-                extLayer.setExtensionInfo({ extDefine, extLayer });
-            }
-
-
-            // 解析该扩展内声明的其它扩展
-            auto ret = resolveExtension(extLayer);
-            if (!ret) {
-                qWarning() << "ignore failed extension layer";
-                extensionLayers.pop_back();
-            }
+        auto ret = resolveExtension(*manualExtensionDef);
+        if (!ret) {
+            return LINGLONG_ERR(ret);
         }
     }
 
@@ -213,8 +175,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
 utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProject &target,
                                                const std::filesystem::path &buildOutput)
 {
-    LINGLONG_TRACE("resolve RunContext from builder project "
-                   + QString::fromStdString(target.package.id));
+    LINGLONG_TRACE("resolve RunContext from builder project " + target.package.id);
 
     auto targetRef = package::Reference::fromBuilderProject(target);
     if (!targetRef) {
@@ -331,30 +292,6 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
         }
     }
 
-    auto replaceSubstring = [](std::string_view str, std::string_view from, std::string_view to) {
-        std::string result;
-        if (from.empty()) {
-            return std::string(str);
-        }
-
-        size_t start = 0;
-        while (true) {
-            size_t pos = str.find(from, start);
-            if (pos == std::string_view::npos) {
-                break;
-            }
-            // Append the part before the match
-            result.append(str.data() + start, pos - start);
-            // Append the replacement
-            result.append(to.data(), to.size());
-            // Move past the matched part
-            start = pos + from.size();
-        }
-        // Append the remaining part of the string
-        result.append(str.data() + start, str.size() - start);
-        return result;
-    };
-
     for (auto &ext : extensionLayers) {
         if (!ext.resolveLayer()) {
             qWarning() << "ignore failed extension layer";
@@ -365,12 +302,8 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
         if (!extensionOf) {
             continue;
         }
-        const auto &[extensionDefine, layer] = *extensionOf;
-        if (!extensionDefine.allowEnv) {
-            continue;
-        }
-        const auto &allowEnv = *extensionDefine.allowEnv;
 
+        const auto &[extensionDefine, layer] = *extensionOf;
         auto extItem = ext.getCachedItem();
         if (!extItem) {
             continue;
@@ -385,30 +318,33 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
             continue;
         }
         for (const auto &env : *extImpl.env) {
-            auto allowed = allowEnv.find(env.first);
-            if (allowed == allowEnv.end()) {
-                qWarning() << "env " << QString::fromStdString(env.first) << " not allowed in "
-                           << layer.get().getReference().toString().c_str();
-                continue;
+            // if allowEnv is not defined, all envs are allowed
+            std::string defaultValue;
+            if (extensionDefine.allowEnv) {
+                const auto &allowEnv = *extensionDefine.allowEnv;
+                auto allowed = allowEnv.find(env.first);
+                if (allowed == allowEnv.end()) {
+                    LogW("env {} not allowed in {}", env.first, ext.getReference().toString());
+                    continue;
+                }
+                defaultValue = allowed->second;
             }
 
             std::string res =
-              replaceSubstring(env.second, "$PREFIX", "/opt/extensions/" + ext.getReference().id);
+              common::strings::replaceSubstring(env.second,
+                                                "$PREFIX",
+                                                "/opt/extensions/" + ext.getReference().id);
             auto &value = environment[env.first];
-            if (!value.empty()) {
-                res = replaceSubstring(res, "$ORIGIN", value);
-            } else if (!allowed->second.empty()) {
-                res = replaceSubstring(res, "$ORIGIN", allowed->second);
-            } else {
-                // 当旧值和默认值都为空时，去除 $ORIGIN 并删除末尾多余的 ':'
-                res = replaceSubstring(res, "$ORIGIN", "");
-                while (!res.empty() && res.back() == ':') {
-                    res.pop_back();
-                }
+            if (value.empty()) {
+                value = defaultValue;
             }
+            // If $ORIGIN is unset and the default value is empty, the environment variable
+            // may become ":NEW_VALUE" or "NEW_VALUE:". We cannot remove the leading/trailing
+            // colon because the value might represent a non-path element (e.g., a delimiter)
+            res = common::strings::replaceSubstring(res, "$ORIGIN", value);
+
             value = res;
-            qDebug() << "environment[" << QString::fromStdString(env.first)
-                     << "]=" << QString::fromStdString(res);
+            LogD("environment[{}]={}", env.first, res);
         }
     }
 
@@ -417,7 +353,7 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
 
 utils::error::Result<void> RunContext::resolveExtension(RuntimeLayer &layer)
 {
-    LINGLONG_TRACE("resolve extension");
+    LINGLONG_TRACE("resolve RuntimeLayer extension");
 
     auto item = layer.getCachedItem();
     if (!item) {
@@ -426,40 +362,87 @@ utils::error::Result<void> RunContext::resolveExtension(RuntimeLayer &layer)
 
     const auto &info = item->info;
     if (info.extensions) {
-        for (const auto &extension : *info.extensions) {
-            qDebug() << "handle extensions: " << QString::fromStdString(extension.name);
-            qDebug() << "version: " << QString::fromStdString(extension.version);
-            qDebug() << "directory: " << QString::fromStdString(extension.directory);
-            if (extension.allowEnv) {
-                for (const auto &allowEnv : *extension.allowEnv) {
-                    qDebug() << "allowEnv: " << QString::fromStdString(allowEnv.first) << ":"
-                             << QString::fromStdString(allowEnv.second);
-                }
-            }
-
-            std::string name = extension.name;
-            auto ext = extension::ExtensionFactory::makeExtension(name);
-            if (!ext->shouldEnable(name)) {
-                continue;
-            }
-
-            auto fuzzyRef =
-              package::FuzzyReference::create(info.channel, name, extension.version, std::nullopt);
-            auto ref = repo.clearReference(*fuzzyRef,
-                                           { .fallbackToRemote = false, .semanticMatching = true });
-            if (!ref) {
-                // extension is not installed, ignore it
-                qDebug() << "extension is not installed: " << fuzzyRef->toString().c_str();
-                continue;
-            }
-
-            auto &extensionLayer = extensionLayers.emplace_back(*ref, *this);
-            extensionLayer.setExtensionInfo(
-              std::make_pair(extension, std::reference_wrapper<RuntimeLayer>(extensionLayer)));
-        }
+        return resolveExtension(*info.extensions, info.channel, true);
     }
 
     return LINGLONG_OK;
+}
+
+utils::error::Result<void>
+RunContext::resolveExtension(const std::vector<api::types::v1::ExtensionDefine> &extDefs,
+                             std::optional<std::string> channel,
+                             bool skipOnNotFound)
+{
+    LINGLONG_TRACE("resolve extension define");
+
+    for (const auto &extDef : extDefs) {
+        LogD("handle extensions: {}", extDef.name);
+        LogD("version: {}", extDef.version);
+        LogD("directory: {}", extDef.directory);
+        if (extDef.allowEnv) {
+            for (const auto &allowEnv : *extDef.allowEnv) {
+                LogD("allowEnv: {}:{}", allowEnv.first, allowEnv.second);
+            }
+        }
+
+        std::string name = extDef.name;
+        auto ext = extension::ExtensionFactory::makeExtension(name);
+        if (!ext->shouldEnable(name)) {
+            continue;
+        }
+
+        std::optional<std::string> version;
+        if (!extDef.version.empty()) {
+            version = extDef.version;
+        }
+        auto fuzzyRef = package::FuzzyReference::create(channel, name, version, std::nullopt);
+        auto ref =
+          repo.clearReference(*fuzzyRef, { .fallbackToRemote = false, .semanticMatching = true });
+        if (!ref) {
+            LogD("extension is not installed: {}", fuzzyRef->toString());
+            if (skipOnNotFound) {
+                continue;
+            }
+            return LINGLONG_ERR("extension is not installed", ref);
+        }
+
+        RuntimeLayer layer(*ref, *this);
+        auto item = layer.getCachedItem();
+        if (!item) {
+            return LINGLONG_ERR("failed to get layer item", item);
+        }
+        if (item->info.kind != "extension") {
+            return LINGLONG_ERR(fmt::format("{} is not an extension", ref->toString()));
+        }
+
+        auto &extensionLayer = extensionLayers.emplace_back(std::move(layer));
+        extensionLayer.setExtensionInfo(
+          std::make_pair(extDef, std::reference_wrapper<RuntimeLayer>(extensionLayer)));
+    }
+
+    return LINGLONG_OK;
+}
+
+utils::error::Result<std::vector<api::types::v1::ExtensionDefine>>
+RunContext::makeManualExtensionDefine(const std::vector<std::string> &refs)
+{
+    LINGLONG_TRACE("make extension define");
+
+    std::vector<api::types::v1::ExtensionDefine> extDefs;
+    extDefs.reserve(refs.size());
+    for (const auto &ref : refs) {
+        auto fuzzyRef = package::FuzzyReference::parse(ref);
+        if (!fuzzyRef) {
+            return LINGLONG_ERR("failed to parse extension ref", fuzzyRef);
+        }
+
+        extDefs.emplace_back(api::types::v1::ExtensionDefine{
+          .directory = "/opt/extensions/" + fuzzyRef->id,
+          .name = fuzzyRef->id,
+          .version = fuzzyRef->version.value_or(""),
+        });
+    }
+    return extDefs;
 }
 
 void RunContext::detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept

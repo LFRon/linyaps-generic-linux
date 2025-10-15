@@ -12,6 +12,8 @@ pfl_add_executable(
   DISABLE_INSTALL
   SOURCES
   # find -regex '\./src/.+\.[ch]\(pp\)?' -type f -printf '%P\n'| sort
+  src/linglong/common/strings_test.cpp
+  src/linglong/common/xdg_test.cpp
   src/linglong/package/architecture_test.cpp
   src/linglong/package/fallback_version_test.cpp
   src/linglong/package/reference_test.cpp
@@ -31,7 +33,7 @@ pfl_add_executable(
   src/linglong/mocks/linglong_builder_mock.h
   src/linglong/mocks/layer_packager_mock.h
   src/linglong/mocks/uab_file_mock.h
-  src/linglong/utils/error/result_test.cpp
+  src/linglong/utils/error/error_test.cpp
   src/linglong/utils/file.cpp
   src/linglong/utils/namespce.cpp
   src/linglong/utils/log.cpp

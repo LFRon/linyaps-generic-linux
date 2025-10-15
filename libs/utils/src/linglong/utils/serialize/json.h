@@ -11,11 +11,13 @@
 #include "linglong/utils/error/error.h"
 #include "nlohmann/json.hpp"
 
+#include <fmt/format.h>
 #include <gio/gio.h>
 
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 
 #include <filesystem>
 #include <fstream>
@@ -59,7 +61,7 @@ error::Result<T> LoadJSON(const Source &content) noexcept
 template <typename T>
 error::Result<T> LoadJSONFile(GFile *file) noexcept
 {
-    LINGLONG_TRACE("load json from " + QString::fromStdString(g_file_get_path(file)));
+    LINGLONG_TRACE(fmt::format("load json from {}", g_file_get_path(file)));
 
     g_autoptr(GError) gErr = nullptr;
     g_autofree gchar *content = nullptr;
@@ -75,7 +77,7 @@ error::Result<T> LoadJSONFile(GFile *file) noexcept
 template <typename T>
 error::Result<T> LoadJSONFile(const std::filesystem::path &filePath) noexcept
 {
-    LINGLONG_TRACE("load json from " + QString::fromStdString(filePath.string()));
+    LINGLONG_TRACE(fmt::format("load json from {}", filePath.string()));
     std::ifstream file(filePath);
     if (!file.is_open()) {
         return LINGLONG_ERR("failed to open file");
@@ -87,7 +89,7 @@ error::Result<T> LoadJSONFile(const std::filesystem::path &filePath) noexcept
 template <typename T>
 error::Result<T> LoadJSONFile(QFile &file) noexcept
 {
-    LINGLONG_TRACE("load json from file" + QFileInfo(file).absoluteFilePath());
+    LINGLONG_TRACE("load json from file" + QFileInfo(file).absoluteFilePath().toStdString());
 
     if (!file.open(QFile::ReadOnly)) {
         return LINGLONG_ERR("open", file);

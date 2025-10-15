@@ -26,6 +26,7 @@
 #include "linglong/api/types/v1/SubState.hpp"
 #include "linglong/api/types/v1/UpgradeListResult.hpp"
 #include "linglong/cli/printer.h"
+#include "linglong/common/dir.h"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/package/layer_file.h"
 #include "linglong/package/reference.h"
@@ -78,10 +79,10 @@ namespace {
 
 linglong::utils::error::Result<bool> isChildProcess(pid_t parent, pid_t pid) noexcept
 {
-    LINGLONG_TRACE(QString{ "check if %1 is child of %2" }.arg(pid).arg(parent));
+    LINGLONG_TRACE(fmt::format("check if {} is child of {}", pid, parent));
 
     auto getppid = [](pid_t pid) -> Result<pid_t> {
-        LINGLONG_TRACE(QString{ "get ppid of %1" }.arg(pid));
+        LINGLONG_TRACE(fmt::format("get ppid of {}", pid));
         std::error_code ec;
         auto stat = std::filesystem::path("/proc/" + std::to_string(pid) + "/stat");
         auto fd = ::open(stat.c_str(), O_RDONLY);
@@ -261,7 +262,7 @@ bool delegateToContainerInit(const std::string &containerID,
     struct sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
 
-    auto bundleDir = linglong::runtime::getBundleDir(containerID);
+    auto bundleDir = linglong::common::dir::getBundleDir(containerID);
     const std::string socketPath = bundleDir / "init/socket";
 
     std::copy(socketPath.begin(), socketPath.end(), &addr.sun_path[0]);
@@ -625,12 +626,6 @@ int Cli::run(const RunOptions &options)
     auto gid = getgid();
     auto pid = getpid();
 
-    // NOTE: ll-box is not support running as root for now.
-    if (uid == 0) {
-        qInfo() << "'ll-cli run' currently does not support running as root.";
-        return -1;
-    }
-
     auto userContainerDir = std::filesystem::path{ "/run/linglong" } / std::to_string(uid);
     if (auto ret = ensureDirectory(userContainerDir); !ret) {
         this->printer.printErr(ret.error());
@@ -642,7 +637,8 @@ int Cli::run(const RunOptions &options)
     // placeholder file
     auto fd = ::open(pidFile.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
     if (fd == -1) {
-        qCritical() << QString{ "create file " } % pidFile.c_str() % " error:" % ::strerror(errno);
+        qCritical()
+          << QString{ "create file %1 error: %2" }.arg(pidFile.c_str()).arg(::strerror(errno));
         QCoreApplication::exit(-1);
         return -1;
     }
@@ -679,30 +675,15 @@ int Cli::run(const RunOptions &options)
     // 处理多个扩展
     if (!options.extensions.empty()) {
         opts.extensionRefs = options.extensions;
-    } else {
-        const char *envExt = ::getenv("LL_FORCE_EXTENSION");
-        if (envExt && envExt[0] != '\0') {
-            // 将环境变量按逗号拆分
-            std::stringstream ss(envExt);
-            std::string token;
-            std::vector<std::string> envList;
-            while (std::getline(ss, token, ',')) {
-                if (!token.empty()) envList.push_back(token);
-            }
-            if (!envList.empty()) {
-                opts.extensionRefs = envList;
-            }
-        }
     }
 
     // 调整日志输出，打印扩展列表（用逗号拼接）
-    std::string extStr = opts.extensionRefs
-        ? linglong::common::strings::join(*opts.extensionRefs, ',')
-        : "null";
+    std::string extStr =
+      opts.extensionRefs ? linglong::common::strings::join(*opts.extensionRefs, ',') : "null";
     LogD("start resolve run context with base {}, runtime {}, extensions {}",
-        opts.baseRef.value_or("null"),
-        opts.runtimeRef.value_or("null"),
-        extStr);
+         opts.baseRef.value_or("null"),
+         opts.runtimeRef.value_or("null"),
+         extStr);
 
     auto res = runContext.resolve(*curAppRef, opts);
     if (!res) {
@@ -807,6 +788,27 @@ int Cli::run(const RunOptions &options)
       .bindIPC()
       .forwardDefaultEnv()
       .enableSelfAdjustingMount();
+
+    std::vector<std::string> capabilities;
+    // privileged mode shares host's user_namespace and add capabilities
+    if (options.privileged) {
+        if (uid != 0) {
+            this->printer.printMessage(_("privileged mode requires running as root"));
+            return -1;
+        }
+
+        cfgBuilder.disableUserNamespace();
+        capabilities = { "CAP_CHOWN",    "CAP_DAC_OVERRIDE",     "CAP_FOWNER",     "CAP_FSETID",
+                         "CAP_KILL",     "CAP_NET_BIND_SERVICE", "CAP_SETFCAP",    "CAP_SETGID",
+                         "CAP_SETPCAP",  "CAP_SETUID",           "CAP_SYS_CHROOT", "CAP_NET_RAW",
+                         "CAP_NET_ADMIN" };
+    }
+
+    if (!options.capsAdd.empty()) {
+        capabilities.insert(capabilities.end(), options.capsAdd.begin(), options.capsAdd.end());
+    }
+
+    cfgBuilder.setCapabilities(capabilities);
 
     res = runContext.fillContextCfg(cfgBuilder);
     if (!res) {
@@ -1066,7 +1068,7 @@ int Cli::installFromFile(const QFileInfo &fileInfo,
                          const std::string &appid)
 {
     auto filePath = fileInfo.absoluteFilePath();
-    LINGLONG_TRACE(QString{ "install from file %1" }.arg(filePath));
+    LINGLONG_TRACE(fmt::format("install from file {}", filePath.toStdString()));
 
     QDBusReply<QString> authReply = this->authorization();
     if (!authReply.isValid() && authReply.error().type() == QDBusError::AccessDenied) {

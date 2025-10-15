@@ -105,7 +105,7 @@ std::string validateNonEmptyString(const std::string &parameter)
 linglong::utils::error::Result<linglong::api::types::v1::BuilderProject>
 parseProjectConfig(const std::filesystem::path &filename)
 {
-    LINGLONG_TRACE("parse project config " + QString::fromStdString(filename));
+    LINGLONG_TRACE("parse project config " + filename.string());
     std::cerr << "Using project file " + filename.string() << std::endl;
     auto project =
       linglong::utils::serialize::LoadYAMLFile<linglong::api::types::v1::BuilderProject>(filename);
@@ -471,7 +471,7 @@ int handleRepoAdd(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOptions &
 
     auto ret = repo.setConfig(newCfg);
     if (!ret) {
-        std::cerr << ret.error().message().toStdString() << std::endl;
+        std::cerr << ret.error().message() << std::endl;
         return -1;
     }
 
@@ -503,7 +503,7 @@ int handleRepoRemove(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOption
     newCfg.repos.erase(existingRepo);
     auto ret = repo.setConfig(newCfg);
     if (!ret) {
-        std::cerr << ret.error().message().toStdString() << std::endl;
+        std::cerr << ret.error().message() << std::endl;
         return -1;
     }
 
@@ -535,7 +535,7 @@ int handleRepoUpdate(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOption
 
     auto ret = repo.setConfig(newCfg);
     if (!ret) {
-        std::cerr << ret.error().message().toStdString() << std::endl;
+        std::cerr << ret.error().message() << std::endl;
         return -1;
     }
 
@@ -562,7 +562,7 @@ int handleRepoSetDefault(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOp
         newCfg.defaultRepo = alias;
         auto ret = repo.setConfig(newCfg);
         if (!ret) {
-            std::cerr << ret.error().message().toStdString() << std::endl;
+            std::cerr << ret.error().message() << std::endl;
             return -1;
         }
         qInfo() << "Default repository set to" << QString::fromStdString(alias) << "successfully.";
@@ -591,7 +591,7 @@ int handleRepoEnableMirror(linglong::repo::OSTreeRepo &repo, linglong::cli::Repo
     existingRepo->mirrorEnabled = true;
     auto ret = repo.setConfig(newCfg);
     if (!ret) {
-        std::cerr << ret.error().message().toStdString() << std::endl;
+        std::cerr << ret.error().message() << std::endl;
         return -1;
     }
 
@@ -617,7 +617,7 @@ int handleRepoDisableMirror(linglong::repo::OSTreeRepo &repo, linglong::cli::Rep
     existingRepo->mirrorEnabled = false;
     auto ret = repo.setConfig(newCfg);
     if (!ret) {
-        std::cerr << ret.error().message().toStdString() << std::endl;
+        std::cerr << ret.error().message() << std::endl;
         return -1;
     }
     std::cerr << "Repository " << alias << " mirror disabled successfully.";
@@ -834,6 +834,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
                    runOpts.execModules,
                    _("Run specified module. eg: --modules binary,develop"))
       ->delimiter(',')
+      ->allow_extra_args(false)
       ->type_name("modules");
     buildRun->add_option(
       "COMMAND",
@@ -842,14 +843,14 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     buildRun->add_flag("--debug",
                        runOpts.debugMode,
                        _("Run in debug mode (enable develop module)"));
-    buildRun->add_option("--extensions",
-                     runOpts.extensions,
-                     _("Specify extension(s) used by the app to run"))
-    ->type_name("REF")
-    ->delimiter(',')
-    ->allow_extra_args(false)
-    ->check(validatorString);
-                   
+    buildRun
+      ->add_option("--extensions",
+                   runOpts.extensions,
+                   _("Specify extension(s) used by the app to run"))
+      ->type_name("REF")
+      ->delimiter(',')
+      ->allow_extra_args(false)
+      ->check(validatorString);
 
     auto buildList = commandParser.add_subcommand("list", _("List built linyaps app"));
     buildList->usage(_("Usage: ll-builder list [OPTIONS]"));

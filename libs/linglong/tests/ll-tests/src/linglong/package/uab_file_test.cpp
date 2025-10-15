@@ -49,11 +49,9 @@ protected:
             tmpFile.close();
             auto ret = utils::command::Cmd("mkfs.erofs")
                          .exec({ bundleFile.c_str(), (testDir / "bundle").c_str() });
-            ASSERT_TRUE(ret.has_value())
-              << "Failed to create erofs file" << ret.error().message().toStdString();
+            ASSERT_TRUE(ret.has_value()) << "Failed to create erofs file" << ret.error().message();
             auto ret2 = uab->addNewSection("linglong.bundle", QFileInfo(bundleFile.c_str()));
-            ASSERT_TRUE(ret2.has_value())
-              << "Failed to add bundle section" << ret2.error().message().toStdString();
+            ASSERT_TRUE(ret2.has_value()) << ret2.error().message();
         }
         // 新添加 meta section
         {
@@ -137,7 +135,7 @@ TEST_F(UabFileTest, UnpackFuseOffset)
     auto uabValue = *uab;
     auto unpackRet = uabValue->unpack();
     ASSERT_TRUE(unpackRet.has_value())
-      << "Failed to unpack uab file" << unpackRet.error().message().toStdString();
+      << "Failed to unpack uab file" << unpackRet.error().message();
 
     ASSERT_TRUE(std::filesystem::exists(*unpackRet / "layers/test/binary/info.json"))
       << "'info.json' not found in unpack dir" << *unpackRet / "info.json";
@@ -161,7 +159,7 @@ TEST_F(UabFileTest, UnpackFuse)
     };
     uab.wrapMkdirDirFunc = [](const std::string &path) -> utils::error::Result<void> {
         LINGLONG_TRACE("test");
-        if (common::strings::hasPrefix(path, "/var/tmp")) {
+        if (common::strings::starts_with(path, "/var/tmp")) {
             return LINGLONG_ERR("Cannot create directory in /var/tmp");
         }
         std::filesystem::create_directories(path);
@@ -202,11 +200,10 @@ TEST_F(UabFileTest, ExtractSignData)
 {
     auto uab = MockUabFile(uabFile);
     auto ret = uab.unpack();
-    ASSERT_TRUE(ret.has_value()) << "Failed to unpack uab file "
-                                 << ret.error().message().toStdString();
+    ASSERT_TRUE(ret.has_value()) << "Failed to unpack uab file " << ret.error().message();
     auto extractSignDataRet = uab.extractSignData();
     ASSERT_TRUE(extractSignDataRet.has_value())
-      << "Failed to extract sign data " << extractSignDataRet.error().message().toStdString();
+      << "Failed to extract sign data " << extractSignDataRet.error().message();
     auto signDataDir = *extractSignDataRet / "entries" / "share" / "deepin-elf-verify" / ".elfsign";
     ASSERT_TRUE(std::filesystem::exists(signDataDir / "hello"))
       << "Failed to extract sign data " << signDataDir / "hello";
