@@ -11,7 +11,61 @@
 
 #include <utility>
 
+#include <nlohmann/json.hpp>
+#include <fstream>
+
 namespace linglong::runtime {
+
+static std::vector<std::string> loadExtensionsFromConfig(const std::string &appId)
+{
+    namespace fs = std::filesystem;
+    std::vector<std::string> result;
+    
+    // 1. 获取配置目录：优先使用 XDG_CONFIG_HOME，否则使用 $HOME/.config
+    const char *xdgConfigHome = ::getenv("XDG_CONFIG_HOME");
+    std::string baseConfigDir;
+    if (xdgConfigHome && xdgConfigHome[0] != '\0') {
+        baseConfigDir = xdgConfigHome;
+    } else {
+        const char *homeEnv = ::getenv("HOME");
+        if (!homeEnv || homeEnv[0] == '\0') {
+            return result;
+        }
+        baseConfigDir = std::string(homeEnv) + "/.config";
+    }
+    
+    fs::path basePath = fs::path(baseConfigDir) / "linglong";
+    
+    // 2. 定义解析函数：从指定 JSON 文件提取 "extensions" 数组，并加入 result
+    auto parseExtensions = [&](const fs::path &p) {
+        try {
+            if (!fs::exists(p)) return;
+            std::ifstream in(p);
+            if (!in.is_open()) return;
+            nlohmann::json j;
+            in >> j;
+            if (!j.contains("extensions") || !j.at("extensions").is_array()) return;
+            for (const auto &elem : j.at("extensions")) {
+                if (elem.is_string()) {
+                    std::string ext = elem.get<std::string>();
+                    if (std::find(result.begin(), result.end(), ext) == result.end()) {
+                        result.emplace_back(std::move(ext));
+                    }
+                }
+            }
+        } catch (...) {
+            // 文件不存在或解析失败时忽略
+        }
+    };
+    
+    // 3. 依次解析全局配置与应用配置
+    parseExtensions(basePath / "config.json");
+    if (!appId.empty()) {
+        parseExtensions(basePath / "apps" / appId / "config.json");
+    }
+    
+    return result;
+}
 
 RuntimeLayer::RuntimeLayer(package::Reference ref, RunContext &context)
     : reference(std::move(ref))
@@ -155,8 +209,17 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
     }
 
     // 手动解析多个扩展
+    // 先从命令行选项或配置文件获取扩展列表
+    std::vector<std::string> extRefs;
     if (options.extensionRefs && !options.extensionRefs->empty()) {
-        auto manualExtensionDef = makeManualExtensionDefine(*options.extensionRefs);
+        extRefs = *options.extensionRefs;  // 优先使用命令行
+    } else {
+        extRefs = loadExtensionsFromConfig(runnable.id);  // 否则读取配置文件
+    }
+
+    // 如果得到的扩展列表非空，执行已有的手动解析逻辑
+    if (!extRefs.empty()) {
+        auto manualExtensionDef = makeManualExtensionDefine(extRefs);
         if (!manualExtensionDef) {
             return LINGLONG_ERR(manualExtensionDef);
         }

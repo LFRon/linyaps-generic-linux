@@ -1,3 +1,10 @@
+linglong (1.9.13-5) unstable; urgency=medium
+
+  * feat: Change the way of extension loading.
+  * feat: Add --mount option and improve loader.
+
+ -- LFRon <ronforever@qq.com>  Fri, 17 Oct 2025 15:04:17 +0800
+
 linglong (1.9.13-4) unstable; urgency=medium
 
   * fix: Fix load mutiple extensions function.
