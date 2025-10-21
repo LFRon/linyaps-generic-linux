@@ -3,6 +3,9 @@
  */
 
 #include "run_context.h"
+#include "configure.h"
+
+#include "linglong/api/types/v1/Generators.hpp"
 
 #include "linglong/common/display.h"
 #include "linglong/extension/extension.h"
@@ -14,32 +17,61 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
+#include <unordered_set>
+#include <vector>
 
 namespace linglong::runtime {
+
+static std::vector<std::filesystem::path> configBasesUserFirst()
+{
+    namespace fs = std::filesystem;
+    std::vector<fs::path> bases;
+    std::unordered_set<std::string> seen;
+
+    auto addBase = [&](const fs::path &candidate) {
+        if (candidate.empty()) {
+            return;
+        }
+        auto normalized = candidate.lexically_normal();
+        auto key = normalized.string();
+        if (key.empty()) {
+            return;
+        }
+        if (seen.insert(key).second) {
+            bases.emplace_back(std::move(normalized));
+        }
+    };
+
+    if (const char *xdgConfigHome = ::getenv("XDG_CONFIG_HOME");
+        xdgConfigHome && xdgConfigHome[0] != '\0') {
+        addBase(fs::path(xdgConfigHome) / "linglong");
+    } else if (const char *homeEnv = ::getenv("HOME"); homeEnv && homeEnv[0] != '\0') {
+        addBase(fs::path(homeEnv) / ".config" / "linglong");
+    }
+
+    addBase(fs::path(LINGLONG_DATA_DIR) / "config");
+    return bases;
+}
+
+static std::vector<std::filesystem::path> configBasesFallbackFirst()
+{
+    auto bases = configBasesUserFirst();
+    if (bases.size() <= 1) {
+        return bases;
+    }
+    std::rotate(bases.begin(), std::prev(bases.end()), bases.end());
+    return bases;
+}
 
 static std::vector<std::string> loadExtensionsFromConfig(const std::string &appId)
 {
     namespace fs = std::filesystem;
     std::vector<std::string> result;
-    
-    // 1. 获取配置目录：优先使用 XDG_CONFIG_HOME，否则使用 $HOME/.config
-    const char *xdgConfigHome = ::getenv("XDG_CONFIG_HOME");
-    std::string baseConfigDir;
-    if (xdgConfigHome && xdgConfigHome[0] != '\0') {
-        baseConfigDir = xdgConfigHome;
-    } else {
-        const char *homeEnv = ::getenv("HOME");
-        if (!homeEnv || homeEnv[0] == '\0') {
-            return result;
-        }
-        baseConfigDir = std::string(homeEnv) + "/.config";
-    }
-    
-    fs::path basePath = fs::path(baseConfigDir) / "linglong";
     
     // 2. 定义解析函数：从指定 JSON 文件提取 "extensions" 数组，并加入 result
     auto parseExtensions = [&](const fs::path &p) {
@@ -63,10 +95,11 @@ static std::vector<std::string> loadExtensionsFromConfig(const std::string &appI
         }
     };
     
-    // 3. 依次解析全局配置与应用配置
-    parseExtensions(basePath / "config.json");
-    if (!appId.empty()) {
-        parseExtensions(basePath / "apps" / appId / "config.json");
+    for (const auto &base : configBasesUserFirst()) {
+        parseExtensions(base / "config.json");
+        if (!appId.empty()) {
+            parseExtensions(base / "apps" / appId / "config.json");
+        }
     }
     
     return result;
@@ -77,42 +110,36 @@ static std::vector<std::string> loadExtensionsFromBase(const std::string &baseId
     namespace fs = std::filesystem;
     std::vector<std::string> result;
 
-    const char *xdgConfigHome = ::getenv("XDG_CONFIG_HOME");
-    std::string baseConfigDir;
-    if (xdgConfigHome && xdgConfigHome[0] != '\0') {
-        baseConfigDir = xdgConfigHome;
-    } else {
-        const char *homeEnv = ::getenv("HOME");
-        if (!homeEnv || homeEnv[0] == '\0') {
-            return result;
-        }
-        baseConfigDir = std::string(homeEnv) + "/.config";
+    if (baseId.empty()) {
+        return result;
     }
-    fs::path cfgPath = fs::path(baseConfigDir) / "linglong" / "base" / baseId / "config.json";
 
-    try {
-        if (!fs::exists(cfgPath)) {
-            return result;
-        }
-        std::ifstream in(cfgPath);
-        if (!in.is_open()) {
-            return result;
-        }
-        nlohmann::json j;
-        in >> j;
-        if (!j.contains("extensions") || !j.at("extensions").is_array()) {
-            return result;
-        }
-        for (const auto &elem : j.at("extensions")) {
-            if (elem.is_string()) {
-                std::string ext = elem.get<std::string>();
-                if (std::find(result.begin(), result.end(), ext) == result.end()) {
-                    result.emplace_back(std::move(ext));
+    for (const auto &root : configBasesUserFirst()) {
+        fs::path cfgPath = root / "base" / baseId / "config.json";
+        try {
+            if (!fs::exists(cfgPath)) {
+                continue;
+            }
+            std::ifstream in(cfgPath);
+            if (!in.is_open()) {
+                continue;
+            }
+            nlohmann::json j;
+            in >> j;
+            if (!j.contains("extensions") || !j.at("extensions").is_array()) {
+                continue;
+            }
+            for (const auto &elem : j.at("extensions")) {
+                if (elem.is_string()) {
+                    std::string ext = elem.get<std::string>();
+                    if (std::find(result.begin(), result.end(), ext) == result.end()) {
+                        result.emplace_back(std::move(ext));
+                    }
                 }
             }
+        } catch (...) {
+            // ignore parse errors
         }
-    } catch (...) {
-        // ignore parse errors
     }
     return result;
 }
@@ -142,26 +169,19 @@ static json loadMergedJsonWithBase(const std::string &appId, const std::string &
         }
     };
 
-    const char *xdg = ::getenv("XDG_CONFIG_HOME");
-    std::string basePath = (xdg && xdg[0]) ? xdg
-                                           : (std::string(::getenv("HOME") ? ::getenv("HOME") : "")
-                                              + "/.config");
-    if (basePath.empty()) {
-        return merged;
-    }
-
-    fs::path root = fs::path(basePath) / "linglong";
-    if (auto g = readIfExists(root / "config.json")) {
-        merged.merge_patch(*g);
-    }
-    if (!baseId.empty()) {
-        if (auto b = readIfExists(root / "base" / baseId / "config.json")) {
-            merged.merge_patch(*b);
+    for (const auto &root : configBasesFallbackFirst()) {
+        if (auto g = readIfExists(root / "config.json")) {
+            merged.merge_patch(*g);
         }
-    }
-    if (!appId.empty()) {
-        if (auto a = readIfExists(root / "apps" / appId / "config.json")) {
-            merged.merge_patch(*a);
+        if (!baseId.empty()) {
+            if (auto b = readIfExists(root / "base" / baseId / "config.json")) {
+                merged.merge_patch(*b);
+            }
+        }
+        if (!appId.empty()) {
+            if (auto a = readIfExists(root / "apps" / appId / "config.json")) {
+                merged.merge_patch(*a);
+            }
         }
     }
     return merged;
@@ -198,16 +218,15 @@ static void collectEnvFromJson(const json &j, std::vector<std::string> &out)
     }
 }
 
-static void collectMountsFromJson(const std::string &appId,
-                                  const json &j,
-                                  std::vector<ocppi::runtime::config::types::Mount> &out)
+static std::vector<ocppi::runtime::config::types::Mount>
+parseFilesystemMounts(const std::string &appId, const json &arr)
 {
     using Mount = ocppi::runtime::config::types::Mount;
-    if (!j.contains("filesystem") || !j.at("filesystem").is_array()) {
-        return;
+    std::vector<Mount> mounts;
+    if (!arr.is_array()) {
+        return mounts;
     }
-
-    for (const auto &e : j.at("filesystem")) {
+    for (const auto &e : arr) {
         if (!e.is_object()) {
             continue;
         }
@@ -235,6 +254,24 @@ static void collectMountsFromJson(const std::string &appId,
                 p /= std::filesystem::path(host).filename();
                 host = p.string();
             }
+
+            std::error_code ec;
+            std::filesystem::path hostPath(host);
+            if (!std::filesystem::exists(hostPath, ec)) {
+                ec.clear();
+                if (!std::filesystem::create_directories(hostPath, ec) && ec) {
+                    ec.clear();
+                    auto parent = hostPath.parent_path();
+                    if (!parent.empty()) {
+                        std::filesystem::create_directories(parent, ec);
+                    }
+                }
+            }
+            if (ec || !std::filesystem::exists(hostPath, ec)) {
+                qWarning() << "failed to prepare persist directory for"
+                           << QString::fromStdString(host) << ":" << ec.message().c_str();
+                continue;
+            }
         }
 
         Mount m;
@@ -242,8 +279,21 @@ static void collectMountsFromJson(const std::string &appId,
         m.source = host;
         m.destination = target;
         m.options = { { (mode == "rw" ? "rw" : "ro"), "rbind" } };
-        out.emplace_back(std::move(m));
+        mounts.emplace_back(std::move(m));
     }
+
+    return mounts;
+}
+
+static void collectMountsFromJson(const std::string &appId,
+                                  const json &j,
+                                  std::vector<ocppi::runtime::config::types::Mount> &out)
+{
+    if (!j.contains("filesystem") || !j.at("filesystem").is_array()) {
+        return;
+    }
+    auto mounts = parseFilesystemMounts(appId, j.at("filesystem"));
+    std::move(mounts.begin(), mounts.end(), std::back_inserter(out));
 }
 
 struct CommandSettings {
@@ -386,6 +436,8 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
 {
     LINGLONG_TRACE("resolve RunContext from runnable " + runnable.toString());
 
+    filesystemPolicyCache.reset();
+
     containerID = runtime::genContainerID(runnable);
 
     auto item = repo.getLayerItem(runnable);
@@ -468,6 +520,10 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
         extRefs = loadExtensionsFromConfig(runnable.id);
     }
 
+    if (extRefs.empty() && info.cliConfig && info.cliConfig->extensions) {
+        extRefs = *info.cliConfig->extensions;
+    }
+
     // 如果未获取到扩展列表，则尝试根据 base 层加载
     if (extRefs.empty()) {
         // 获取 baseId
@@ -518,6 +574,8 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
                                                const std::filesystem::path &buildOutput)
 {
     LINGLONG_TRACE("resolve RunContext from builder project " + target.package.id);
+
+    filesystemPolicyCache.reset();
 
     auto targetRef = package::Reference::fromBuilderProject(target);
     if (!targetRef) {
@@ -922,7 +980,35 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
     std::string currentBaseId;
     if (baseLayer) currentBaseId = baseLayer->getReference().id;
 
-    auto mergedCfg = loadMergedJsonWithBase(currentAppId, currentBaseId);
+    json mergedCfg = json::object();
+
+    auto mergeCliConfig = [&](RuntimeLayer *layer) {
+        if (layer == nullptr) {
+            return;
+        }
+        auto item = layer->getCachedItem();
+        if (!item) {
+            return;
+        }
+        if (item->info.cliConfig) {
+            json cfg = *(item->info.cliConfig);
+            if (mergedCfg.empty()) {
+                mergedCfg = std::move(cfg);
+            } else {
+                mergedCfg.merge_patch(cfg);
+            }
+        }
+    };
+
+    mergeCliConfig(baseLayer ? &*baseLayer : nullptr);
+    mergeCliConfig(appLayer ? &*appLayer : nullptr);
+
+    auto configFromDirs = loadMergedJsonWithBase(currentAppId, currentBaseId);
+    if (mergedCfg.empty()) {
+        mergedCfg = configFromDirs;
+    } else {
+        mergedCfg.merge_patch(configFromDirs);
+    }
     std::optional<std::string> mergedPath;
 
     // 1) common env
@@ -974,9 +1060,16 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
 
     // 2) common filesystem
     {
-        std::vector<ocppi::runtime::config::types::Mount> cfgMounts;
-        collectMountsFromJson(currentAppId, mergedCfg, cfgMounts);
-        if (!cfgMounts.empty()) builder.addExtraMounts(cfgMounts);
+        const auto &fsPolicy = filesystemPolicy();
+        if (fsPolicy.allowListConfigured) {
+            if (!fsPolicy.allowList.empty()) {
+                auto allowList = fsPolicy.allowList;
+                builder.addExtraMounts(std::move(allowList));
+            }
+        } else if (!fsPolicy.extra.empty()) {
+            auto extraMounts = fsPolicy.extra;
+            builder.addExtraMounts(std::move(extraMounts));
+        }
     }
     // === end: merge Global->Base->App config ===
 
@@ -1197,6 +1290,45 @@ utils::error::Result<std::filesystem::path> RunContext::getBaseLayerPath() const
 
     const auto &layerDir = baseLayer->getLayerDir();
     return std::filesystem::path{ layerDir->absolutePath().toStdString() };
+}
+
+std::string RunContext::currentAppId() const
+{
+    if (appLayer) {
+        return appLayer->getReference().id;
+    }
+    return targetId;
+}
+
+const RunContext::FilesystemPolicy &RunContext::filesystemPolicy() const
+{
+    if (!filesystemPolicyCache) {
+        FilesystemPolicy policy;
+
+        auto appId = currentAppId();
+        std::string baseId;
+        if (baseLayer) {
+            baseId = baseLayer->getReference().id;
+        }
+
+        auto mergedCfg = loadMergedJsonWithBase(appId, baseId);
+        if (auto it = mergedCfg.find("filesystem_allow_only"); it != mergedCfg.end()) {
+            policy.allowListConfigured = true;
+            if (it->is_array()) {
+                policy.allowList = parseFilesystemMounts(appId, *it);
+            }
+        }
+
+        if (!policy.allowListConfigured) {
+            if (auto it = mergedCfg.find("filesystem"); it != mergedCfg.end()) {
+                policy.extra = parseFilesystemMounts(appId, *it);
+            }
+        }
+
+        filesystemPolicyCache = std::move(policy);
+    }
+
+    return *filesystemPolicyCache;
 }
 
 utils::error::Result<std::filesystem::path> RunContext::getRuntimeLayerPath() const

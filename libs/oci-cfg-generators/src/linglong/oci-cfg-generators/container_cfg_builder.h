@@ -142,6 +142,11 @@ public:
     ContainerCfgBuilder &bindHostRoot() noexcept;
     ContainerCfgBuilder &bindHostStatics() noexcept;
     ContainerCfgBuilder &bindHome(std::filesystem::path hostHome) noexcept;
+    ContainerCfgBuilder &disableHostHomeBind() noexcept
+    {
+        skipHostHome = true;
+        return *this;
+    }
 
     ContainerCfgBuilder &bindXOrgSocket(const std::filesystem::path &socket) noexcept;
     ContainerCfgBuilder &bindXAuthFile(const std::filesystem::path &authFile) noexcept;
@@ -299,6 +304,7 @@ private:
     // home dir
     std::optional<std::filesystem::path> homePath;
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> homeMount;
+    bool skipHostHome{ false };
 
     // private dir
     std::filesystem::path privatePath;

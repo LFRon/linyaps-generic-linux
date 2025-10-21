@@ -5,6 +5,8 @@
  */
 #include "configure.h"
 #include "linglong/api/dbus/v1/dbus_peer.h"
+#include "linglong/api/types/v1/Generators.hpp"
+#include "linglong/api/types/v1/PackageInfoV2.hpp"
 #include "linglong/cli/cli.h"
 #include "linglong/cli/cli_printer.h"
 #include "linglong/cli/dbus_notifier.h"
@@ -663,6 +665,11 @@ static constexpr const char kConfigUsageLines[] =
   "PATH [--mode ro|rw] [--persist]\n"
   "  ll-cli config rm-fs          [--global | <appid> | --base <baseid>] (--target PATH | "
   "--index N)\n"
+  "  ll-cli config add-fs-allow   [--global | <appid> | --base <baseid>] --host PATH --target "
+  "PATH [--mode ro|rw] [--persist]\n"
+  "  ll-cli config rm-fs-allow    [--global | <appid> | --base <baseid>] (--target PATH | "
+  "--index N)\n"
+  "  ll-cli config clear-fs-allow [--global | <appid> | --base <baseid>]\n"
   "  ll-cli config set-command    [--global | <appid> | --base <baseid>] <cmd> [--entrypoint P] "
   "[--cwd D] [--args-prefix \"...\"] [--args-suffix \"...\"] [KEY=VAL ...]\n"
   "  ll-cli config unset-command  [--global | <appid> | --base <baseid>] <cmd>\n";
@@ -696,11 +703,16 @@ static std::filesystem::path getBaseConfigDir()
     return {};
 }
 
-static std::filesystem::path getConfigPath(Scope scope,
-                                           const std::string &appId,
-                                           const std::string &baseId)
+static std::filesystem::path getSystemConfigDir()
 {
-    auto base = getBaseConfigDir();
+    return std::filesystem::path(LINGLONG_DATA_DIR) / "config";
+}
+
+static std::filesystem::path buildConfigPath(const std::filesystem::path &base,
+                                             Scope scope,
+                                             const std::string &appId,
+                                             const std::string &baseId)
+{
     if (base.empty()) {
         return {};
     }
@@ -715,6 +727,36 @@ static std::filesystem::path getConfigPath(Scope scope,
     return {};
 }
 
+static std::filesystem::path getConfigPath(Scope scope,
+                                           const std::string &appId,
+                                           const std::string &baseId)
+{
+    return buildConfigPath(getBaseConfigDir(), scope, appId, baseId);
+}
+
+static std::vector<std::filesystem::path> getConfigSearchPaths(Scope scope,
+                                                               const std::string &appId,
+                                                               const std::string &baseId)
+{
+    std::vector<std::filesystem::path> paths;
+    std::unordered_set<std::string> seen;
+    auto addPath = [&](const std::filesystem::path &candidate) {
+        if (candidate.empty()) {
+            return;
+        }
+        auto normalized = candidate.lexically_normal();
+        auto key = normalized.string();
+        if (!key.empty() && seen.insert(key).second) {
+            paths.emplace_back(std::move(normalized));
+        }
+    };
+
+    addPath(buildConfigPath(getBaseConfigDir(), scope, appId, baseId));
+    addPath(buildConfigPath(getSystemConfigDir(), scope, appId, baseId));
+
+    return paths;
+}
+
 static bool ensureParentDir(const std::filesystem::path &p)
 {
     std::error_code ec;
@@ -725,15 +767,22 @@ static bool ensureParentDir(const std::filesystem::path &p)
     return std::filesystem::create_directories(parent, ec) || std::filesystem::exists(parent);
 }
 
-static std::optional<json> readJsonIfExists(const std::filesystem::path &p)
+static std::optional<json> readJsonIfExists(const std::filesystem::path &p, bool *existed = nullptr)
 {
     try {
-        if (!std::filesystem::exists(p)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(p, ec)) {
+            if (existed) {
+                *existed = false;
+            }
             return json::object();
         }
         std::ifstream in(p);
         if (!in.is_open()) {
             return std::nullopt;
+        }
+        if (existed) {
+            *existed = true;
         }
         json j;
         in >> j;
@@ -851,9 +900,9 @@ struct FsArg {
     bool persist = false;
 };
 
-static void jsonAddFs(json &root, const FsArg &fs)
+static void jsonAddFsTo(json &root, const FsArg &fs, const char *field)
 {
-    auto &arr = root["filesystem"];
+    auto &arr = root[field];
     if (!arr.is_array()) {
         arr = json::array();
     }
@@ -875,12 +924,22 @@ static void jsonAddFs(json &root, const FsArg &fs)
     arr.push_back(std::move(o));
 }
 
-static bool jsonRmFsByTarget(json &root, const std::string &target)
+static void jsonAddFs(json &root, const FsArg &fs)
 {
-    if (!root.contains("filesystem") || !root["filesystem"].is_array()) {
+    jsonAddFsTo(root, fs, "filesystem");
+}
+
+static void jsonAddFsAllow(json &root, const FsArg &fs)
+{
+    jsonAddFsTo(root, fs, "filesystem_allow_only");
+}
+
+static bool jsonRmFsByTargetFrom(json &root, const std::string &target, const char *field)
+{
+    if (!root.contains(field) || !root[field].is_array()) {
         return false;
     }
-    auto &arr = root["filesystem"];
+    auto &arr = root[field];
     auto old = arr.size();
     arr.erase(std::remove_if(arr.begin(), arr.end(), [&](const json &e) {
         return e.is_object() && e.value("target", "") == target;
@@ -889,17 +948,42 @@ static bool jsonRmFsByTarget(json &root, const std::string &target)
     return arr.size() != old;
 }
 
-static bool jsonRmFsByIndex(json &root, size_t idx)
+static bool jsonRmFsByTarget(json &root, const std::string &target)
 {
-    if (!root.contains("filesystem") || !root["filesystem"].is_array()) {
+    return jsonRmFsByTargetFrom(root, target, "filesystem");
+}
+
+static bool jsonRmFsAllowByTarget(json &root, const std::string &target)
+{
+    return jsonRmFsByTargetFrom(root, target, "filesystem_allow_only");
+}
+
+static bool jsonRmFsByIndexFrom(json &root, size_t idx, const char *field)
+{
+    if (!root.contains(field) || !root[field].is_array()) {
         return false;
     }
-    auto &arr = root["filesystem"];
+    auto &arr = root[field];
     if (idx >= arr.size()) {
         return false;
     }
     arr.erase(arr.begin() + idx);
     return true;
+}
+
+static bool jsonRmFsByIndex(json &root, size_t idx)
+{
+    return jsonRmFsByIndexFrom(root, idx, "filesystem");
+}
+
+static bool jsonRmFsAllowByIndex(json &root, size_t idx)
+{
+    return jsonRmFsByIndexFrom(root, idx, "filesystem_allow_only");
+}
+
+static void jsonClearFsAllow(json &root)
+{
+    root["filesystem_allow_only"] = json::array();
 }
 
 struct CmdSetArg {
@@ -1042,20 +1126,76 @@ int runCliApplication(int argc, char **mainArgv)
                 }
                 return { Scope::App, t, "", start + 1 };
             };
+
+            auto loadCliConfigFromPackage = [&](Scope scope,
+                                                const std::string &appId,
+                                                const std::string &baseId)
+              -> std::optional<json> {
+                if (scope == Scope::Global) {
+                    return std::nullopt;
+                }
+
+                auto repoResult = initOSTreeRepo();
+                if (!repoResult) {
+                    qWarning() << "load cli config from package failed:" << repoResult.error();
+                    return std::nullopt;
+                }
+
+                auto *repoPtr = *repoResult;
+                auto list = repoPtr->listLocal();
+                if (!list) {
+                    qWarning() << "list local packages failed:" << list.error();
+                    return std::nullopt;
+                }
+
+                const auto matcher = [&](const linglong::api::types::v1::PackageInfoV2 &info) -> bool {
+                    if (scope == Scope::App) {
+                        return info.id == appId && info.kind == "app";
+                    }
+                    if (scope == Scope::Base) {
+                        return info.id == baseId && info.kind == "base";
+                    }
+                    return false;
+                };
+
+                auto it = std::find_if(list->begin(), list->end(), matcher);
+                if (it == list->end() || !it->cliConfig) {
+                    return std::nullopt;
+                }
+
+                json packaged = *(it->cliConfig);
+                return packaged;
+            };
+
             auto openConfig = [&](Scope scope,
                                   const std::string &appId,
                                   const std::string &baseId) -> std::optional<json> {
-                auto path = getConfigPath(scope, appId, baseId);
-                if (path.empty()) {
+                auto userPath = getConfigPath(scope, appId, baseId);
+                if (userPath.empty()) {
                     fprintf(stderr, "invalid config path\n");
                     return std::nullopt;
                 }
-                auto j = readJsonIfExists(path);
-                if (!j) {
-                    fprintf(stderr, "failed to read %s\n", path.string().c_str());
+                bool userExists = false;
+                auto userJson = readJsonIfExists(userPath, &userExists);
+                if (!userJson) {
+                    fprintf(stderr, "failed to read %s\n", userPath.string().c_str());
                     return std::nullopt;
                 }
-                return j;
+                if (!userExists) {
+                    auto searchPaths = getConfigSearchPaths(scope, appId, baseId);
+                    for (size_t idx = 1; idx < searchPaths.size(); ++idx) {
+                        bool existed = false;
+                        auto fallback = readJsonIfExists(searchPaths[idx], &existed);
+                        if (!fallback || !existed) {
+                            continue;
+                        }
+                        return fallback;
+                    }
+                    if (auto packaged = loadCliConfigFromPackage(scope, appId, baseId)) {
+                        return packaged;
+                    }
+                }
+                return userJson;
             };
             auto saveConfig = [&](Scope scope,
                                   const std::string &appId,
@@ -1164,6 +1304,40 @@ int runCliApplication(int argc, char **mainArgv)
                 }
                 return 0;
             }
+            if (sub == "add-fs-allow") {
+                auto [scope, appId, baseId, i] = parseScope(3);
+                FsArg fs;
+                fs.mode = "ro";
+                fs.persist = false;
+                for (; i < argc; ++i) {
+                    std::string a = mainArgv[i];
+                    if (a == "--persist") {
+                        fs.persist = true;
+                    } else if (a == "--host" && i + 1 < argc) {
+                        fs.host = mainArgv[++i];
+                    } else if (a == "--target" && i + 1 < argc) {
+                        fs.target = mainArgv[++i];
+                    } else if (a == "--mode" && i + 1 < argc) {
+                        fs.mode = mainArgv[++i];
+                    } else {
+                        fprintf(stderr, "unknown arg: %s\n", a.c_str());
+                        return 1;
+                    }
+                }
+                if (fs.host.empty() || fs.target.empty()) {
+                    printConfigUsage();
+                    return 1;
+                }
+                auto j = openConfig(scope, appId, baseId);
+                if (!j) {
+                    return 1;
+                }
+                jsonAddFsAllow(*j, fs);
+                if (!saveConfig(scope, appId, baseId, *j)) {
+                    return 1;
+                }
+                return 0;
+            }
             if (sub == "rm-fs") {
                 auto [scope, appId, baseId, i] = parseScope(3);
                 std::optional<std::string> target;
@@ -1198,6 +1372,57 @@ int runCliApplication(int argc, char **mainArgv)
                     fprintf(stderr, "no filesystem entry removed\n");
                     return 1;
                 }
+                if (!saveConfig(scope, appId, baseId, *j)) {
+                    return 1;
+                }
+                return 0;
+            }
+            if (sub == "rm-fs-allow") {
+                auto [scope, appId, baseId, i] = parseScope(3);
+                std::optional<std::string> target;
+                std::optional<size_t> index;
+                for (; i < argc; ++i) {
+                    std::string a = mainArgv[i];
+                    if (a == "--target" && i + 1 < argc) {
+                        target = mainArgv[++i];
+                    } else if (a == "--index" && i + 1 < argc) {
+                        index = static_cast<size_t>(std::stoul(mainArgv[++i]));
+                    } else {
+                        fprintf(stderr, "unknown arg: %s\n", a.c_str());
+                        return 1;
+                    }
+                }
+                if (!target && !index) {
+                    printConfigUsage();
+                    return 1;
+                }
+                auto j = openConfig(scope, appId, baseId);
+                if (!j) {
+                    return 1;
+                }
+                bool ok = false;
+                if (target) {
+                    ok = jsonRmFsAllowByTarget(*j, *target);
+                }
+                if (!ok && index) {
+                    ok = jsonRmFsAllowByIndex(*j, *index);
+                }
+                if (!ok) {
+                    fprintf(stderr, "no filesystem_allow entry removed\n");
+                    return 1;
+                }
+                if (!saveConfig(scope, appId, baseId, *j)) {
+                    return 1;
+                }
+                return 0;
+            }
+            if (sub == "clear-fs-allow") {
+                auto [scope, appId, baseId, i] = parseScope(3);
+                auto j = openConfig(scope, appId, baseId);
+                if (!j) {
+                    return 1;
+                }
+                jsonClearFsAllow(*j);
                 if (!saveConfig(scope, appId, baseId, *j)) {
                     return 1;
                 }

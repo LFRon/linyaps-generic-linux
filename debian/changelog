@@ -1,3 +1,9 @@
+linglong (1.9.13-8) unstable; urgency=medium
+
+  * feat: Initial support for strict sandbox mode
+
+ -- LFRon <ronforever@qq.com>  Tue, 21 Oct 2025 20:29:17 +0800
+
 linglong (1.9.13-7) unstable; urgency=medium
 
   * feat: Initial support for env config
