@@ -1,3 +1,9 @@
+linglong (1.9.13-9) unstable; urgency=medium
+
+  * feat: Fully support xdg-desktop-portal
+
+ -- LFRon <ronforever@qq.com>  Mon, 10 Nov 2025 11:30:17 +0800
+
 linglong (1.9.13-8) unstable; urgency=medium
 
   * feat: Initial support for strict sandbox mode
