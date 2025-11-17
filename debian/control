@@ -25,8 +25,8 @@ Build-Depends: cmake,
                libzstd-dev,
                nlohmann-json3-dev (>= 3.5.0),
                pkg-config,
-               qtbase5-dev | qt6-base-dev,
-               qtbase5-private-dev | qt6-base-private-dev,
+               qt6-base-dev | qtbase5-dev,
+               qt6-base-private-dev | qtbase5-private-dev,
                systemd,
                zlib1g-dev,
                libcap-dev
@@ -40,11 +40,12 @@ Depends: desktop-file-utils,
          linglong-box | crun,
          shared-mime-info,
          pkexec | policykit-1,
+         erofs-utils,
          ${misc:Depends},
          ${shlibs:Depends}
 Replaces: linglong-dbus-proxy
 Conflicts: linglong-dbus-proxy
-Recommends: erofsfuse,erofs-utils
+Recommends: erofsfuse
 Description: Linglong package manager.
  Linglong package management command line tool.
 

@@ -740,7 +740,7 @@ int main(int argc, char **argv)
     Q_INIT_RESOURCE(builder_releases);
     // 初始化应用，builder在非tty环境也输出日志
     linglong::utils::global::applicationInitialize(true);
-    linglong::utils::global::initLinyapsLogSystem(argv[0]);
+    linglong::utils::global::initLinyapsLogSystem(linglong::utils::log::LogBackend::Console);
 
     CLI::App commandParser{ _("linyaps builder CLI \n"
                               "A CLI program to build linyaps application\n") };
@@ -1084,15 +1084,13 @@ You can report bugs to the linyaps team under this project: https://github.com/O
         }
     }
 
-    const auto defaultRepo = linglong::repo::getDefaultRepo(*repoCfg);
-    linglong::repo::ClientFactory clientFactory(defaultRepo.url);
     auto repoRoot = QDir{ QString::fromStdString(builderCfg->repo) };
     if (!repoRoot.exists() && !repoRoot.mkpath(".")) {
         qCritical() << "failed to create the repository of builder.";
         return -1;
     }
 
-    linglong::repo::OSTreeRepo repo(repoRoot, *repoCfg, clientFactory);
+    linglong::repo::OSTreeRepo repo(repoRoot, *repoCfg);
 
     if (buildRepo->parsed()) {
         return handleRepo(repo,

@@ -336,7 +336,7 @@ private:
 
     bool isolateNetWorkEnabled = false;
     bool disableUserNamespaceEnabled = false;
-    bool disableGenerateContainerInfo{false};
+    bool disableGenerateContainerInfo{ false };
     bool applyPatchEnabled = true;
     bool isolateTmp{ false };
 

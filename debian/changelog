@@ -1,54 +1,19 @@
-linglong (1.9.13-9) unstable; urgency=medium
+linglong (1.10.2-1) unstable; urgency=medium
 
-  * feat: Fully support xdg-desktop-portal
+  * fix: Duplicate initialization causes incorrect stderr redirection
+  * fix: There will be multiple versions of the application when an error occurs during the upgrade process
+  * fix: base field is empty when use ll-cli search
+  * fix: fix repo config comparison and add debug logs
+  * fix: add DBusPrivate to Qt6 find_package
+  * feat: still implement loading of extensions from config files
 
- -- LFRon <ronforever@qq.com>  Mon, 10 Nov 2025 11:30:17 +0800
+ -- dengbo <dengbo@deepin.org>  Fri, 14 Nov 2025 14:58:28 +0800
 
-linglong (1.9.13-8) unstable; urgency=medium
+linglong (1.10.1-1) unstable; urgency=medium
 
-  * feat: Initial support for strict sandbox mode
+  * release 1.10.1-1.
 
- -- LFRon <ronforever@qq.com>  Tue, 21 Oct 2025 20:29:17 +0800
-
-linglong (1.9.13-7) unstable; urgency=medium
-
-  * feat: Initial support for env config
-
- -- LFRon <ronforever@qq.com>  Tue, 21 Oct 2025 12:45:17 +0800
-
-linglong (1.9.13-6) unstable; urgency=medium
-
-  * feat: Allow load extension while specified base are loading
-
- -- LFRon <ronforever@qq.com>  Fri, 17 Oct 2025 15:04:17 +0800
-
-linglong (1.9.13-5) unstable; urgency=medium
-
-  * feat: Change the way of extension loading.
-  * feat: Add --mount option and improve loader.
-
- -- LFRon <ronforever@qq.com>  Fri, 17 Oct 2025 15:04:17 +0800
-
-linglong (1.9.13-4) unstable; urgency=medium
-
-  * fix: Fix load mutiple extensions function.
-  * fix: some known bugs.
-
- -- LFRon <ronforever@qq.com>  Wed, 15 Oct 2025 14:10:17 +0800
-
-linglong (1.9.13-3) unstable; urgency=medium
-
-  * feat: Allow load mutiple extensions.
-  * fix some known bugs.
-
- -- LFRon <ronforever@qq.com>  Mon, 13 Oct 2025 22:39:17 +0800
-
-linglong (1.9.13-2) unstable; urgency=medium
-
-  * feat: enable loading extensions by using env "LL_FORCE_EXTENSION".
-  * fix some known bugs.
-
- -- LFRon <ronforever@qq.com>  Sun, 12 Oct 2025 22:39:17 +0800
+ -- dengbo <dengbo@deepin.org>  Fri, 31 Oct 2025 13:16:07 +0800
 
 linglong (1.9.13-1) unstable; urgency=medium
 

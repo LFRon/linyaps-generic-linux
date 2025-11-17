@@ -338,6 +338,9 @@ void addUninstallCommand(CLI::App &commandParser,
     cliUninstall->add_option("--module", uninstallOptions.module, _("Uninstall a specify module"))
       ->type_name("MODULE")
       ->check(validatorString);
+    cliUninstall->add_flag("--force",
+                           uninstallOptions.forceOpt,
+                           _("Force uninstall base or runtime"));
 
     // below options are used for compatibility with old ll-cli
     const auto &pruneDescription = std::string{ _("Remove all unused modules") };
@@ -581,42 +584,35 @@ void addInspectCommand(CLI::App &commandParser,
 {
     auto *cliInspect =
       commandParser
-        .add_subcommand("inspect", _("Display the information of installed application"))
+        .add_subcommand("inspect",
+                        _("Display the inspect information of the installed application"))
         ->group(group)
-        ->usage(_("Usage: ll-cli inspect [OPTIONS]"));
-    cliInspect->footer("This subcommand is for internal use only currently");
-    cliInspect->add_option("-p,--pid", inspectOptions.pid, _("Specify the process id"))
-      ->check([](const std::string &input) -> std::string {
-          if (input.empty()) {
-              return _("Input parameter is empty, please input valid parameter instead");
-          }
+        ->usage(_("Usage: ll-cli inspect SUBCOMMAND [OPTIONS]"));
 
-          try {
-              auto pid = std::stoull(input);
-              if (pid <= 0) {
-                  return _("Invalid process id");
-              }
-          } catch (std::exception &e) {
-              return _("Invalid pid format");
-          }
+    cliInspect->require_subcommand(1);
 
-          return {};
-      });
-}
-
-// Function to add the dir subcommand
-void addDirCommand(CLI::App &commandParser, DirOptions &dirOptions, const std::string &group)
-{
-    auto cliLayerDir =
-      commandParser.add_subcommand("dir", "Get the layer directory of app(base or runtime)")
-        ->group(group);
-    cliLayerDir->footer("This subcommand is for internal use only currently");
-    cliLayerDir
-      ->add_option("APP", dirOptions.appid, _("Specify the installed app(base or runtime)"))
+    // 创建 inspect dir 子命令
+    auto *cliInspectDir = cliInspect->add_subcommand(
+      "dir",
+      _("Display the data(bundle) directory of the installed(running) application"));
+    cliInspectDir->usage(_("Usage: ll-cli inspect dir [OPTIONS] APP"));
+    cliInspectDir
+      ->add_option("APP",
+                   inspectOptions.appid,
+                   _("Specify the application ID, and it can also be reference"))
       ->required()
       ->check(validatorString);
-    cliLayerDir->add_option("--module", dirOptions.module, _("Specify a module"))
-      ->type_name("MODULE")
+    cliInspectDir
+      ->add_option("-t, --type",
+                   inspectOptions.dirType,
+                   _("Specify the directory type (layer or bundle),the default is layer"))
+      ->type_name("TYPE")
+      ->capture_default_str()
+      ->check(validatorString);
+    cliInspectDir
+      ->add_option("-m, --module",
+                   inspectOptions.module,
+                   _("Specify the module type (binary or develop). Only works when type is layer"))
       ->check(validatorString);
 }
 
@@ -635,11 +631,6 @@ linglong::utils::error::Result<linglong::repo::OSTreeRepo *> initOSTreeRepo()
         return LINGLONG_ERR("load repo config failed", repoConfig);
     }
 
-    // get default repo
-    auto defaultRepo = linglong::repo::getDefaultRepo(*repoConfig);
-    auto clientFactory = new linglong::repo::ClientFactory(std::move(defaultRepo.url));
-    clientFactory->setParent(QCoreApplication::instance());
-
     // check repo root
     auto repoRoot = QDir(LINGLONG_ROOT);
     if (!repoRoot.exists()) {
@@ -647,7 +638,7 @@ linglong::utils::error::Result<linglong::repo::OSTreeRepo *> initOSTreeRepo()
     }
 
     // create repo
-    auto repo = new linglong::repo::OSTreeRepo(repoRoot, std::move(*repoConfig), *clientFactory);
+    auto repo = new linglong::repo::OSTreeRepo(repoRoot, std::move(*repoConfig));
     repo->setParent(QCoreApplication::instance());
     return repo;
 }
@@ -656,36 +647,42 @@ linglong::utils::error::Result<linglong::repo::OSTreeRepo *> initOSTreeRepo()
 // ===== begin: ll-cli config helpers =====
 using json = nlohmann::json;
 
-static constexpr const char kConfigUsageLines[] =
-  "  ll-cli config set-extensions [--global | <appid> | --base <baseid>] ext1,ext2\n"
-  "  ll-cli config add-extensions [--global | <appid> | --base <baseid>] ext1,ext2\n"
-  "  ll-cli config set-env        [--global | <appid> | --base <baseid>] KEY=VAL [KEY=VAL ...]\n"
-  "  ll-cli config unset-env      [--global | <appid> | --base <baseid>] KEY [KEY ...]\n"
-  "  ll-cli config add-fs         [--global | <appid> | --base <baseid>] --host PATH --target "
-  "PATH [--mode ro|rw] [--persist]\n"
-  "  ll-cli config rm-fs          [--global | <appid> | --base <baseid>] (--target PATH | "
-  "--index N)\n"
-  "  ll-cli config add-fs-allow   [--global | <appid> | --base <baseid>] --host PATH --target "
-  "PATH [--mode ro|rw] [--persist]\n"
-  "  ll-cli config rm-fs-allow    [--global | <appid> | --base <baseid>] (--target PATH | "
-  "--index N)\n"
-  "  ll-cli config clear-fs-allow [--global | <appid> | --base <baseid>]\n"
-  "  ll-cli config set-command    [--global | <appid> | --base <baseid>] <cmd> [--entrypoint P] "
-  "[--cwd D] [--args-prefix \"...\"] [--args-suffix \"...\"] [KEY=VAL ...]\n"
-  "  ll-cli config unset-command  [--global | <appid> | --base <baseid>] <cmd>\n";
+static std::string configUsageLines()
+{
+    return std::string{
+        _("  ll-cli config set-extensions [--global | <appid> | --base <baseid>] ext1,ext2\n"
+           "  ll-cli config add-extensions [--global | <appid> | --base <baseid>] ext1,ext2\n"
+           "  ll-cli config set-env        [--global | <appid> | --base <baseid>] KEY=VAL [KEY=VAL ...]\n"
+           "  ll-cli config unset-env      [--global | <appid> | --base <baseid>] KEY [KEY ...]\n"
+           "  ll-cli config add-fs         [--global | <appid> | --base <baseid>] --host PATH --target PATH [--mode "
+           "ro|rw] [--persist]\n"
+           "  ll-cli config rm-fs          [--global | <appid> | --base <baseid>] (--target PATH | --index N)\n"
+           "  ll-cli config add-fs-allow   [--global | <appid> | --base <baseid>] --host PATH --target PATH [--mode "
+           "ro|rw] [--persist]\n"
+           "  ll-cli config rm-fs-allow    [--global | <appid> | --base <baseid>] (--target PATH | --index N)\n"
+           "  ll-cli config clear-fs-allow [--global | <appid> | --base <baseid>]\n"
+           "  ll-cli config set-command    [--global | <appid> | --base <baseid>] <cmd> [--entrypoint P] [--cwd D] "
+           "[--args-prefix \"...\"] [--args-suffix \"...\"] [KEY=VAL ...]\n"
+           "  ll-cli config unset-command  [--global | <appid> | --base <baseid>] <cmd>\n") };
+}
 
-static constexpr const char kConfigShortHelp[] =
-  "Configuration commands:\n"
-  "  config                      Manage ll-cli configuration (see `ll-cli config --help`)\n";
+static std::string configShortHelp()
+{
+    return std::string{ _("Configuration commands:\n"
+                          "  config                      Manage ll-cli configuration (see `ll-cli config --help`)\n") };
+}
 
-static constexpr const char kFooterMessage[] =
-  "If you found any problems during use,\n"
-  "You can report bugs to the linyaps team under this project: https://github.com/OpenAtom-Linyaps/"
-  "linyaps/issues";
+static std::string configFooterMessage()
+{
+    return std::string{ _("If you found any problems during use,\n"
+                          "You can report bugs to the linyaps team under this project: "
+                          "https://github.com/OpenAtom-Linyaps/linyaps/issues") };
+}
 
 static void printConfigUsage(FILE *stream = stderr)
 {
-    std::fprintf(stream, "Usage:\n%s", kConfigUsageLines);
+    auto usageLines = configUsageLines();
+    std::fprintf(stream, "%s\n%s", _("Usage:"), usageLines.c_str());
 }
 
 enum class Scope { Global, App, Base };
@@ -1498,18 +1495,33 @@ int runCliApplication(int argc, char **mainArgv)
     CLI::App commandParser{ _(
       "linyaps CLI\n"
       "A CLI program to run application and manage application and runtime\n") };
-    commandParser.formatter(std::make_shared<ConfigAwareFormatter>(kConfigShortHelp,
-                                                                   std::string("Configuration commands:\n")
-                                                                     + kConfigUsageLines,
-                                                                   _(kFooterMessage)));
+    auto shortConfigHelp = configShortHelp();
+    auto fullConfigHelp = shortConfigHelp + configUsageLines();
+    commandParser.formatter(std::make_shared<ConfigAwareFormatter>(shortConfigHelp,
+                                                                   fullConfigHelp,
+                                                                   configFooterMessage()));
+    commandParser.option_defaults()->group(_("Options"));
+    if (auto formatter = commandParser.get_formatter()) {
+        formatter->label("OPTIONS", _("OPTIONS"));
+        formatter->label("SUBCOMMAND", _("SUBCOMMAND"));
+        formatter->label("SUBCOMMANDS", _("SUBCOMMANDS"));
+        formatter->label("POSITIONALS", _("POSITIONALS"));
+        formatter->label("Usage", _("Usage"));
+        formatter->label("REQUIRED", _("REQUIRED"));
+    }
     auto argv = commandParser.ensure_utf8(mainArgv);
     if (argc == 1) {
         std::cout << commandParser.help() << std::endl;
         return 0;
     }
 
-    commandParser.get_help_ptr()->description(_("Print this help message and exit"));
-    commandParser.set_help_all_flag("--help-all", _("Expand all help"));
+    if (auto *helpOption = commandParser.get_help_ptr()) {
+        helpOption->description(_("Print this help message and exit"));
+        helpOption->group(_("Options"));
+    }
+    if (auto *helpAllOption = commandParser.set_help_all_flag("--help-all", _("Expand all help"))) {
+        helpAllOption->group(_("Options"));
+    }
     commandParser.usage(_("Usage: ll-cli [OPTIONS] [SUBCOMMAND]"));
     commandParser.footer("");
 
@@ -1549,7 +1561,6 @@ int runCliApplication(int argc, char **mainArgv)
     ContentOptions contentOptions{};
     RepoOptions repoOptions{};
     InspectOptions inspectOptions{};
-    DirOptions dirOptions{};
 
     // groups for subcommands
     auto *CliBuildInGroup = _("Managing installed applications and runtimes");
@@ -1572,7 +1583,6 @@ int runCliApplication(int argc, char **mainArgv)
     addContentCommand(commandParser, contentOptions, CliBuildInGroup);
     addPruneCommand(commandParser, CliAppManagingGroup);
     addInspectCommand(commandParser, inspectOptions, CliHiddenGroup);
-    addDirCommand(commandParser, dirOptions, CliHiddenGroup);
 
     auto res = transformOldExec(argc, argv);
     CLI11_PARSE(commandParser, std::move(res));
@@ -1778,11 +1788,9 @@ int runCliApplication(int argc, char **mainArgv)
     } else if (name == "prune") {
         result = cli->prune();
     } else if (name == "inspect") {
-        result = cli->inspect(inspectOptions);
+        result = cli->inspect(*ret, inspectOptions);
     } else if (name == "repo") {
         result = cli->repo(*ret, repoOptions);
-    } else if (name == "dir") {
-        result = cli->dir(dirOptions);
     } else {
         // if subcommand name is not found, print help
         std::cout << commandParser.help("", CLI::AppFormatMode::All);
@@ -1802,7 +1810,7 @@ int main(int argc, char **argv)
     QCoreApplication app(argc, argv);
     // application initialize
     applicationInitialize();
-    initLinyapsLogSystem(argv[0]);
+    initLinyapsLogSystem(linglong::utils::log::LogBackend::Journal);
 
     // invoke method
     auto ret = QMetaObject::invokeMethod(
