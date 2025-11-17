@@ -6,6 +6,9 @@ linglong (1.10.2-1) unstable; urgency=medium
   * fix: fix repo config comparison and add debug logs
   * fix: add DBusPrivate to Qt6 find_package
   * feat: still implement loading of extensions from config files
+  * feat: Adding process-aware fileLock implementation
+  * feat: Disable backtrace by default
+  * fix: the application was abnormally removed due to an error in executing hooks
 
  -- dengbo <dengbo@deepin.org>  Fri, 14 Nov 2025 14:58:28 +0800
 
