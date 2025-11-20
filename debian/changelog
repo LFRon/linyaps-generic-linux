@@ -1,3 +1,9 @@
+linglong (1.10.2-2) unstable; urgency=medium
+
+  * fix: using Qt5 building package as default
+
+ -- LFRon <ronforever@qq.com>  Thu, 20 Nov 2025 16:42:28 +0800
+
 linglong (1.10.2-1) unstable; urgency=medium
 
   * fix: Duplicate initialization causes incorrect stderr redirection
