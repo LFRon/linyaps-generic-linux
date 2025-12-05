@@ -664,9 +664,6 @@ int Cli::run(const RunOptions &options)
 
     runContext.enableSecurityContext(runtime::getDefaultSecurityContexts());
 
-    const auto &fsPolicy = runContext.filesystemPolicy();
-    const bool restrictFilesystem = fsPolicy.allowListConfigured;
-
     linglong::generator::ContainerCfgBuilder cfgBuilder;
     cfgBuilder.setAppId(curAppRef->id)
       .setAnnotation(generator::ANNOTATION::LAST_PID, std::to_string(pid))
@@ -676,28 +673,15 @@ int Cli::run(const RunOptions &options)
       .bindDevNode()
       .bindCgroup()
       .bindXDGRuntime()
-      .bindUserGroup();
-
-    if (!restrictFilesystem) {
-        cfgBuilder.bindRemovableStorageMounts()
-          .bindHostRoot()
-          .bindHostStatics();
-    }
-
-    cfgBuilder.bindHome(homeEnv).enablePrivateDir();
-
-    if (restrictFilesystem) {
-        cfgBuilder.disableHostHomeBind();
-    }
-
-    if (restrictFilesystem) {
-        cfgBuilder.mapPrivate(std::string{ homeEnv }, true);
-    } else {
-        cfgBuilder.mapPrivate(std::string{ homeEnv } + "/.ssh", true)
-          .mapPrivate(std::string{ homeEnv } + "/.gnupg", true);
-    }
-
-    cfgBuilder.bindIPC()
+      .bindUserGroup()
+      .bindRemovableStorageMounts()
+      .bindHostRoot()
+      .bindHostStatics()
+      .bindHome(homeEnv)
+      .enablePrivateDir()
+      .mapPrivate(std::string{ homeEnv } + "/.ssh", true)
+      .mapPrivate(std::string{ homeEnv } + "/.gnupg", true)
+      .bindIPC()
       .forwardDefaultEnv()
       .enableSelfAdjustingMount();
 

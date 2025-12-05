@@ -1,3 +1,12 @@
+linglong (1.10.2-3) unstable; urgency=medium
+
+  * fix: can't rely on ssi_pid when cross pid_namespaces
+  * feat: add jmgpu device node to container bind list
+  * fix: replace unsafe temp-dir creation and fix fmt API usage
+  * build: add hardend compile/link flags
+
+ -- LFRon <ronforever@qq.com>  Fri, 5 Dec 2025 15:02:28 +0800
+
 linglong (1.10.2-2) unstable; urgency=medium
 
   * fix: using Qt5 building package as default
