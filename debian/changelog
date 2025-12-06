@@ -1,3 +1,9 @@
+linglong (1.10.2-5) unstable; urgency=medium
+
+  * feat: implement the control of force-loading extensions and mount-dirs
+
+ -- LFRon <ronforever@qq.com>  Sat, 6 Dec 2025 22:04:28 +0800
+
 linglong (1.10.2-3) unstable; urgency=medium
 
   * fix: can't rely on ssi_pid when cross pid_namespaces
