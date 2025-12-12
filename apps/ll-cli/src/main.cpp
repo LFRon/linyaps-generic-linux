@@ -43,6 +43,7 @@
 #include <wordexp.h>
 
 #include <nlohmann/json.hpp>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -338,9 +339,6 @@ void addUninstallCommand(CLI::App &commandParser,
     cliUninstall->add_option("--module", uninstallOptions.module, _("Uninstall a specify module"))
       ->type_name("MODULE")
       ->check(validatorString);
-    cliUninstall->add_flag("--force",
-                           uninstallOptions.forceOpt,
-                           _("Force uninstall base or runtime"));
 
     // below options are used for compatibility with old ll-cli
     const auto &pruneDescription = std::string{ _("Remove all unused modules") };
@@ -591,7 +589,6 @@ void addInspectCommand(CLI::App &commandParser,
 
     cliInspect->require_subcommand(1);
 
-    // 创建 inspect dir 子命令
     auto *cliInspectDir = cliInspect->add_subcommand(
       "dir",
       _("Display the data(bundle) directory of the installed(running) application"));
@@ -679,7 +676,7 @@ static std::string configFooterMessage()
                           "https://github.com/OpenAtom-Linyaps/linyaps/issues") };
 }
 
-static void printConfigUsage(FILE *stream = stderr)
+[[maybe_unused]] static void printConfigUsage(FILE *stream = stderr)
 {
     auto usageLines = configUsageLines();
     std::fprintf(stream, "%s\n%s", _("Usage:"), usageLines.c_str());
@@ -806,10 +803,6 @@ static bool writeJsonAtomic(const std::filesystem::path &p, const json &j)
         }
         std::error_code ec;
         std::filesystem::rename(tmp, p, ec);
-        if (ec) {
-            std::filesystem::remove(p, ec);
-            std::filesystem::rename(tmp, p, ec);
-        }
         return !ec;
     } catch (...) {
         return false;
@@ -1053,6 +1046,103 @@ static void jsonUnsetCommand(json &root, const std::string &cmd)
 }
 // ===== end: ll-cli config helpers =====
 
+struct ConfigScopeOptions {
+    bool global = false;
+    std::string appId;
+    std::string baseId;
+};
+
+static void addConfigScopeOptions(CLI::App *cmd, ConfigScopeOptions &opts)
+{
+    auto *globalFlag = cmd->add_flag("--global", opts.global, _("Operate on global configuration"));
+    auto *baseOpt = cmd->add_option("--base", opts.baseId, _("Operate on base configuration"));
+    auto *appOpt = cmd->add_option("appid", opts.appId, _("Application ID"))->type_name("APPID");
+    baseOpt->excludes(globalFlag);
+    appOpt->excludes(globalFlag);
+    appOpt->excludes(baseOpt);
+}
+
+static bool resolveScopeOptions(const ConfigScopeOptions &opts,
+                                Scope &scope,
+                                std::string &appId,
+                                std::string &baseId,
+                                std::string &error)
+{
+    int count = (opts.global ? 1 : 0) + (!opts.appId.empty() ? 1 : 0) + (!opts.baseId.empty() ? 1 : 0);
+    if (count != 1) {
+        error = "specify exactly one of --global, --base or appid";
+        return false;
+    }
+    if (opts.global) {
+        scope = Scope::Global;
+    } else if (!opts.baseId.empty()) {
+        scope = Scope::Base;
+        baseId = opts.baseId;
+    } else {
+        scope = Scope::App;
+        appId = opts.appId;
+    }
+    return true;
+}
+
+static std::optional<json>
+loadCliConfigFromPackage(Scope scope, const std::string &appId, const std::string &baseId)
+{
+    Q_UNUSED(scope);
+    Q_UNUSED(appId);
+    Q_UNUSED(baseId);
+    return std::nullopt;
+}
+
+static std::optional<json> openConfig(Scope scope,
+                                      const std::string &appId,
+                                      const std::string &baseId)
+{
+    auto userPath = getConfigPath(scope, appId, baseId);
+    if (userPath.empty()) {
+        fprintf(stderr, "invalid config path\n");
+        return std::nullopt;
+    }
+    bool userExists = false;
+    auto userJson = readJsonIfExists(userPath, &userExists);
+    if (!userJson) {
+        fprintf(stderr, "failed to read %s\n", userPath.string().c_str());
+        return std::nullopt;
+    }
+    if (!userExists) {
+        auto searchPaths = getConfigSearchPaths(scope, appId, baseId);
+        for (size_t idx = 1; idx < searchPaths.size(); ++idx) {
+            bool existed = false;
+            auto fallback = readJsonIfExists(searchPaths[idx], &existed);
+            if (!fallback || !existed) {
+                continue;
+            }
+            return fallback;
+        }
+        if (auto packaged = loadCliConfigFromPackage(scope, appId, baseId)) {
+            return packaged;
+        }
+    }
+    return userJson;
+}
+
+static bool saveConfig(Scope scope,
+                       const std::string &appId,
+                       const std::string &baseId,
+                       const json &j)
+{
+    auto path = getConfigPath(scope, appId, baseId);
+    if (path.empty()) {
+        return false;
+    }
+    if (!writeJsonAtomic(path, j)) {
+        fprintf(stderr, "failed to write %s\n", path.string().c_str());
+        return false;
+    }
+    printf("Written %s\n", path.string().c_str());
+    return true;
+}
+
 class ConfigAwareFormatter : public CLI::Formatter {
 public:
     ConfigAwareFormatter(std::string shortSection, std::string fullSection, std::string footerMessage)
@@ -1097,401 +1187,6 @@ private:
 
 int runCliApplication(int argc, char **mainArgv)
 {
-    // ===== begin: "ll-cli config ..." dispatcher =====
-    {
-        if (argc >= 2 && std::string(mainArgv[1]) == "config") {
-            if (argc < 3) {
-                printConfigUsage();
-                return 1;
-            }
-            std::string sub = mainArgv[2];
-
-            auto parseScope = [&](int start) -> std::tuple<Scope, std::string, std::string, int> {
-                if (start >= argc) {
-                    return { Scope::Global, "", "", start };
-                }
-                std::string t = mainArgv[start];
-                if (t == "--global") {
-                    return { Scope::Global, "", "", start + 1 };
-                }
-                if (t == "--base") {
-                    if (start + 1 >= argc) {
-                        fprintf(stderr, "--base requires <baseid>\n");
-                        return { Scope::Global, "", "", argc };
-                    }
-                    return { Scope::Base, "", mainArgv[start + 1], start + 2 };
-                }
-                return { Scope::App, t, "", start + 1 };
-            };
-
-            auto loadCliConfigFromPackage = [&](Scope scope,
-                                                const std::string &appId,
-                                                const std::string &baseId)
-              -> std::optional<json> {
-                if (scope == Scope::Global) {
-                    return std::nullopt;
-                }
-
-                auto repoResult = initOSTreeRepo();
-                if (!repoResult) {
-                    qWarning() << "load cli config from package failed:" << repoResult.error();
-                    return std::nullopt;
-                }
-
-                auto *repoPtr = *repoResult;
-                auto list = repoPtr->listLocal();
-                if (!list) {
-                    qWarning() << "list local packages failed:" << list.error();
-                    return std::nullopt;
-                }
-
-                const auto matcher = [&](const linglong::api::types::v1::PackageInfoV2 &info) -> bool {
-                    if (scope == Scope::App) {
-                        return info.id == appId && info.kind == "app";
-                    }
-                    if (scope == Scope::Base) {
-                        return info.id == baseId && info.kind == "base";
-                    }
-                    return false;
-                };
-
-                auto it = std::find_if(list->begin(), list->end(), matcher);
-                if (it == list->end() || !it->cliConfig) {
-                    return std::nullopt;
-                }
-
-                json packaged = *(it->cliConfig);
-                return packaged;
-            };
-
-            auto openConfig = [&](Scope scope,
-                                  const std::string &appId,
-                                  const std::string &baseId) -> std::optional<json> {
-                auto userPath = getConfigPath(scope, appId, baseId);
-                if (userPath.empty()) {
-                    fprintf(stderr, "invalid config path\n");
-                    return std::nullopt;
-                }
-                bool userExists = false;
-                auto userJson = readJsonIfExists(userPath, &userExists);
-                if (!userJson) {
-                    fprintf(stderr, "failed to read %s\n", userPath.string().c_str());
-                    return std::nullopt;
-                }
-                if (!userExists) {
-                    auto searchPaths = getConfigSearchPaths(scope, appId, baseId);
-                    for (size_t idx = 1; idx < searchPaths.size(); ++idx) {
-                        bool existed = false;
-                        auto fallback = readJsonIfExists(searchPaths[idx], &existed);
-                        if (!fallback || !existed) {
-                            continue;
-                        }
-                        return fallback;
-                    }
-                    if (auto packaged = loadCliConfigFromPackage(scope, appId, baseId)) {
-                        return packaged;
-                    }
-                }
-                return userJson;
-            };
-            auto saveConfig = [&](Scope scope,
-                                  const std::string &appId,
-                                  const std::string &baseId,
-                                  const json &j) -> bool {
-                auto path = getConfigPath(scope, appId, baseId);
-                if (path.empty()) {
-                    return false;
-                }
-                if (!writeJsonAtomic(path, j)) {
-                    fprintf(stderr, "failed to write %s\n", path.string().c_str());
-                    return false;
-                }
-                printf("Written %s\n", path.string().c_str());
-                return true;
-            };
-
-            if (sub == "set-extensions" || sub == "add-extensions") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                if (i >= argc) {
-                    printConfigUsage();
-                    return 1;
-                }
-                std::vector<std::string> exts = splitCsv(mainArgv[i]);
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                jsonSetExtensions(*j, exts, sub == "set-extensions");
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "set-env") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                if (i >= argc) {
-                    printConfigUsage();
-                    return 1;
-                }
-                std::vector<std::string> kvs;
-                for (; i < argc; ++i) {
-                    kvs.push_back(mainArgv[i]);
-                }
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                jsonSetEnv(*j, kvs);
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "unset-env") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                if (i >= argc) {
-                    printConfigUsage();
-                    return 1;
-                }
-                std::vector<std::string> keys;
-                for (; i < argc; ++i) {
-                    keys.push_back(mainArgv[i]);
-                }
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                jsonUnsetEnv(*j, keys);
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "add-fs") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                FsArg fs;
-                fs.mode = "ro";
-                fs.persist = false;
-                for (; i < argc; ++i) {
-                    std::string a = mainArgv[i];
-                    if (a == "--persist") {
-                        fs.persist = true;
-                    } else if (a == "--host" && i + 1 < argc) {
-                        fs.host = mainArgv[++i];
-                    } else if (a == "--target" && i + 1 < argc) {
-                        fs.target = mainArgv[++i];
-                    } else if (a == "--mode" && i + 1 < argc) {
-                        fs.mode = mainArgv[++i];
-                    } else {
-                        fprintf(stderr, "unknown arg: %s\n", a.c_str());
-                        return 1;
-                    }
-                }
-                if (fs.host.empty() || fs.target.empty()) {
-                    printConfigUsage();
-                    return 1;
-                }
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                jsonAddFs(*j, fs);
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "add-fs-allow") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                FsArg fs;
-                fs.mode = "ro";
-                fs.persist = false;
-                for (; i < argc; ++i) {
-                    std::string a = mainArgv[i];
-                    if (a == "--persist") {
-                        fs.persist = true;
-                    } else if (a == "--host" && i + 1 < argc) {
-                        fs.host = mainArgv[++i];
-                    } else if (a == "--target" && i + 1 < argc) {
-                        fs.target = mainArgv[++i];
-                    } else if (a == "--mode" && i + 1 < argc) {
-                        fs.mode = mainArgv[++i];
-                    } else {
-                        fprintf(stderr, "unknown arg: %s\n", a.c_str());
-                        return 1;
-                    }
-                }
-                if (fs.host.empty() || fs.target.empty()) {
-                    printConfigUsage();
-                    return 1;
-                }
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                jsonAddFsAllow(*j, fs);
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "rm-fs") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                std::optional<std::string> target;
-                std::optional<size_t> index;
-                for (; i < argc; ++i) {
-                    std::string a = mainArgv[i];
-                    if (a == "--target" && i + 1 < argc) {
-                        target = mainArgv[++i];
-                    } else if (a == "--index" && i + 1 < argc) {
-                        index = static_cast<size_t>(std::stoul(mainArgv[++i]));
-                    } else {
-                        fprintf(stderr, "unknown arg: %s\n", a.c_str());
-                        return 1;
-                    }
-                }
-                if (!target && !index) {
-                    printConfigUsage();
-                    return 1;
-                }
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                bool ok = false;
-                if (target) {
-                    ok = jsonRmFsByTarget(*j, *target);
-                }
-                if (!ok && index) {
-                    ok = jsonRmFsByIndex(*j, *index);
-                }
-                if (!ok) {
-                    fprintf(stderr, "no filesystem entry removed\n");
-                    return 1;
-                }
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "rm-fs-allow") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                std::optional<std::string> target;
-                std::optional<size_t> index;
-                for (; i < argc; ++i) {
-                    std::string a = mainArgv[i];
-                    if (a == "--target" && i + 1 < argc) {
-                        target = mainArgv[++i];
-                    } else if (a == "--index" && i + 1 < argc) {
-                        index = static_cast<size_t>(std::stoul(mainArgv[++i]));
-                    } else {
-                        fprintf(stderr, "unknown arg: %s\n", a.c_str());
-                        return 1;
-                    }
-                }
-                if (!target && !index) {
-                    printConfigUsage();
-                    return 1;
-                }
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                bool ok = false;
-                if (target) {
-                    ok = jsonRmFsAllowByTarget(*j, *target);
-                }
-                if (!ok && index) {
-                    ok = jsonRmFsAllowByIndex(*j, *index);
-                }
-                if (!ok) {
-                    fprintf(stderr, "no filesystem_allow entry removed\n");
-                    return 1;
-                }
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "clear-fs-allow") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                jsonClearFsAllow(*j);
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "set-command") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                if (i >= argc) {
-                    printConfigUsage();
-                    return 1;
-                }
-                CmdSetArg a;
-                a.cmd = mainArgv[i++];
-                for (; i < argc; ++i) {
-                    std::string t = mainArgv[i];
-                    if (t == "--entrypoint" && i + 1 < argc) {
-                        a.entrypoint = mainArgv[++i];
-                    } else if (t == "--cwd" && i + 1 < argc) {
-                        a.cwd = mainArgv[++i];
-                    } else if (t == "--args-prefix" && i + 1 < argc) {
-                        std::stringstream ss(mainArgv[++i]);
-                        std::string tok;
-                        while (ss >> tok) {
-                            a.argsPrefix.push_back(tok);
-                        }
-                    } else if (t == "--args-suffix" && i + 1 < argc) {
-                        std::stringstream ss(mainArgv[++i]);
-                        std::string tok;
-                        while (ss >> tok) {
-                            a.argsSuffix.push_back(tok);
-                        }
-                    } else if (t.find('=') != std::string::npos) {
-                        a.envKVs.push_back(t);
-                    } else {
-                        fprintf(stderr, "unknown arg: %s\n", t.c_str());
-                        return 1;
-                    }
-                }
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                jsonSetCommand(*j, a);
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-            if (sub == "unset-command") {
-                auto [scope, appId, baseId, i] = parseScope(3);
-                if (i >= argc) {
-                    printConfigUsage();
-                    return 1;
-                }
-                std::string cmd = mainArgv[i];
-                auto j = openConfig(scope, appId, baseId);
-                if (!j) {
-                    return 1;
-                }
-                jsonUnsetCommand(*j, cmd);
-                if (!saveConfig(scope, appId, baseId, *j)) {
-                    return 1;
-                }
-                return 0;
-            }
-
-            printConfigUsage();
-            return 1;
-        }
-    }
-    // ===== end: "ll-cli config ..." dispatcher =====
-
     CLI::App commandParser{ _(
       "linyaps CLI\n"
       "A CLI program to run application and manage application and runtime\n") };
@@ -1568,6 +1263,265 @@ int runCliApplication(int argc, char **mainArgv)
     auto *CliSearchGroup = _("Finding applications and runtimes");
     auto *CliRepoGroup = _("Managing remote repositories");
 
+    bool configHandled = false;
+    int configResult = 0;
+
+    auto *configCmd = commandParser.add_subcommand("config", _("Manage ll-cli configuration"));
+    configCmd->require_subcommand();
+    configCmd->group(_("Configuration"));
+
+    auto resolveScopeOrThrow = [&](const ConfigScopeOptions &opts) {
+        Scope scope = Scope::Global;
+        std::string appId, baseId, error;
+        if (!resolveScopeOptions(opts, scope, appId, baseId, error)) {
+            throw CLI::ValidationError("scope", error);
+        }
+        return std::make_tuple(scope, appId, baseId);
+    };
+
+    auto handleConfigResult = [&](bool ok) {
+        configHandled = true;
+        configResult = ok ? 0 : 1;
+    };
+
+    // config set-extensions / add-extensions
+    auto addExtensionsCommand = [&](const char *name, bool overwrite) {
+        auto *sub = configCmd->add_subcommand(name, _("Manage default extensions"));
+        auto scopeOpts = std::make_shared<ConfigScopeOptions>();
+        addConfigScopeOptions(sub, *scopeOpts);
+        auto exts = std::make_shared<std::string>();
+        sub->add_option("extensions",
+                        *exts,
+                        _("Comma separated extensions, e.g. ext1,ext2"))->required();
+        sub->callback([&, scopeOpts, exts, overwrite]() {
+            auto [scope, appId, baseId] = resolveScopeOrThrow(*scopeOpts);
+            auto j = openConfig(scope, appId, baseId);
+            if (!j) {
+                handleConfigResult(false);
+                return;
+            }
+            jsonSetExtensions(*j, splitCsv(*exts), overwrite);
+            handleConfigResult(saveConfig(scope, appId, baseId, *j));
+        });
+    };
+    addExtensionsCommand("set-extensions", true);
+    addExtensionsCommand("add-extensions", false);
+
+    // config set-env
+    {
+        auto *sub = configCmd->add_subcommand("set-env",
+                                              _("Set environment variables for target scope"));
+        auto scopeOpts = std::make_shared<ConfigScopeOptions>();
+        addConfigScopeOptions(sub, *scopeOpts);
+        auto kvs = std::make_shared<std::vector<std::string>>();
+        sub->add_option("env", *kvs, _("KEY=VALUE entries"))->required()->expected(1, -1);
+        sub->callback([&, scopeOpts, kvs]() {
+            auto [scope, appId, baseId] = resolveScopeOrThrow(*scopeOpts);
+            auto j = openConfig(scope, appId, baseId);
+            if (!j) {
+                handleConfigResult(false);
+                return;
+            }
+            jsonSetEnv(*j, *kvs);
+            handleConfigResult(saveConfig(scope, appId, baseId, *j));
+        });
+    }
+
+    // config unset-env
+    {
+        auto *sub = configCmd->add_subcommand("unset-env",
+                                              _("Unset environment variables for target scope"));
+        auto scopeOpts = std::make_shared<ConfigScopeOptions>();
+        addConfigScopeOptions(sub, *scopeOpts);
+        auto keys = std::make_shared<std::vector<std::string>>();
+        sub->add_option("keys", *keys, _("Environment variable keys"))->required()->expected(1, -1);
+        sub->callback([&, scopeOpts, keys]() {
+            auto [scope, appId, baseId] = resolveScopeOrThrow(*scopeOpts);
+            auto j = openConfig(scope, appId, baseId);
+            if (!j) {
+                handleConfigResult(false);
+                return;
+            }
+            jsonUnsetEnv(*j, *keys);
+            handleConfigResult(saveConfig(scope, appId, baseId, *j));
+        });
+    }
+
+    // config add-fs / add-fs-allow
+    auto addFsCommand = [&](const char *name, auto inserter) {
+        auto *sub = configCmd->add_subcommand(name, _("Add filesystem entry"));
+        auto scopeOpts = std::make_shared<ConfigScopeOptions>();
+        addConfigScopeOptions(sub, *scopeOpts);
+        auto fs = std::make_shared<FsArg>();
+        fs->mode = "ro";
+        sub->add_option("--host", fs->host, _("Host path to mount"))->required();
+        sub->add_option("--target", fs->target, _("Target path inside container"))->required();
+        sub->add_option("--mode", fs->mode, _("Mount mode (ro|rw)"))
+          ->check(CLI::IsMember({ "ro", "rw" }))
+          ->default_str("ro");
+        sub->add_flag("--persist", fs->persist, _("Persist mount under sandbox storage"));
+        sub->callback([&, scopeOpts, fs, inserter]() {
+            auto [scope, appId, baseId] = resolveScopeOrThrow(*scopeOpts);
+            auto j = openConfig(scope, appId, baseId);
+            if (!j) {
+                handleConfigResult(false);
+                return;
+            }
+            inserter(*j, *fs);
+            handleConfigResult(saveConfig(scope, appId, baseId, *j));
+        });
+    };
+    addFsCommand("add-fs", jsonAddFs);
+    addFsCommand("add-fs-allow", jsonAddFsAllow);
+
+    // config rm-fs / rm-fs-allow
+    auto addRemoveFsCommand = [&](const char *name, auto removeTarget, auto removeIndex) {
+        auto *sub = configCmd->add_subcommand(name, _("Remove filesystem entry"));
+        auto scopeOpts = std::make_shared<ConfigScopeOptions>();
+        addConfigScopeOptions(sub, *scopeOpts);
+        auto target = std::make_shared<std::optional<std::string>>();
+        auto indexStr = std::make_shared<std::optional<std::string>>();
+        sub->add_option("--target", *target, _("Target path inside container"));
+        sub->add_option("--index", *indexStr, _("Index of entry in list"));
+        sub->callback([&, scopeOpts, target, indexStr, removeTarget, removeIndex]() {
+            if (!*target && !*indexStr) {
+                throw CLI::ValidationError("target/index",
+                                           "either --target or --index must be provided");
+            }
+            auto [scope, appId, baseId] = resolveScopeOrThrow(*scopeOpts);
+            auto j = openConfig(scope, appId, baseId);
+            if (!j) {
+                handleConfigResult(false);
+                return;
+            }
+            bool ok = false;
+            if (*target) {
+                ok = removeTarget(*j, **target);
+            }
+            if (!ok && *indexStr) {
+                size_t parsedIndex = 0;
+                try {
+                    parsedIndex = static_cast<size_t>(std::stoul(indexStr->value()));
+                } catch (const std::exception &) {
+                    fprintf(stderr, "Invalid index value: %s\n", indexStr->value().c_str());
+                    handleConfigResult(false);
+                    return;
+                }
+                ok = removeIndex(*j, parsedIndex);
+            }
+            if (!ok) {
+                fprintf(stderr, "no filesystem entry removed\n");
+                handleConfigResult(false);
+                return;
+            }
+            handleConfigResult(saveConfig(scope, appId, baseId, *j));
+        });
+    };
+    addRemoveFsCommand("rm-fs", jsonRmFsByTarget, jsonRmFsByIndex);
+    addRemoveFsCommand("rm-fs-allow", jsonRmFsAllowByTarget, jsonRmFsAllowByIndex);
+
+    // config clear-fs-allow
+    {
+        auto *sub = configCmd->add_subcommand("clear-fs-allow",
+                                              _("Clear filesystem allowlist"));
+        auto scopeOpts = std::make_shared<ConfigScopeOptions>();
+        addConfigScopeOptions(sub, *scopeOpts);
+        sub->callback([&, scopeOpts]() {
+            auto [scope, appId, baseId] = resolveScopeOrThrow(*scopeOpts);
+            auto j = openConfig(scope, appId, baseId);
+            if (!j) {
+                handleConfigResult(false);
+                return;
+            }
+            jsonClearFsAllow(*j);
+            handleConfigResult(saveConfig(scope, appId, baseId, *j));
+        });
+    }
+
+    // config set-command
+    {
+        auto *sub = configCmd->add_subcommand("set-command",
+                                              _("Set per-command overrides (env, args etc.)"));
+        sub->allow_extras();
+        auto scopeOpts = std::make_shared<ConfigScopeOptions>();
+        addConfigScopeOptions(sub, *scopeOpts);
+        auto arg = std::make_shared<CmdSetArg>();
+        sub->add_option("command", arg->cmd, _("Command name"))->required();
+
+        auto entrypoint = std::make_shared<std::string>();
+        auto cwd = std::make_shared<std::string>();
+        auto argsPrefixRaw = std::make_shared<std::string>();
+        auto argsSuffixRaw = std::make_shared<std::string>();
+        auto envPairs = std::make_shared<std::vector<std::string>>();
+
+        sub->add_option("--entrypoint", *entrypoint, _("Override entrypoint"));
+        sub->add_option("--cwd", *cwd, _("Working directory"));
+        sub->add_option("--args-prefix", *argsPrefixRaw, _("Arguments prepended before command"));
+        sub->add_option("--args-suffix", *argsSuffixRaw, _("Arguments appended after command"));
+        sub->add_option("--env", *envPairs, _("Environment entries (KEY=VAL)"))->expected(0, -1);
+
+        sub->callback([&, sub, scopeOpts, arg, entrypoint, cwd, argsPrefixRaw, argsSuffixRaw, envPairs]() {
+            auto [scope, appId, baseId] = resolveScopeOrThrow(*scopeOpts);
+            arg->entrypoint.reset();
+            arg->cwd.reset();
+            arg->argsPrefix.clear();
+            arg->argsSuffix.clear();
+            arg->envKVs.clear();
+
+            if (!entrypoint->empty()) {
+                arg->entrypoint = *entrypoint;
+            }
+            if (!cwd->empty()) {
+                arg->cwd = *cwd;
+            }
+            if (!argsPrefixRaw->empty()) {
+                std::stringstream ss(*argsPrefixRaw);
+                std::string tok;
+                while (ss >> tok) {
+                    arg->argsPrefix.push_back(tok);
+                }
+            }
+            if (!argsSuffixRaw->empty()) {
+                std::stringstream ss(*argsSuffixRaw);
+                std::string tok;
+                while (ss >> tok) {
+                    arg->argsSuffix.push_back(tok);
+                }
+            }
+            arg->envKVs.insert(arg->envKVs.end(), envPairs->begin(), envPairs->end());
+            auto extras = sub->remaining_for_passthrough();
+            arg->envKVs.insert(arg->envKVs.end(), extras.begin(), extras.end());
+
+            auto j = openConfig(scope, appId, baseId);
+            if (!j) {
+                handleConfigResult(false);
+                return;
+            }
+            jsonSetCommand(*j, *arg);
+            handleConfigResult(saveConfig(scope, appId, baseId, *j));
+        });
+    }
+
+    // config unset-command
+    {
+        auto *sub = configCmd->add_subcommand("unset-command",
+                                              _("Remove per-command overrides"));
+        auto scopeOpts = std::make_shared<ConfigScopeOptions>();
+        addConfigScopeOptions(sub, *scopeOpts);
+        auto cmd = std::make_shared<std::string>();
+        sub->add_option("command", *cmd, _("Command name"))->required();
+        sub->callback([&, scopeOpts, cmd]() {
+            auto [scope, appId, baseId] = resolveScopeOrThrow(*scopeOpts);
+            auto j = openConfig(scope, appId, baseId);
+            if (!j) {
+                handleConfigResult(false);
+                return;
+            }
+            jsonUnsetCommand(*j, *cmd);
+            handleConfigResult(saveConfig(scope, appId, baseId, *j));
+        });
+    }
+
     // add all subcommands using the new functions
     addRunCommand(commandParser, runOptions, CliAppManagingGroup);
     addPsCommand(commandParser, CliAppManagingGroup);
@@ -1586,6 +1540,10 @@ int runCliApplication(int argc, char **mainArgv)
 
     auto res = transformOldExec(argc, argv);
     CLI11_PARSE(commandParser, std::move(res));
+
+    if (configCmd->parsed()) {
+        return configResult;
+    }
 
     // print version if --version flag is set
     if (*versionFlag) {

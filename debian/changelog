@@ -1,3 +1,11 @@
+linglong (1.10.2-6) unstable; urgency=medium
+
+  * feat: improve the control of force-loading extensions and mount-dirs
+  * refactor(utils): improve namespace isolation implementation
+  * refactor: improve task management code quality and safety
+
+ -- LFRon <ronforever@qq.com>  Fri, 12 Dec 2025 18:06:28 +0800
+
 linglong (1.10.2-5) unstable; urgency=medium
 
   * feat: implement the control of force-loading extensions and mount-dirs

@@ -23,7 +23,6 @@
 #include "linglong/api/types/v1/Version.hpp"
 #include "linglong/api/types/v1/Sections.hpp"
 #include "linglong/api/types/v1/UabLayer.hpp"
-#include "linglong/api/types/v1/SubState.hpp"
 #include "linglong/api/types/v1/State.hpp"
 #include "linglong/api/types/v1/RepositoryCache.hpp"
 #include "linglong/api/types/v1/RepositoryCacheMergedItem.hpp"
@@ -67,9 +66,6 @@
 #include "linglong/api/types/v1/BuilderProjectSource.hpp"
 #include "linglong/api/types/v1/BuilderProjectPackage.hpp"
 #include "linglong/api/types/v1/BuilderProjectModules.hpp"
-#include "linglong/api/types/v1/LlCLIConfig.hpp"
-#include "linglong/api/types/v1/LlCLICommandConfig.hpp"
-#include "linglong/api/types/v1/LlCLIFilesystemEntry.hpp"
 #include "linglong/api/types/v1/BuilderProjectBuildEXT.hpp"
 #include "linglong/api/types/v1/Apt.hpp"
 #include "linglong/api/types/v1/BuilderConfig.hpp"
@@ -110,15 +106,6 @@ void to_json(json & j, const Apt & x);
 
 void from_json(const json & j, BuilderProjectBuildEXT & x);
 void to_json(json & j, const BuilderProjectBuildEXT & x);
-
-void from_json(const json & j, LlCLIFilesystemEntry & x);
-void to_json(json & j, const LlCLIFilesystemEntry & x);
-
-void from_json(const json & j, LlCLICommandConfig & x);
-void to_json(json & j, const LlCLICommandConfig & x);
-
-void from_json(const json & j, LlCLIConfig & x);
-void to_json(json & j, const LlCLIConfig & x);
 
 void from_json(const json & j, BuilderProjectModules & x);
 void to_json(json & j, const BuilderProjectModules & x);
@@ -264,9 +251,6 @@ void to_json(json & j, const InteractionMessageType & x);
 void from_json(const json & j, State & x);
 void to_json(json & j, const State & x);
 
-void from_json(const json & j, SubState & x);
-void to_json(json & j, const SubState & x);
-
 void from_json(const json & j, Version & x);
 void to_json(json & j, const Version & x);
 
@@ -395,83 +379,6 @@ j["apt"] = x.apt;
 }
 }
 
-inline void from_json(const json & j, LlCLIFilesystemEntry& x) {
-x.host = j.at("host").get<std::string>();
-x.mode = get_stack_optional<std::string>(j, "mode");
-x.persist = get_stack_optional<bool>(j, "persist");
-x.target = j.at("target").get<std::string>();
-}
-
-inline void to_json(json & j, const LlCLIFilesystemEntry & x) {
-j = json::object();
-j["host"] = x.host;
-if (x.mode) {
-j["mode"] = x.mode;
-}
-if (x.persist) {
-j["persist"] = x.persist;
-}
-j["target"] = x.target;
-}
-
-inline void from_json(const json & j, LlCLICommandConfig& x) {
-x.argsPrefix = get_stack_optional<std::vector<std::string>>(j, "args_prefix");
-x.argsSuffix = get_stack_optional<std::vector<std::string>>(j, "args_suffix");
-x.cwd = get_stack_optional<std::string>(j, "cwd");
-x.entrypoint = get_stack_optional<std::string>(j, "entrypoint");
-x.env = get_stack_optional<std::map<std::string, std::string>>(j, "env");
-x.filesystem = get_stack_optional<std::vector<LlCLIFilesystemEntry>>(j, "filesystem");
-}
-
-inline void to_json(json & j, const LlCLICommandConfig & x) {
-j = json::object();
-if (x.argsPrefix) {
-j["args_prefix"] = x.argsPrefix;
-}
-if (x.argsSuffix) {
-j["args_suffix"] = x.argsSuffix;
-}
-if (x.cwd) {
-j["cwd"] = x.cwd;
-}
-if (x.entrypoint) {
-j["entrypoint"] = x.entrypoint;
-}
-if (x.env) {
-j["env"] = x.env;
-}
-if (x.filesystem) {
-j["filesystem"] = x.filesystem;
-}
-}
-
-inline void from_json(const json & j, LlCLIConfig& x) {
-x.commands = get_stack_optional<std::map<std::string, LlCLICommandConfig>>(j, "commands");
-x.env = get_stack_optional<std::map<std::string, std::string>>(j, "env");
-x.extensions = get_stack_optional<std::vector<std::string>>(j, "extensions");
-x.filesystem = get_stack_optional<std::vector<LlCLIFilesystemEntry>>(j, "filesystem");
-x.filesystemAllowOnly = get_stack_optional<std::vector<LlCLIFilesystemEntry>>(j, "filesystem_allow_only");
-}
-
-inline void to_json(json & j, const LlCLIConfig & x) {
-j = json::object();
-if (x.commands) {
-j["commands"] = x.commands;
-}
-if (x.env) {
-j["env"] = x.env;
-}
-if (x.extensions) {
-j["extensions"] = x.extensions;
-}
-if (x.filesystem) {
-j["filesystem"] = x.filesystem;
-}
-if (x.filesystemAllowOnly) {
-j["filesystem_allow_only"] = x.filesystemAllowOnly;
-}
-}
-
 inline void from_json(const json & j, BuilderProjectModules& x) {
 x.files = j.at("files").get<std::vector<std::string>>();
 x.name = j.at("name").get<std::string>();
@@ -557,7 +464,6 @@ inline void from_json(const json & j, BuilderProject& x) {
 x.base = j.at("base").get<std::string>();
 x.build = j.at("build").get<std::string>();
 x.buildext = get_stack_optional<BuilderProjectBuildEXT>(j, "buildext");
-x.cliConfig = get_stack_optional<LlCLIConfig>(j, "cli_config");
 x.command = get_stack_optional<std::vector<std::string>>(j, "command");
 x.exclude = get_stack_optional<std::vector<std::string>>(j, "exclude");
 x.include = get_stack_optional<std::vector<std::string>>(j, "include");
@@ -576,9 +482,6 @@ j["base"] = x.base;
 j["build"] = x.build;
 if (x.buildext) {
 j["buildext"] = x.buildext;
-}
-if (x.cliConfig) {
-j["cli_config"] = x.cliConfig;
 }
 if (x.command) {
 j["command"] = x.command;
@@ -839,7 +742,6 @@ inline void from_json(const json & j, PackageInfoDisplay& x) {
 x.arch = j.at("arch").get<std::vector<std::string>>();
 x.base = j.at("base").get<std::string>();
 x.channel = j.at("channel").get<std::string>();
-x.cliConfig = get_stack_optional<LlCLIConfig>(j, "cli_config");
 x.command = get_stack_optional<std::vector<std::string>>(j, "command");
 x.compatibleVersion = get_stack_optional<std::string>(j, "compatible_version");
 x.description = get_stack_optional<std::string>(j, "description");
@@ -863,9 +765,6 @@ j = json::object();
 j["arch"] = x.arch;
 j["base"] = x.base;
 j["channel"] = x.channel;
-if (x.cliConfig) {
-j["cli_config"] = x.cliConfig;
-}
 if (x.command) {
 j["command"] = x.command;
 }
@@ -906,7 +805,6 @@ inline void from_json(const json & j, PackageInfoV2& x) {
 x.arch = j.at("arch").get<std::vector<std::string>>();
 x.base = j.at("base").get<std::string>();
 x.channel = j.at("channel").get<std::string>();
-x.cliConfig = get_stack_optional<LlCLIConfig>(j, "cli_config");
 x.command = get_stack_optional<std::vector<std::string>>(j, "command");
 x.compatibleVersion = get_stack_optional<std::string>(j, "compatible_version");
 x.description = get_stack_optional<std::string>(j, "description");
@@ -929,9 +827,6 @@ j = json::object();
 j["arch"] = x.arch;
 j["base"] = x.base;
 j["channel"] = x.channel;
-if (x.cliConfig) {
-j["cli_config"] = x.cliConfig;
-}
 if (x.command) {
 j["command"] = x.command;
 }
@@ -1159,11 +1054,13 @@ j["package"] = x.package;
 }
 
 inline void from_json(const json & j, PackageManager1UpdateParameters& x) {
+x.depsOnly = j.at("depsOnly").get<bool>();
 x.packages = j.at("packages").get<std::vector<PackageManager1Package>>();
 }
 
 inline void to_json(json & j, const PackageManager1UpdateParameters & x) {
 j = json::object();
+j["depsOnly"] = x.depsOnly;
 j["packages"] = x.packages;
 }
 
@@ -1349,9 +1246,6 @@ x.interactionMessageType = get_stack_optional<InteractionMessageType>(j, "Intera
 x.interactionReply = get_stack_optional<InteractionReply>(j, "InteractionReply");
 x.interactionRequest = get_stack_optional<InteractionRequest>(j, "InteractionRequest");
 x.layerInfo = get_stack_optional<LayerInfo>(j, "LayerInfo");
-x.llCLICommandConfig = get_stack_optional<LlCLICommandConfig>(j, "LlCliCommandConfig");
-x.llCLIConfig = get_stack_optional<LlCLIConfig>(j, "LlCliConfig");
-x.llCLIFilesystemEntry = get_stack_optional<LlCLIFilesystemEntry>(j, "LlCliFilesystemEntry");
 x.ociConfigurationPatch = get_stack_optional<OciConfigurationPatch>(j, "OCIConfigurationPatch");
 x.packageInfo = get_stack_optional<PackageInfo>(j, "PackageInfo");
 x.packageInfoDisplay = get_stack_optional<PackageInfoDisplay>(j, "PackageInfoDisplay");
@@ -1375,7 +1269,6 @@ x.repoConfig = get_stack_optional<RepoConfig>(j, "RepoConfig");
 x.repoConfigV2 = get_stack_optional<RepoConfigV2>(j, "RepoConfigV2");
 x.repositoryCache = get_stack_optional<RepositoryCache>(j, "RepositoryCache");
 x.state = get_stack_optional<State>(j, "State");
-x.subState = get_stack_optional<SubState>(j, "SubState");
 x.uabMetaInfo = get_stack_optional<UabMetaInfo>(j, "UABMetaInfo");
 x.upgradeListResult = get_stack_optional<UpgradeListResult>(j, "UpgradeListResult");
 x.xdgDirectoryPermissions = get_stack_optional<std::vector<XdgDirectoryPermission>>(j, "XDGDirectoryPermissions");
@@ -1439,15 +1332,6 @@ j["InteractionRequest"] = x.interactionRequest;
 }
 if (x.layerInfo) {
 j["LayerInfo"] = x.layerInfo;
-}
-if (x.llCLICommandConfig) {
-j["LlCliCommandConfig"] = x.llCLICommandConfig;
-}
-if (x.llCLIConfig) {
-j["LlCliConfig"] = x.llCLIConfig;
-}
-if (x.llCLIFilesystemEntry) {
-j["LlCliFilesystemEntry"] = x.llCLIFilesystemEntry;
 }
 if (x.ociConfigurationPatch) {
 j["OCIConfigurationPatch"] = x.ociConfigurationPatch;
@@ -1518,9 +1402,6 @@ j["RepositoryCache"] = x.repositoryCache;
 if (x.state) {
 j["State"] = x.state;
 }
-if (x.subState) {
-j["SubState"] = x.subState;
-}
 if (x.uabMetaInfo) {
 j["UABMetaInfo"] = x.uabMetaInfo;
 }
@@ -1548,14 +1429,13 @@ case InteractionMessageType::Install: j = "Install"; break;
 case InteractionMessageType::Uninstall: j = "Uninstall"; break;
 case InteractionMessageType::Unknown: j = "Unknown"; break;
 case InteractionMessageType::Upgrade: j = "Upgrade"; break;
-default: throw std::runtime_error("Unexpected value in enumeration \"InteractionMessageType\": " + std::to_string(static_cast<int>(x)));
+default: throw std::runtime_error("Unexpected value in enumeration \"[object Object]\": " + std::to_string(static_cast<int>(x)));
 }
 }
 
 inline void from_json(const json & j, State & x) {
 if (j == "Canceled") x = State::Canceled;
 else if (j == "Failed") x = State::Failed;
-else if (j == "PartCompleted") x = State::PartCompleted;
 else if (j == "Pending") x = State::Pending;
 else if (j == "Processing") x = State::Processing;
 else if (j == "Queued") x = State::Queued;
@@ -1568,41 +1448,12 @@ inline void to_json(json & j, const State & x) {
 switch (x) {
 case State::Canceled: j = "Canceled"; break;
 case State::Failed: j = "Failed"; break;
-case State::PartCompleted: j = "PartCompleted"; break;
 case State::Pending: j = "Pending"; break;
 case State::Processing: j = "Processing"; break;
 case State::Queued: j = "Queued"; break;
 case State::Succeed: j = "Succeed"; break;
 case State::Unknown: j = "Unknown"; break;
-default: throw std::runtime_error("Unexpected value in enumeration \"State\": " + std::to_string(static_cast<int>(x)));
-}
-}
-
-inline void from_json(const json & j, SubState & x) {
-if (j == "AllDone") x = SubState::AllDone;
-else if (j == "InstallApplication") x = SubState::InstallApplication;
-else if (j == "InstallBase") x = SubState::InstallBase;
-else if (j == "InstallRuntime") x = SubState::InstallRuntime;
-else if (j == "PackageManagerDone") x = SubState::PackageManagerDone;
-else if (j == "PostAction") x = SubState::PostAction;
-else if (j == "PreAction") x = SubState::PreAction;
-else if (j == "Uninstall") x = SubState::Uninstall;
-else if (j == "Unknown") x = SubState::Unknown;
-else { throw std::runtime_error("Input JSON does not conform to schema!"); }
-}
-
-inline void to_json(json & j, const SubState & x) {
-switch (x) {
-case SubState::AllDone: j = "AllDone"; break;
-case SubState::InstallApplication: j = "InstallApplication"; break;
-case SubState::InstallBase: j = "InstallBase"; break;
-case SubState::InstallRuntime: j = "InstallRuntime"; break;
-case SubState::PackageManagerDone: j = "PackageManagerDone"; break;
-case SubState::PostAction: j = "PostAction"; break;
-case SubState::PreAction: j = "PreAction"; break;
-case SubState::Uninstall: j = "Uninstall"; break;
-case SubState::Unknown: j = "Unknown"; break;
-default: throw std::runtime_error("Unexpected value in enumeration \"SubState\": " + std::to_string(static_cast<int>(x)));
+default: throw std::runtime_error("Unexpected value in enumeration \"[object Object]\": " + std::to_string(static_cast<int>(x)));
 }
 }
 
@@ -1614,7 +1465,7 @@ else { throw std::runtime_error("Input JSON does not conform to schema!"); }
 inline void to_json(json & j, const Version & x) {
 switch (x) {
 case Version::The1: j = "1"; break;
-default: throw std::runtime_error("Unexpected value in enumeration \"Version\": " + std::to_string(static_cast<int>(x)));
+default: throw std::runtime_error("Unexpected value in enumeration \"[object Object]\": " + std::to_string(static_cast<int>(x)));
 }
 }
 }

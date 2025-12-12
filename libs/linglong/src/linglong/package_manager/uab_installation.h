@@ -56,7 +56,7 @@ private:
                           api::types::v1::CommonOptions options);
 
     utils::error::Result<void> installExecModeUAB(PackageTask &task);
-    utils::error::Result<void> installDistributionModeUAB();
+    utils::error::Result<void> installDistributionModeUAB(PackageTask &task);
     utils::error::Result<void> installUabLayer(const std::vector<api::types::v1::UabLayer> &layers,
                                                std::optional<std::string> subRef = std::nullopt);
 
@@ -64,7 +64,6 @@ private:
     ActionOperation operation;
     std::string taskName;
     CheckedLayers checkedLayers;
-    bool extraOnly = false;
     std::unique_ptr<package::UABFile> uabFile;
     utils::Transaction transaction;
     std::filesystem::path uabMountPoint;

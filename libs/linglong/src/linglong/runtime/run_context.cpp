@@ -72,29 +72,39 @@ static std::vector<std::string> loadExtensionsFromConfig(const std::string &appI
 {
     namespace fs = std::filesystem;
     std::vector<std::string> result;
-    
-    // 2. 定义解析函数：从指定 JSON 文件提取 "extensions" 数组，并加入 result
+    std::unordered_set<std::string> seen;
+
+    auto addExtension = [&](std::string ext) {
+        if (seen.insert(ext).second) {
+            result.emplace_back(std::move(ext));
+        }
+    };
+
+    // Parse extensions from a JSON config file and collect unique entries
     auto parseExtensions = [&](const fs::path &p) {
         try {
-            if (!fs::exists(p)) return;
+            if (!fs::exists(p)) {
+                return;
+            }
             std::ifstream in(p);
-            if (!in.is_open()) return;
+            if (!in.is_open()) {
+                return;
+            }
             nlohmann::json j;
             in >> j;
-            if (!j.contains("extensions") || !j.at("extensions").is_array()) return;
+            if (!j.contains("extensions") || !j.at("extensions").is_array()) {
+                return;
+            }
             for (const auto &elem : j.at("extensions")) {
                 if (elem.is_string()) {
-                    std::string ext = elem.get<std::string>();
-                    if (std::find(result.begin(), result.end(), ext) == result.end()) {
-                        result.emplace_back(std::move(ext));
-                    }
+                    addExtension(elem.get<std::string>());
                 }
             }
         } catch (...) {
-            // 文件不存在或解析失败时忽略
+            // ignore parse failures or missing files
         }
     };
-    
+
     for (const auto &base : configBasesUserFirst()) {
         parseExtensions(base / "config.json");
         if (!appId.empty()) {
@@ -109,6 +119,7 @@ static std::vector<std::string> loadExtensionsFromBase(const std::string &baseId
 {
     namespace fs = std::filesystem;
     std::vector<std::string> result;
+    std::unordered_set<std::string> seen;
 
     if (baseId.empty()) {
         return result;
@@ -132,7 +143,7 @@ static std::vector<std::string> loadExtensionsFromBase(const std::string &baseId
             for (const auto &elem : j.at("extensions")) {
                 if (elem.is_string()) {
                     std::string ext = elem.get<std::string>();
-                    if (std::find(result.begin(), result.end(), ext) == result.end()) {
+                    if (seen.insert(ext).second) {
                         result.emplace_back(std::move(ext));
                     }
                 }
@@ -218,6 +229,79 @@ static void collectEnvFromJson(const json &j, std::vector<std::string> &out)
     }
 }
 
+static std::optional<std::string> appendEnvWithMergedPath(
+  linglong::generator::ContainerCfgBuilder &builder,
+  const std::vector<std::string> &envKVs,
+  const std::map<std::string, std::string> &baseEnv,
+  const std::optional<std::string> &currentPath,
+  const char *warnContext)
+{
+    if (envKVs.empty()) {
+        return currentPath;
+    }
+
+    std::map<std::string, std::string> envToAppend;
+    std::string systemPath;
+    if (auto sysPath = ::getenv("PATH")) {
+        systemPath = sysPath;
+    }
+    auto basePathIt = baseEnv.find("PATH");
+
+    auto appendPath = [&](const std::string &add) {
+        if (auto it = envToAppend.find("PATH"); it != envToAppend.end()) {
+            it->second += ":" + add;
+            return;
+        }
+        if (currentPath) {
+            envToAppend["PATH"] = currentPath->empty() ? add : *currentPath + ":" + add;
+            return;
+        }
+        if (basePathIt != baseEnv.end()) {
+            envToAppend["PATH"] =
+              basePathIt->second.empty() ? add : basePathIt->second + ":" + add;
+            return;
+        }
+        if (!systemPath.empty()) {
+            envToAppend["PATH"] = systemPath + ":" + add;
+            return;
+        }
+        envToAppend["PATH"] = add;
+    };
+
+    for (const auto &kv : envKVs) {
+        auto pos = kv.find("+=");
+        if (pos != std::string::npos) {
+            auto key = kv.substr(0, pos);
+            auto add = kv.substr(pos + 2);
+            if (key == "PATH") {
+                appendPath(add);
+            } else {
+                if (warnContext && warnContext[0]) {
+                    qWarning() << "ignore '+=' env for key" << warnContext << ":"
+                               << QString::fromStdString(key);
+                } else {
+                    qWarning() << "ignore '+=' env for key:" << QString::fromStdString(key);
+                }
+            }
+            continue;
+        }
+        auto eq = kv.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        envToAppend[kv.substr(0, eq)] = kv.substr(eq + 1);
+    }
+
+    if (!envToAppend.empty()) {
+        builder.appendEnv(envToAppend);
+        if (auto it = envToAppend.find("PATH"); it != envToAppend.end()) {
+            return it->second;
+        }
+    }
+
+    return currentPath;
+}
+
 static std::vector<ocppi::runtime::config::types::Mount>
 parseFilesystemMounts(const std::string &appId, const json &arr)
 {
@@ -257,17 +341,8 @@ parseFilesystemMounts(const std::string &appId, const json &arr)
 
             std::error_code ec;
             std::filesystem::path hostPath(host);
-            if (!std::filesystem::exists(hostPath, ec)) {
-                ec.clear();
-                if (!std::filesystem::create_directories(hostPath, ec) && ec) {
-                    ec.clear();
-                    auto parent = hostPath.parent_path();
-                    if (!parent.empty()) {
-                        std::filesystem::create_directories(parent, ec);
-                    }
-                }
-            }
-            if (ec || !std::filesystem::exists(hostPath, ec)) {
+            std::filesystem::create_directories(hostPath, ec);
+            if (ec || !std::filesystem::is_directory(hostPath, ec)) {
                 qWarning() << "failed to prepare persist directory for"
                            << QString::fromStdString(host) << ":" << ec.message().c_str();
                 continue;
@@ -518,10 +593,6 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
         extRefs = *options.extensionRefs;
     } else {
         extRefs = loadExtensionsFromConfig(runnable.id);
-    }
-
-    if (extRefs.empty() && info.cliConfig && info.cliConfig->extensions) {
-        extRefs = *info.cliConfig->extensions;
     }
 
     // 如果未获取到扩展列表，则尝试根据 base 层加载
@@ -980,82 +1051,14 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
     std::string currentBaseId;
     if (baseLayer) currentBaseId = baseLayer->getReference().id;
 
-    json mergedCfg = json::object();
-
-    auto mergeCliConfig = [&](RuntimeLayer *layer) {
-        if (layer == nullptr) {
-            return;
-        }
-        auto item = layer->getCachedItem();
-        if (!item) {
-            return;
-        }
-        if (item->info.cliConfig) {
-            json cfg = *(item->info.cliConfig);
-            if (mergedCfg.empty()) {
-                mergedCfg = std::move(cfg);
-            } else {
-                mergedCfg.merge_patch(cfg);
-            }
-        }
-    };
-
-    mergeCliConfig(baseLayer ? &*baseLayer : nullptr);
-    mergeCliConfig(appLayer ? &*appLayer : nullptr);
-
-    auto configFromDirs = loadMergedJsonWithBase(currentAppId, currentBaseId);
-    if (mergedCfg.empty()) {
-        mergedCfg = configFromDirs;
-    } else {
-        mergedCfg.merge_patch(configFromDirs);
-    }
+    auto mergedCfg = loadMergedJsonWithBase(currentAppId, currentBaseId);
     std::optional<std::string> mergedPath;
 
     // 1) common env
     {
         std::vector<std::string> envKVs;
         collectEnvFromJson(mergedCfg, envKVs);
-        if (!envKVs.empty()) {
-            std::map<std::string, std::string> genEnv;
-            std::string basePath;
-            if (auto sysPath = ::getenv("PATH")) {
-                basePath = sysPath;
-            }
-            auto extPathIt = environment.find("PATH");
-            for (const auto &kv : envKVs) {
-                auto pos = kv.find("+=");
-                if (pos != std::string::npos) {
-                    auto key = kv.substr(0, pos);
-                    auto add = kv.substr(pos + 2);
-                    if (key == "PATH") {
-                        if (genEnv.count("PATH")) {
-                            genEnv["PATH"] += ":" + add;
-                        } else if (extPathIt != environment.end()) {
-                            genEnv["PATH"] =
-                              extPathIt->second.empty() ? add : extPathIt->second + ":" + add;
-                        } else if (!basePath.empty()) {
-                            genEnv["PATH"] = basePath + ":" + add;
-                        } else {
-                            genEnv["PATH"] = add;
-                        }
-                    } else {
-                        qWarning() << "ignore '+=' env for key:" << QString::fromStdString(key);
-                    }
-                    continue;
-                }
-                auto eq = kv.find('=');
-                if (eq == std::string::npos) {
-                    continue;
-                }
-                genEnv[kv.substr(0, eq)] = kv.substr(eq + 1);
-            }
-            if (!genEnv.empty()) {
-                if (auto it = genEnv.find("PATH"); it != genEnv.end()) {
-                    mergedPath = it->second;
-                }
-                builder.appendEnv(genEnv);
-            }
-        }
+        mergedPath = appendEnvWithMergedPath(builder, envKVs, environment, mergedPath, "");
     }
 
     // 2) common filesystem
@@ -1088,51 +1091,8 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
                 CommandSettings cs = parseCommandSettings(currentAppId, *node);
 
                 if (!cs.envKVs.empty()) {
-                    std::map<std::string, std::string> cmdEnv;
-                    std::string basePath;
-                    if (auto sysPath = ::getenv("PATH")) {
-                        basePath = sysPath;
-                    }
-                    auto extPathIt = environment.find("PATH");
-                    for (const auto &kv : cs.envKVs) {
-                        auto posp = kv.find("+=");
-                        if (posp != std::string::npos) {
-                            auto key = kv.substr(0, posp);
-                            auto add = kv.substr(posp + 2);
-                            if (key == "PATH") {
-                                if (cmdEnv.count("PATH")) {
-                                    cmdEnv["PATH"] += ":" + add;
-                                } else if (mergedPath) {
-                                    cmdEnv["PATH"] =
-                                      mergedPath->empty() ? add : *mergedPath + ":" + add;
-                                } else if (extPathIt != environment.end()) {
-                                    cmdEnv["PATH"] =
-                                      extPathIt->second.empty()
-                                        ? add
-                                        : extPathIt->second + ":" + add;
-                                } else if (!basePath.empty()) {
-                                    cmdEnv["PATH"] = basePath + ":" + add;
-                                } else {
-                                    cmdEnv["PATH"] = add;
-                                }
-                            } else {
-                                qWarning() << "ignore '+=' env for key in command settings:"
-                                           << QString::fromStdString(key);
-                            }
-                            continue;
-                        }
-                        auto eq = kv.find('=');
-                        if (eq == std::string::npos) {
-                            continue;
-                        }
-                        cmdEnv[kv.substr(0, eq)] = kv.substr(eq + 1);
-                    }
-                    if (!cmdEnv.empty()) {
-                        if (auto it = cmdEnv.find("PATH"); it != cmdEnv.end()) {
-                            mergedPath = it->second;
-                        }
-                        builder.appendEnv(cmdEnv);
-                    }
+                    mergedPath = appendEnvWithMergedPath(
+                      builder, cs.envKVs, environment, mergedPath, "in command settings");
                 }
 
                 if (!cs.mounts.empty()) builder.addExtraMounts(cs.mounts);

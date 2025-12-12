@@ -18,7 +18,6 @@
 #include "linglong/api/types/v1/helper.hpp"
 
 #include "linglong/api/types/v1/BuilderProjectBuildEXT.hpp"
-#include "linglong/api/types/v1/LlCLIConfig.hpp"
 #include "linglong/api/types/v1/BuilderProjectModules.hpp"
 #include "linglong/api/types/v1/BuilderProjectPackage.hpp"
 #include "linglong/api/types/v1/ApplicationConfigurationPermissions.hpp"
@@ -50,10 +49,6 @@ std::string build;
 * build extension for builder project
 */
 std::optional<BuilderProjectBuildEXT> buildext;
-/**
-* default ll-cli configuration delivered with package
-*/
-std::optional<LlCLIConfig> cliConfig;
 /**
 * command of builder project
 */

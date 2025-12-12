@@ -149,6 +149,14 @@ sudo apt update
 sudo apt install linglong-bin linglong-installer
 ```
 
+### NixOS
+
+在 NixOS 25.11或以上版本中，修改配置文件(一般是`/etc/nixos/configuration.nix`), 添加：
+
+```nix
+  services.linyaps.enable = true;
+```
+
 ## 如意玲珑构建工具安装说明
 
 ### Debian系

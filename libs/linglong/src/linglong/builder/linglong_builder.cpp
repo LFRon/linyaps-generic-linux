@@ -132,10 +132,14 @@ utils::error::Result<void> pullDependency(const package::Reference &ref,
     printReplacedText(
       fmt::format("{:<35}{:<15}{:<15}waiting ...", ref.id, ref.version.toString(), module),
       2);
-    repo.pull(tmpTask, ref, module, repo.getDefaultRepo());
-    if (tmpTask.state() == linglong::api::types::v1::State::Failed) {
-        return LINGLONG_ERR(("pull " + ref.toString() + " failed").data(),
-                            std::move(tmpTask).takeError());
+    QObject::connect(utils::global::GlobalTaskControl::instance(),
+                     &utils::global::GlobalTaskControl::OnCancel,
+                     [&tmpTask]() {
+                         tmpTask.Cancel();
+                     });
+    auto res = repo.pull(tmpTask, ref, module, repo.getDefaultRepo());
+    if (!res) {
+        return LINGLONG_ERR(res);
     }
 
     return LINGLONG_OK;
@@ -261,7 +265,7 @@ utils::error::Result<void> cmdRemoveApp(repo::OSTreeRepo &repo,
                                         bool prune)
 {
     for (const auto &ref : refs) {
-        auto r = package::Reference::parse(QString::fromStdString(ref));
+        auto r = package::Reference::parse(ref);
         if (!r.has_value()) {
             std::cerr << ref << ": " << r.error().message() << std::endl;
             continue;
@@ -1164,9 +1168,7 @@ utils::error::Result<void> Builder::commitToLocalRepo() noexcept
 
     auto info = api::types::v1::PackageInfoV2{
         .arch = { projectRef->arch.toStdString() },
-        .base = project.base,
         .channel = projectRef->channel,
-        .cliConfig = project.cliConfig,
         .command = project.command,
         .description = project.package.description,
         .id = project.package.id,
@@ -1178,6 +1180,7 @@ utils::error::Result<void> Builder::commitToLocalRepo() noexcept
         .version = project.package.version,
     };
 
+    info.base = project.base;
     if (project.runtime) {
         info.runtime = project.runtime;
     }

@@ -23,7 +23,6 @@
 #include "linglong/api/types/v1/PackageManager1UninstallParameters.hpp"
 #include "linglong/api/types/v1/RepositoryCacheLayersItem.hpp"
 #include "linglong/api/types/v1/State.hpp"
-#include "linglong/api/types/v1/SubState.hpp"
 #include "linglong/api/types/v1/UpgradeListResult.hpp"
 #include "linglong/cli/printer.h"
 #include "linglong/common/dir.h"
@@ -227,17 +226,6 @@ bool delegateToContainerInit(const std::string &containerID,
 
 namespace linglong::cli {
 
-bool operator!=(const PMTaskState &lhs, const PMTaskState &rhs)
-{
-    return lhs.state != rhs.state || lhs.subState != rhs.subState || lhs.message != rhs.message
-      || lhs.percentage != rhs.percentage || lhs.errorCode != rhs.errorCode;
-}
-
-bool operator==(const PMTaskState &lhs, const PMTaskState &rhs)
-{
-    return !(lhs != rhs);
-}
-
 void Cli::onTaskPropertiesChanged(
   const QString &interface,                                   // NOLINT
   const QVariantMap &changed_properties,                      // NOLINT
@@ -263,18 +251,6 @@ void Cli::onTaskPropertiesChanged(
             continue;
         }
 
-        if (key == "SubState") {
-            bool ok{ false };
-            auto val = value.toInt(&ok);
-            if (!ok) {
-                qCritical() << "dbus ipc error, SubState couldn't convert to int";
-                continue;
-            }
-
-            taskState.subState = static_cast<api::types::v1::SubState>(val);
-            continue;
-        }
-
         if (key == "Percentage") {
             bool ok{ false };
             auto val = value.toDouble(&ok);
@@ -293,7 +269,7 @@ void Cli::onTaskPropertiesChanged(
                 continue;
             }
 
-            taskState.message = value.toString();
+            taskState.message = value.toString().toStdString();
             continue;
         }
 
@@ -309,7 +285,7 @@ void Cli::onTaskPropertiesChanged(
         }
     }
 
-    printProgress(taskState);
+    handleTaskState();
 }
 
 void Cli::interaction(const QDBusObjectPath &object_path,
@@ -385,12 +361,7 @@ void Cli::onTaskAdded(const QDBusObjectPath &object_path)
     qDebug() << "task added" << object_path.path();
 }
 
-void Cli::onTaskRemoved(const QDBusObjectPath &object_path,
-                        int state,
-                        int subState,
-                        const QString &message,
-                        double percentage,
-                        int code)
+void Cli::onTaskRemoved(const QDBusObjectPath &object_path)
 {
     if (object_path.path() != taskObjectPath) {
         return;
@@ -398,85 +369,59 @@ void Cli::onTaskRemoved(const QDBusObjectPath &object_path,
 
     delete task;
     task = nullptr;
-
-    PMTaskState newState = {
-        .state = static_cast<api::types::v1::State>(state),
-        .subState = static_cast<api::types::v1::SubState>(subState),
-        .message = message,
-        .percentage = percentage,
-        .errorCode = static_cast<utils::error::ErrorCode>(code),
-    };
-
-    if (taskState != newState) {
-        taskState = newState;
-        if (taskState.subState == api::types::v1::SubState::AllDone) {
-            this->printProgress(taskState);
-        } else if (taskState.subState == api::types::v1::SubState::PackageManagerDone) {
-            auto ret = this->notifier->notify(
-              api::types::v1::InteractionRequest{ .summary = taskState.message.toStdString() });
-            if (!ret) {
-                this->printer.printErr(ret.error());
-            }
-        }
-    }
-
     Q_EMIT taskDone();
 }
 
-void Cli::printProgress(const PMTaskState &state) noexcept
+void Cli::handleTaskState() noexcept
 {
-    if (state.state == api::types::v1::State::Unknown) {
+    if (taskState.state == api::types::v1::State::Unknown) {
         LogI("task is invalid");
         return;
     }
 
-    if (state.state == api::types::v1::State::Failed) {
-        switch (state.errorCode) {
-        case utils::error::ErrorCode::AppInstallModuleRequireAppFirst:
-            this->printer.printMessage(_("To install the module, one must first install the app."));
-            break;
-        case utils::error::ErrorCode::AppInstallModuleAlreadyExists:
-            this->printer.printMessage(_("Module is already installed."));
-            break;
-        case utils::error::ErrorCode::AppInstallFailed:
-            this->printer.printMessage(_("Install failed"));
-            break;
-        case utils::error::ErrorCode::AppInstallModuleNotFound:
-            this->printer.printMessage(_("The module could not be found remotely."));
-            break;
-        case utils::error::ErrorCode::AppUninstallFailed:
-            this->printer.printMessage(_("Uninstall failed"));
-            break;
-        case utils::error::ErrorCode::AppUpgradeFailed:
-            this->printer.printMessage(_("Upgrade failed"));
-            break;
-        case utils::error::ErrorCode::AppUpgradeLocalNotFound:
-            this->printer.printMessage(_("Application is not installed."));
-            break;
-        case utils::error::ErrorCode::AppUpgradeRemoteNotFound:
-            this->printer.printMessage(_("Remote application is not found."));
-            break;
-        case utils::error::ErrorCode::AppUpgradeLatestInstalled:
-            this->printer.printMessage(_("Latest version is already installed."));
-            break;
-        default:
-            this->printer.printTaskState(state.percentage,
-                                         state.message,
-                                         state.state,
-                                         state.subState);
-            return;
-        }
-
-        if (this->globalOptions.verbose) {
-            this->printer.printTaskState(state.percentage,
-                                         state.message,
-                                         state.state,
-                                         state.subState);
-        }
+    if (taskState.state == api::types::v1::State::Failed
+        || taskState.state == api::types::v1::State::Canceled) {
+        this->printer.clearLine();
+        this->printOnTaskFailed();
         return;
     }
 
-    this->printer.printTaskState(state.percentage, state.message, state.state, state.subState);
+    if (taskState.state == api::types::v1::State::Succeed) {
+        this->printer.clearLine();
+        this->printOnTaskSuccess();
+        return;
+    }
+
+    this->printer.printProgress(taskState.percentage, taskState.message);
+}
+
+void Cli::printOnTaskFailed()
+{
+    LINGLONG_TRACE("cli handle task failed");
+
+    auto error = LINGLONG_ERRV(taskState.message, taskState.errorCode);
+
+    switch (taskState.taskType) {
+    case TaskType::Install:
+        handleInstallError(
+          error,
+          std::get<api::types::v1::PackageManager1InstallParameters>(taskState.params));
+        break;
+    case TaskType::Uninstall:
+        handleUninstallError(error);
+        break;
+    case TaskType::Upgrade:
+        handleUpgradeError(error);
+        break;
+    default:
+        handleCommonError(error);
+        break;
+    }
+}
+
+void Cli::printOnTaskSuccess()
+{
+    this->printer.printMessage(taskState.message);
 }
 
 Cli::Cli(Printer &printer,
@@ -501,7 +446,7 @@ Cli::Cli(Printer &printer,
                       "TaskAdd",
                       this,
                       SLOT(onTaskAdded(QDBusObjectPath)))) {
-        qFatal("couldn't connect to package manager signal 'TaskAdded'");
+        LogE("couldn't connect to package manager signal 'TaskAdded'");
     }
 
     if (!conn.connect(pkgMan.service(),
@@ -509,8 +454,8 @@ Cli::Cli(Printer &printer,
                       pkgMan.interface(),
                       "TaskRemoved",
                       this,
-                      SLOT(onTaskRemoved(QDBusObjectPath, int, int, QString, double, int)))) {
-        qFatal("couldn't connect to package manager signal 'TaskRemoved'");
+                      SLOT(onTaskRemoved(QDBusObjectPath)))) {
+        LogE("couldn't connect to package manager signal 'TaskRemoved'");
     }
 }
 
@@ -664,9 +609,6 @@ int Cli::run(const RunOptions &options)
 
     runContext.enableSecurityContext(runtime::getDefaultSecurityContexts());
 
-    const auto &fsPolicy = runContext.filesystemPolicy();
-    const bool restrictFilesystem = fsPolicy.allowListConfigured;
-
     linglong::generator::ContainerCfgBuilder cfgBuilder;
     cfgBuilder.setAppId(curAppRef->id)
       .setAnnotation(generator::ANNOTATION::LAST_PID, std::to_string(pid))
@@ -676,28 +618,15 @@ int Cli::run(const RunOptions &options)
       .bindDevNode()
       .bindCgroup()
       .bindXDGRuntime()
-      .bindUserGroup();
-
-    if (!restrictFilesystem) {
-        cfgBuilder.bindRemovableStorageMounts()
-          .bindHostRoot()
-          .bindHostStatics();
-    }
-
-    cfgBuilder.bindHome(homeEnv).enablePrivateDir();
-
-    if (restrictFilesystem) {
-        cfgBuilder.disableHostHomeBind();
-    }
-
-    if (restrictFilesystem) {
-        cfgBuilder.mapPrivate(std::string{ homeEnv }, true);
-    } else {
-        cfgBuilder.mapPrivate(std::string{ homeEnv } + "/.ssh", true)
-          .mapPrivate(std::string{ homeEnv } + "/.gnupg", true);
-    }
-
-    cfgBuilder.bindIPC()
+      .bindUserGroup()
+      .bindRemovableStorageMounts()
+      .bindHostRoot()
+      .bindHostStatics()
+      .bindHome(homeEnv)
+      .enablePrivateDir()
+      .mapPrivate(std::string{ homeEnv } + "/.ssh", true)
+      .mapPrivate(std::string{ homeEnv } + "/.gnupg", true)
+      .bindIPC()
       .forwardDefaultEnv()
       .enableSelfAdjustingMount();
 
@@ -962,11 +891,9 @@ int Cli::kill(const KillOptions &options)
 
 void Cli::cancelCurrentTask()
 {
-    bool isRunning = this->taskState.subState != linglong::api::types::v1::SubState::AllDone
-      && this->taskState.subState != linglong::api::types::v1::SubState::PackageManagerDone;
-    if (isRunning && this->task != nullptr) {
-        this->task->Cancel();
+    if (this->task != nullptr) {
         LogD("cancel running task");
+        this->task->Cancel();
     }
 }
 
@@ -1016,7 +943,7 @@ int Cli::installFromFile(const QFileInfo &fileInfo,
       this->pkgMan.InstallFromFile(dbusFileDescriptor,
                                    fileInfo.suffix(),
                                    utils::serialize::toQVariantMap(commonOptions));
-    res = waitTaskCreated(pendingReply);
+    res = waitTaskCreated(pendingReply, TaskType::InstallFromFile);
     if (!res) {
         this->handleCommonError(res.error());
         return -1;
@@ -1082,11 +1009,12 @@ int Cli::install(const InstallOptions &options)
     LogD("install module: {}", common::strings::join(*params.package.modules));
 
     auto pendingReply = this->pkgMan.Install(utils::serialize::toQVariantMap(params));
-    auto res = waitTaskCreated(pendingReply);
+    auto res = waitTaskCreated(pendingReply, TaskType::Install);
     if (!res) {
         handleInstallError(res.error(), params);
         return -1;
     }
+    this->taskState.params = std::move(params);
 
     waitTaskDone();
 
@@ -1104,7 +1032,7 @@ int Cli::upgrade(const UpgradeOptions &options)
         return -1;
     }
 
-    std::vector<package::FuzzyReference> fuzzyRefs;
+    std::vector<package::Reference> toUpgrade;
     if (!options.appid.empty()) {
         auto fuzzyRef = package::FuzzyReference::parse(options.appid);
         if (!fuzzyRef) {
@@ -1112,67 +1040,42 @@ int Cli::upgrade(const UpgradeOptions &options)
             return -1;
         }
 
-        auto localRefRet = this->repository.clearReference(*fuzzyRef,
-                                                           {
-                                                             .forceRemote = false,
-                                                             .fallbackToRemote = false,
-                                                           });
-        if (!localRefRet) {
-            this->printer.printErr(localRefRet.error());
+        auto localRef = this->repository.clearReference(*fuzzyRef,
+                                                        {
+                                                          .forceRemote = false,
+                                                          .fallbackToRemote = false,
+                                                        });
+        if (!localRef) {
+            this->printer.printMessage(
+              fmt::format(_("Application {} is not installed."), options.appid));
             return -1;
         }
 
-        auto layerItemRet = this->repository.getLayerItem(*localRefRet);
+        auto layerItemRet = this->repository.getLayerItem(*localRef);
         if (!layerItemRet) {
             this->printer.printErr(layerItemRet.error());
             return -1;
         }
         if (layerItemRet->info.kind != "app") {
-            this->printer.printErr(
-              LINGLONG_ERRV(std::string{ "package " + options.appid + " is not an app" }.c_str()));
+            this->printer.printMessage(fmt::format(_("{} is not an application."), options.appid));
             return -1;
         }
-        fuzzyRefs.emplace_back(std::move(*fuzzyRef));
-    } else {
-        // Note: upgrade all apps for now.
-        auto list = this->listUpgradable();
-        if (!list) {
-            this->printer.printErr(list.error());
-            return -1;
-        }
-        for (const auto &item : *list) {
-            auto fuzzyRef =
-              package::FuzzyReference::parse(fmt::format("{}/{}", item.id, item.oldVersion));
-            if (!fuzzyRef) {
-                this->printer.printErr(fuzzyRef.error());
-                return -1;
-            }
-            fuzzyRefs.emplace_back(std::move(*fuzzyRef));
-        }
-    }
-
-    if (fuzzyRefs.empty()) {
-        this->printer.printMessage(_("All software packages are up to date."));
-        return 0;
+        toUpgrade.emplace_back(std::move(localRef).value());
     }
 
     api::types::v1::PackageManager1UpdateParameters params;
-    for (const auto &fuzzyRef : fuzzyRefs) {
+    params.depsOnly = options.depsOnly;
+    for (const auto &ref : toUpgrade) {
         api::types::v1::PackageManager1Package package;
-        package.id = fuzzyRef.id;
-        if (fuzzyRef.channel) {
-            package.channel = fuzzyRef.channel;
-        }
-        if (fuzzyRef.version) {
-            package.version = fuzzyRef.version;
-        }
+        package.id = ref.id;
+        package.channel = ref.channel;
         params.packages.emplace_back(std::move(package));
     }
 
     auto pendingReply = this->pkgMan.Update(utils::serialize::toQVariantMap(params));
-    auto res = waitTaskCreated(pendingReply);
+    auto res = waitTaskCreated(pendingReply, TaskType::Upgrade);
     if (!res) {
-        handleCommonError(res.error());
+        handleUpgradeError(res.error());
         return -1;
     }
 
@@ -1392,7 +1295,7 @@ int Cli::uninstall(const UninstallOptions &options)
     }
 
     auto pendingReply = this->pkgMan.Uninstall(utils::serialize::toQVariantMap(params));
-    auto res = waitTaskCreated(pendingReply);
+    auto res = waitTaskCreated(pendingReply, TaskType::Uninstall);
     if (!res) {
         this->handleUninstallError(res.error());
         return -1;
@@ -1444,76 +1347,22 @@ int Cli::list(const ListOptions &options)
     return 0;
 }
 
-utils::error::Result<std::vector<api::types::v1::UpgradeListResult>>
-Cli::listUpgradable(const std::string &type)
+utils::error::Result<std::vector<api::types::v1::UpgradeListResult>> Cli::listUpgradable()
 {
     LINGLONG_TRACE("list upgradable");
-    auto pkgs = this->repository.listLocalLatest();
-    if (!pkgs) {
-        return LINGLONG_ERR(pkgs);
+
+    // only applications can be upgraded
+    auto upgradablePkgs = this->repository.upgradableApps();
+    if (!upgradablePkgs) {
+        return LINGLONG_ERR(upgradablePkgs);
     }
-
-    auto localPkgs = std::map<std::string, std::vector<api::types::v1::PackageInfoV2>>{
-        { "all", std::move(pkgs).value() }
-    };
-
-    filterPackageInfosByType(localPkgs, type);
 
     std::vector<api::types::v1::UpgradeListResult> upgradeList;
-    auto fullFuzzyRef = package::FuzzyReference::parse(".");
-    if (!fullFuzzyRef) {
-        return LINGLONG_ERR(fullFuzzyRef);
-    }
-
-    auto remoteRepos = this->repository.getHighestPriorityRepos();
-    if (remoteRepos.empty()) {
-        return LINGLONG_ERR("No remote repository found.");
-    }
-
-    auto archRet = package::Architecture::currentCPUArchitecture();
-    if (!archRet) {
-        return LINGLONG_ERR(archRet);
-    }
-
-    std::optional<package::Reference> reference;
-    for (const auto &pkg : localPkgs["all"]) {
-        auto fuzzy = package::FuzzyReference::create(pkg.channel.c_str(),
-                                                     pkg.id.c_str(),
-                                                     std::nullopt,
-                                                     *archRet);
-        if (!fuzzy) {
-            this->printer.printErr(fuzzy.error());
-            continue;
-        }
-
-        reference.reset();
-
-        auto newRef = this->repository.latestRemoteReference(*fuzzy);
-
-        if (!newRef) {
-            qDebug() << "Failed to find remote latest reference:" << newRef.error().message();
-            continue;
-        }
-
-        auto oldVersion = package::Version::parse(pkg.version);
-        if (!oldVersion) {
-            qDebug() << "failed to parse old version:" << oldVersion.error().message();
-            continue;
-        }
-
-        if (newRef->reference.version > *oldVersion) {
-            reference = newRef->reference;
-        }
-
-        if (!reference) {
-            LogD("Failed to find the package: {}, maybe it is local package, skip it.", fuzzy->id);
-            continue;
-        }
-
+    for (const auto &pkg : *upgradablePkgs) {
         upgradeList.emplace_back(
-          api::types::v1::UpgradeListResult{ .id = pkg.id,
-                                             .newVersion = reference->version.toString(),
-                                             .oldVersion = oldVersion->toString() });
+          api::types::v1::UpgradeListResult{ .id = pkg.first.id,
+                                             .newVersion = pkg.second.reference.version.toString(),
+                                             .oldVersion = pkg.first.version.toString() });
     }
     return upgradeList;
 }
@@ -2499,7 +2348,8 @@ utils::error::Result<void> Cli::initInteraction()
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> Cli::waitTaskCreated(QDBusPendingReply<QVariantMap> &reply)
+utils::error::Result<void> Cli::waitTaskCreated(QDBusPendingReply<QVariantMap> &reply,
+                                                TaskType taskType)
 {
     LINGLONG_TRACE("waitTaskCreated");
 
@@ -2517,6 +2367,7 @@ utils::error::Result<void> Cli::waitTaskCreated(QDBusPendingReply<QVariantMap> &
     this->taskObjectPath = QString::fromStdString(result->taskObjectPath.value());
     this->task = new api::dbus::v1::Task1(pkgMan.service(), taskObjectPath, conn);
     this->taskState.state = linglong::api::types::v1::State::Queued;
+    this->taskState.taskType = taskType;
 
     if (!conn.connect(pkgMan.service(),
                       taskObjectPath,
@@ -2547,6 +2398,15 @@ void Cli::handleInstallError(const utils::error::Error &error,
 {
     auto errorCode = static_cast<utils::error::ErrorCode>(error.code());
     switch (errorCode) {
+    case utils::error::ErrorCode::AppInstallModuleRequireAppFirst:
+        this->printer.printMessage(_("To install the module, one must first install the app."));
+        break;
+    case utils::error::ErrorCode::AppInstallModuleAlreadyExists:
+        this->printer.printMessage(_("Module is already installed."));
+        break;
+    case utils::error::ErrorCode::AppInstallModuleNotFound:
+        this->printer.printMessage(_("The module could not be found remotely."));
+        break;
     case utils::error::ErrorCode::AppInstallAlreadyInstalled:
         this->printer.printMessage(
           fmt::format(_("Application already installed, If you want to replace it, try using "
@@ -2587,12 +2447,11 @@ void Cli::handleUninstallError(const utils::error::Error &error)
     auto errorCode = static_cast<utils::error::ErrorCode>(error.code());
     switch (errorCode) {
     case utils::error::ErrorCode::AppUninstallAppIsRunning: {
-        this->printer.printMessage(
-          _("The application is currently running and cannot be "
-            "uninstalled. Please turn off the application and try again."));
 
-        auto ret = this->notifier->notify(
-          api::types::v1::InteractionRequest{ .appName = "ll-cli", .summary = error.message() });
+        auto ret = this->notifier->notify(api::types::v1::InteractionRequest{
+          .appName = "ll-cli",
+          .summary = _("The application is currently running and cannot be "
+                       "uninstalled. Please turn off the application and try again.") });
         if (!ret) {
             this->printer.printErr(ret.error());
         }
@@ -2627,6 +2486,29 @@ void Cli::handleUninstallError(const utils::error::Error &error)
     }
 }
 
+void Cli::handleUpgradeError(const utils::error::Error &error)
+{
+    auto errorCode = static_cast<utils::error::ErrorCode>(error.code());
+    switch (errorCode) {
+    case utils::error::ErrorCode::AppUpgradeLocalNotFound:
+        this->printer.printMessage(_("Application is not installed."));
+        break;
+    case utils::error::ErrorCode::AppUpgradeFailed:
+    case utils::error::ErrorCode::Unknown:
+        this->printer.printMessage(_("Upgrade failed"));
+        break;
+    default:
+        if (!handleCommonError(error)) {
+            return;
+        }
+        break;
+    }
+
+    if (this->globalOptions.verbose) {
+        this->printer.printErr(error);
+    }
+}
+
 bool Cli::handleCommonError(const utils::error::Error &error)
 {
     auto errorCode = static_cast<utils::error::ErrorCode>(error.code());
@@ -2638,6 +2520,9 @@ bool Cli::handleCommonError(const utils::error::Error &error)
         break;
     case utils::error::ErrorCode::LayerCompatibilityError:
         this->printer.printMessage(_("Package not found"));
+        break;
+    case utils::error::ErrorCode::Canceled:
+        this->printer.printMessage(_("Operation canceled"));
         break;
     default:
         this->printer.printErr(error);

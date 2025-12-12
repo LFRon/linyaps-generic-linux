@@ -71,33 +71,16 @@ namespace {
 
 struct ostreeUserData
 {
-    bool scanning{ false };
     bool caught_error{ false };
-    bool last_was_metadata{ false };
-    guint outstanding_fetches{ 0 };
-    guint outstanding_writes{ 0 };
     guint fetched{ 0 };
     guint requested{ 0 };
-    guint scanned_metadata{ 0 };
     guint bytes_transferred{ 0 };
-    guint fetched_delta_parts{ 0 };
-    guint total_delta_parts{ 0 };
-    guint fetched_delta_fallbacks{ 0 };
-    guint total_delta_fallbacks{ 0 };
-    guint total_delta_superblocks{ 0 };
-    guint outstanding_metadata_fetches{ 0 };
-    guint metadata_fetched{ 0 };
-    guint64 fetched_delta_part_size{ 0 };
-    guint64 total_delta_part_size{ 0 };
-    guint64 total_delta_part_usize{ 0 };
     char *ostree_status{ nullptr };
-    service::PackageTask *taskContext{ nullptr };
+    service::Task *taskContext{ nullptr };
     guint64 needed_archived{ 0 };
     guint64 needed_unpacked{ 0 };
     guint64 needed_objects{ 0 };
-    std::string status{ "Beginning to pull data" };
-    long double progress{ 0 };
-    long double last_total{ 0 };
+    double progress{ 0 };
 
     ~ostreeUserData() { g_clear_pointer(&ostree_status, g_free); }
 };
@@ -107,136 +90,45 @@ void progress_changed(OstreeAsyncProgress *progress, gpointer user_data)
     auto *data = static_cast<ostreeUserData *>(user_data);
     g_clear_pointer(&data->ostree_status, g_free);
 
-    if (data->caught_error) {
-        return;
-    }
-
     ostree_async_progress_get(progress,
-                              "outstanding-fetches",
-                              "u",
-                              &data->outstanding_fetches,
-                              "outstanding-writes",
-                              "u",
-                              &data->outstanding_writes,
                               "fetched",
                               "u",
                               &data->fetched,
                               "requested",
                               "u",
                               &data->requested,
-                              "scanning",
-                              "u",
-                              &data->scanning,
                               "caught-error",
                               "b",
                               &data->caught_error,
-                              "scanned-metadata",
-                              "u",
-                              &data->scanned_metadata,
                               "bytes-transferred",
                               "t",
                               &data->bytes_transferred,
-                              "fetched-delta-parts",
-                              "u",
-                              &data->fetched_delta_parts,
-                              "total-delta-parts",
-                              "u",
-                              &data->total_delta_parts,
-                              "fetched-delta-fallbacks",
-                              "u",
-                              &data->fetched_delta_fallbacks,
-                              "total-delta-fallbacks",
-                              "u",
-                              &data->total_delta_fallbacks,
-                              "fetched-delta-part-size",
-                              "t",
-                              &data->fetched_delta_part_size,
-                              "total-delta-part-size",
-                              "t",
-                              &data->total_delta_part_size,
-                              "total-delta-part-usize",
-                              "t",
-                              &data->total_delta_part_usize,
-                              "total-delta-superblocks",
-                              "u",
-                              &data->total_delta_superblocks,
-                              "outstanding-metadata-fetches",
-                              "u",
-                              &data->outstanding_metadata_fetches,
-                              "metadata-fetched",
-                              "u",
-                              &data->metadata_fetched,
                               "status",
                               "s",
                               &data->ostree_status,
                               nullptr);
 
-    long double total{ 0 };
-    long double new_progress{ 0 };
-    guint64 total_transferred{ 0 };
-    bool last_was_metadata{ data->last_was_metadata };
-
-    auto updateProgress = utils::finally::finally([&new_progress, data, &total] {
-        LINGLONG_TRACE("update progress status")
-
-        if (data->caught_error) {
-            data->taskContext->reportError(
-              LINGLONG_ERRV("Caught error during pulling data, waiting for outstanding task"));
-            return;
-        }
-
-        new_progress = std::max(new_progress, data->progress);
-        data->last_total = total;
-        if (new_progress > 100) {
-            qDebug() << "progress overflow, limiting to 100";
-            new_progress = 100;
-        }
-
-        data->progress = new_progress;
-        data->taskContext->updateTask(static_cast<double>(data->progress), 100, data->status);
-    });
-
     if (data->requested == 0) {
         return;
     }
 
-    if (*(data->ostree_status) != 0) {
-        new_progress = 100;
-        return;
-    }
-
-    total_transferred = data->bytes_transferred;
-    data->last_was_metadata = false;
-    if (data->total_delta_parts == 0
-        && (data->outstanding_metadata_fetches > 0 || last_was_metadata)
-        && data->metadata_fetched < 20) {
-        if (data->outstanding_metadata_fetches > 0) {
-            data->last_was_metadata = true;
-        }
-
-        data->status = "Downloading metadata";
-        new_progress = 0;
-        if (data->progress > 0) {
-            new_progress = (data->fetched * 5.0) / data->requested;
-        }
+    guint64 request, fetched;
+    // use needed_archived to calculate progress if possible
+    // otherwise use requested and fetched
+    if (data->needed_archived) {
+        request = data->needed_archived;
+        fetched = data->bytes_transferred;
     } else {
-        if (data->total_delta_parts > 0) {
-            total = data->total_delta_part_size - data->fetched_delta_part_size;
-            data->status = "Downloading delta part";
-        } else {
-            auto average_object_size{ 1.0 };
-            if (data->fetched > 0) {
-                average_object_size = static_cast<double>(data->bytes_transferred) / data->fetched;
-            }
-
-            total = average_object_size * data->requested;
-            data->status = "Downloading files";
-        }
+        request = data->requested;
+        fetched = data->fetched;
     }
-    auto requested = data->needed_objects ? data->needed_objects : data->requested;
-    Q_EMIT data->taskContext->PartChanged(data->fetched, requested);
-    new_progress = total > 0 ? 5 + ((total_transferred / total) * 92) : 97;
-    new_progress += (data->outstanding_writes > 0 ? (3.0 / data->outstanding_writes) : 3.0);
+
+    // report actual fetched and requestd data
+    data->taskContext->reportDataHandled(data->fetched, data->requested);
+
+    data->progress =
+      std::min(std::max(static_cast<double>(fetched) / request * 100.0, data->progress), 100.0);
+    data->taskContext->updateProgress(data->progress);
 }
 
 std::string ostreeRefFromLayerItem(const api::types::v1::RepositoryCacheLayersItem &layer)
@@ -857,24 +749,6 @@ api::types::v1::RepoConfigV2 OSTreeRepo::getOrderedConfig() const noexcept
     return orderCfg;
 }
 
-/*
- * @brief Get the highest priority repos.
- * @return The highest priority repos, one or more.
- */
-std::vector<api::types::v1::Repo> OSTreeRepo::getHighestPriorityRepos() const noexcept
-{
-    auto orderCfg = this->getOrderedConfig();
-    const auto highestPriority = orderCfg.repos.front().priority;
-    std::vector<api::types::v1::Repo> repos;
-    std::copy_if(orderCfg.repos.begin(),
-                 orderCfg.repos.end(),
-                 std::back_inserter(repos),
-                 [&highestPriority](const auto &repo) {
-                     return repo.priority == highestPriority;
-                 });
-    return repos;
-}
-
 std::vector<std::vector<api::types::v1::Repo>> OSTreeRepo::getPriorityGroupedRepos() const noexcept
 {
     return repo::getPriorityGroupedRepos(this->cfg);
@@ -900,43 +774,6 @@ OSTreeRepo::getRepoByAlias(const std::string &alias) const noexcept
         return LINGLONG_ERR("no repo found");
     }
     return *it;
-}
-
-/**
- * @brief Promote the priority of the repo, for user install of a specified repo.
- * @param alias the alias of the repo
- * @return the original priority of the repo
- * @note After the call, recoverPriority must be invoked at an appropriate time to restore the
- * priority.
- */
-OSTreeRepo::repoPriority_t OSTreeRepo::promotePriority(const std::string &alias) noexcept
-{
-    auto it =
-      std::find_if(this->cfg.repos.begin(), this->cfg.repos.end(), [&alias](const auto &repo) {
-          return repo.alias.value_or(repo.name) == alias;
-      });
-    assert(it != this->cfg.repos.end());
-
-    auto originalPriority = it->priority;
-    it->priority = std::numeric_limits<OSTreeRepo::repoPriority_t>::max();
-    return originalPriority;
-}
-
-/**
- * @brief Recover the priority of the repo.
- * @param alias the alias of the repo
- * @param priority the original priority of the repo
- */
-void OSTreeRepo::recoverPriority(const std::string &alias,
-                                 const OSTreeRepo::repoPriority_t &priority) noexcept
-{
-    auto it =
-      std::find_if(this->cfg.repos.begin(), this->cfg.repos.end(), [&alias](const auto &repo) {
-          return repo.alias.value_or(repo.name) == alias;
-      });
-    assert(it != this->cfg.repos.end());
-
-    it->priority = priority;
 }
 
 utils::error::Result<void>
@@ -1379,10 +1216,10 @@ OSTreeRepo::getCommitSize(const std::string &remote, const std::string &refStrin
 #endif
 }
 
-void OSTreeRepo::pull(service::PackageTask &taskContext,
-                      const package::Reference &reference,
-                      const std::string &module,
-                      const api::types::v1::Repo &repo) noexcept
+utils::error::Result<void> OSTreeRepo::pull(service::Task &taskContext,
+                                            const package::Reference &reference,
+                                            const std::string &module,
+                                            const api::types::v1::Repo &repo) noexcept
 {
     // Note: if module is runtime, refString will be channel:id/version/binary.
     // because we need considering update channel:id/version/runtime to channel:id/version/binary.
@@ -1424,10 +1261,9 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
     if (status == FALSE) {
         // gErr->code is 0, so we compare string here.
         if (!strstr(gErr->message, "No such branch")) {
-            taskContext.reportError(LINGLONG_ERRV("ostree_repo_pull", gErr));
-            return;
+            return LINGLONG_ERR("ostree_repo_pull_with_options", gErr);
         }
-        qWarning() << gErr->code << gErr->message;
+        LogW("ostree_repo_pull_with_options failed with [{}]: {}", gErr->code, gErr->message);
         shouldFallback = true;
     }
     // Note: this fallback is only for binary to runtime
@@ -1437,7 +1273,7 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
         Q_ASSERT(progress != nullptr);
         // fallback to old ref
         refString = ostreeSpecFromReference(reference, std::nullopt, module);
-        qWarning() << "fallback to module runtime, pull " << QString::fromStdString(refString);
+        LogW("fallback to module runtime, pull {}", refString);
 
         g_clear_error(&gErr);
 
@@ -1453,8 +1289,7 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
                                                &gErr);
         ostree_async_progress_finish(progress);
         if (status == FALSE) {
-            taskContext.reportError(LINGLONG_ERRV("ostree_repo_pull", gErr));
-            return;
+            return LINGLONG_ERR("ostree_repo_pull_with_options", gErr);
         }
     }
 
@@ -1470,15 +1305,13 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
                                 cancellable,
                                 &gErr)
         == 0) {
-        taskContext.reportError(LINGLONG_ERRV("ostree_repo_read_commit", gErr));
-        return;
+        return LINGLONG_ERR("ostree_repo_read_commit", gErr);
     }
 
     g_autoptr(GFile) infoFile = g_file_resolve_relative_path(layerRootDir, "info.json");
     auto info = utils::parsePackageInfo(infoFile);
     if (!info) {
-        taskContext.reportError(LINGLONG_ERRV(info));
-        return;
+        return LINGLONG_ERR(info);
     }
 
     item.commit = commit;
@@ -1487,15 +1320,15 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
 
     auto layerDir = this->ensureEmptyLayerDir(item.commit);
     if (!layerDir) {
-        taskContext.reportError(LINGLONG_ERRV(layerDir));
-        return;
+        return LINGLONG_ERR(layerDir);
     }
 
     auto result = this->handleRepositoryUpdate(*layerDir, item);
     if (!result) {
-        taskContext.reportError(LINGLONG_ERRV(result));
-        return;
+        return LINGLONG_ERR(result);
     }
+
+    return LINGLONG_OK;
 }
 
 utils::error::Result<package::Reference>
@@ -1623,51 +1456,50 @@ OSTreeRepo::getLayerCreateTime(const api::types::v1::RepositoryCacheLayersItem &
     return QFileInfo(dir->absolutePath()).birthTime().toSecsSinceEpoch();
 }
 
-// Note: Since version 1.7.0, multiple versions are no longer supported, so there will be multiple
-// versions locally. In some places, we need to list the latest version of each package.
 utils::error::Result<std::vector<api::types::v1::PackageInfoV2>>
-OSTreeRepo::listLocalLatest() const noexcept
+OSTreeRepo::listLocalApps() const noexcept
 {
     LINGLONG_TRACE("list local latest package");
-    std::vector<api::types::v1::PackageInfoV2> pkgInfos;
 
-    QDir layersDir = this->repoDir.absoluteFilePath("layers");
-    Q_ASSERT(layersDir.exists());
-
-    auto items = this->cache->queryExistingLayerItem();
-    pkgInfos.reserve(items.size());
-    for (const auto &item : items) {
-        if (item.deleted && item.deleted.value()) {
-            continue;
-        }
-
-        auto it = std::find_if(pkgInfos.begin(),
-                               pkgInfos.end(),
-                               [&item](const api::types::v1::PackageInfoV2 &info) {
-                                   return item.info.id == info.id;
-                               });
-        if (it == pkgInfos.end()) {
-            pkgInfos.emplace_back(item.info);
-            continue;
-        }
-
-        auto pkgInfoVersion = package::Version::parse(it->version);
-        if (!pkgInfoVersion) {
-            return LINGLONG_ERR(pkgInfoVersion);
-        }
-        auto itemVersion = package::Version::parse(item.info.version);
-        if (!itemVersion) {
-            return LINGLONG_ERR(itemVersion);
-        }
-
-        if (*itemVersion <= *pkgInfoVersion) {
-            continue;
-        }
-        pkgInfos.erase(it);
-        pkgInfos.emplace_back(item.info);
+    auto allPkgs = this->listLocal();
+    if (!allPkgs) {
+        return LINGLONG_ERR(allPkgs);
     }
 
-    return pkgInfos;
+    std::vector<api::types::v1::PackageInfoV2> appPkgs;
+    for (const auto &pkg : *allPkgs) {
+        if (pkg.kind == "app") {
+            appPkgs.push_back(pkg);
+        }
+    }
+
+    // apps sharing the same ID and channel are considered the same app
+    std::sort(appPkgs.begin(), appPkgs.end(), [](const auto &lhs, const auto &rhs) {
+        if (lhs.id != rhs.id) {
+            return lhs.id < rhs.id;
+        }
+        if (lhs.channel != rhs.channel) {
+            return lhs.channel < rhs.channel;
+        }
+
+        auto lhsVer = package::Version::parse(lhs.version);
+        auto rhsVer = package::Version::parse(rhs.version);
+        if (!lhsVer) {
+            return false;
+        } else if (!rhsVer) {
+            return true;
+        }
+        return *lhsVer > *rhsVer;
+    });
+    // return only latest version of each app
+    appPkgs.erase(std::unique(appPkgs.begin(),
+                              appPkgs.end(),
+                              [](const auto &lhs, const auto &rhs) {
+                                  return lhs.id == rhs.id && lhs.channel == rhs.channel;
+                              }),
+                  appPkgs.end());
+
+    return appPkgs;
 }
 
 utils::error::Result<std::vector<api::types::v1::PackageInfoV2>>
@@ -1693,7 +1525,10 @@ OSTreeRepo::searchRemote(const package::FuzzyReference &fuzzyRef,
 {
     LINGLONG_TRACE("list remote packages");
 
-    LogD("searchRemote use repo {}", nlohmann::json(repo).dump());
+    LogD("searchRemote {} [{}] from repo {}",
+         fuzzyRef.toString(),
+         semanticMatching,
+         nlohmann::json(repo).dump());
 
     auto client = this->createClientV2(repo.url);
 
@@ -2410,6 +2245,22 @@ void OSTreeRepo::updateSharedInfo() noexcept
     }
 }
 
+bool OSTreeRepo::isMarkedDeleted(const package::Reference &ref,
+                                 const std::string &module) const noexcept
+{
+    auto item = this->getLayerItem(ref, module);
+    if (!item) {
+        return false;
+    }
+
+    auto it = this->cache->findMatchingItem(*item);
+    if (!it) {
+        return false;
+    }
+
+    return (*it)->deleted.has_value() && *item->deleted;
+}
+
 utils::error::Result<void>
 OSTreeRepo::markDeleted(const package::Reference &ref,
                         bool deleted,
@@ -2456,65 +2307,46 @@ OSTreeRepo::getLayerItem(const package::Reference &ref,
     if (module == "runtime") {
         module = "binary";
     }
-    // 优先从默认仓库查找
-    const auto &defaultRepo = getDefaultRepo();
+
+    auto queryItem = [this](const repoCacheQuery &query)
+      -> utils::error::Result<api::types::v1::RepositoryCacheLayersItem> {
+        LINGLONG_TRACE(fmt::format("query item"));
+
+        auto items = this->cache->queryLayerItem(query);
+        auto count = items.size();
+        if (count > 0) {
+            if (count > 1) {
+                LogW("ambiguous ref has been detected, maybe underlying storage already broken.");
+            }
+            return items.front();
+        }
+        return LINGLONG_ERR(fmt::format("failed to query item {}", query.to_string()));
+    };
+
     repoCacheQuery query{ .id = ref.id,
-                          .repo = defaultRepo.alias.value_or(defaultRepo.name),
+                          .repo = std::nullopt,
                           .channel = ref.channel,
                           .version = ref.version.toString(),
                           .module = std::move(module),
                           .uuid = subRef,
                           .deleted = std::nullopt };
-    auto items = this->cache->queryLayerItem(query);
-    auto count = items.size();
-    if (count == 1) {
-        return items.front();
-    }
-    // 同仓库不应该存在多个ref，异常情况需要错误
-    if (count > 1) {
-        std::for_each(items.begin(),
-                      items.end(),
-                      [](const api::types::v1::RepositoryCacheLayersItem &item) {
-                          qDebug().nospace()
-                            << "dump item ref [" << item.repo.c_str() << ":" << item.info.id.c_str()
-                            << ":" << item.info.version.c_str() << ":"
-                            << item.info.arch.front().c_str() << ":"
-                            << item.info.packageInfoV2Module.c_str() << "]";
-                      });
-        return LINGLONG_ERR(
-          "ambiguous ref has been detected, maybe underlying storage already broken.");
+    auto item = queryItem(query);
+    if (item) {
+        return *item;
     }
 
-    // 在默认仓库找不到，再扩大搜索范围
-    query.repo = std::nullopt;
-    items = this->cache->queryLayerItem(query);
-    count = items.size();
-    if (count == 1) {
-        return items.front();
-    }
-    // 多仓库可能会存在相同ref, 这种可以容忍
-    if (count > 1) {
-        qWarning() << "ambiguous ref has been detected, maybe underlying storage already broken.";
-        return items.front();
-    }
-
-    // 搜不到binary, 则回退到runtime查找
     if (query.module != "binary") {
-        return LINGLONG_ERR("couldn't find layer item " + ref.toString() + "/"
-                            + query.module->c_str());
+        return LINGLONG_ERR(item);
     }
-    qDebug() << "fallback to runtime:" << query.to_string().c_str();
+
     query.module = "runtime";
-    items = this->cache->queryLayerItem(query);
-    count = items.size();
-    if (count == 1) {
-        return items.front();
+    item = queryItem(query);
+    if (!item) {
+        return LINGLONG_ERR(item);
     }
-    if (count > 1) {
-        qWarning() << "ambiguous ref has been detected, maybe underlying storage already broken.";
-        return items.front();
-    }
-    return LINGLONG_ERR(ref.toString() + " fallback to runtime still not found");
+
+    LogD("fallback to runtime layer: {} {}", query.to_string(), item->commit);
+    return *item;
 }
 
 auto OSTreeRepo::getLayerDir(const api::types::v1::RepositoryCacheLayersItem &layer) const noexcept
@@ -2546,10 +2378,8 @@ auto OSTreeRepo::getLayerDir(const package::Reference &ref,
 }
 
 // get all module list
-utils::error::Result<std::vector<std::string>>
-OSTreeRepo::getRemoteModuleList(const package::Reference &ref,
-                                const std::optional<std::vector<std::string>> &filter,
-                                const api::types::v1::Repo &repo) const noexcept
+utils::error::Result<std::vector<std::string>> OSTreeRepo::getRemoteModuleList(
+  const package::Reference &ref, const api::types::v1::Repo &repo) const noexcept
 {
     LINGLONG_TRACE("get remote module list");
     auto fuzzy =
@@ -2557,41 +2387,17 @@ OSTreeRepo::getRemoteModuleList(const package::Reference &ref,
     if (!fuzzy.has_value()) {
         return LINGLONG_ERR("create fuzzy reference", fuzzy);
     }
-    auto list = this->searchRemote(*fuzzy, repo);
+    auto list = this->searchRemote(*fuzzy, repo, true);
     if (!list.has_value()) {
         return LINGLONG_ERR("list remote reference", fuzzy);
     }
     if (list->size() == 0) {
         return {};
     }
-    auto include = [](const std::vector<std::string> &arr, const std::string &item) {
-        return std::find(arr.begin(), arr.end(), item) != arr.end();
-    };
+
     std::vector<std::string> modules;
     for (const auto &ref : *list) {
-        auto remoteModule = ref.packageInfoV2Module;
-        // 如果不筛选，返回所有module
-        if (!filter.has_value()) {
-            modules.push_back(remoteModule);
-            continue;
-        }
-        // 如果筛选，只返回指定的module
-        if (include(filter.value(), remoteModule)) {
-            modules.push_back(remoteModule);
-            continue;
-        }
-        // TODO 在未来删除对旧版本runtime module的兼容
-
-        // 如果过滤列表包含runtime，可以使用binary替换
-        // 这一般是在升级时，本地runtime模块升级到binary模块
-        if (remoteModule == "binary" && include(filter.value(), "runtime")) {
-            modules.push_back(remoteModule);
-            continue;
-        }
-    }
-    // 如果想安装binary模块，但远程没有binary模块，就安装runtime模块
-    if (include(filter.value(), "binary") && !include(modules, "binary")) {
-        modules.emplace_back("runtime");
+        modules.emplace_back(ref.packageInfoV2Module);
     }
     std::sort(modules.begin(), modules.end());
     auto it = std::unique(modules.begin(), modules.end());
@@ -2599,47 +2405,8 @@ OSTreeRepo::getRemoteModuleList(const package::Reference &ref,
     return modules;
 }
 
-[[nodiscard]] utils::error::Result<std::pair<api::types::v1::Repo, std::vector<std::string>>>
-OSTreeRepo::getRemoteModuleListByPriority(const package::Reference &ref,
-                                          const std::optional<std::vector<std::string>> &filter,
-                                          bool onlyClearHighestPriority,
-                                          const std::optional<api::types::v1::Repo> &repo) noexcept
-{
-    LINGLONG_TRACE("get remote module list by priority");
-
-    if (repo) {
-        auto ret = this->getRemoteModuleList(ref, filter, *repo);
-        if (!ret) {
-            return LINGLONG_ERR(ret);
-        }
-        return std::pair{ *repo, *ret };
-    }
-
-    auto repos = this->getHighestPriorityRepos();
-    if (onlyClearHighestPriority) {
-        const auto highestPriorityRepo = repos.front();
-        auto ret = this->getRemoteModuleList(ref, filter, highestPriorityRepo);
-        if (!ret) {
-            return LINGLONG_ERR(ret);
-        }
-        return std::pair{ highestPriorityRepo, *ret };
-    }
-
-    for (const auto &repo : repos) {
-        auto ret = this->getRemoteModuleList(ref, filter, repo);
-        if (!ret) {
-            return LINGLONG_ERR(ret);
-        }
-        if (!ret->empty()) {
-            return std::pair{ api::types::v1::Repo{ repo }, *ret };
-        }
-    }
-
-    return LINGLONG_ERR("no module found from remote repo");
-}
-
 // get all module list
-std::vector<std::string> OSTreeRepo::getModuleList(const package::Reference &ref) noexcept
+std::vector<std::string> OSTreeRepo::getModuleList(const package::Reference &ref) const noexcept
 {
     repoCacheQuery query{
         .id = ref.id,
@@ -3223,7 +2990,7 @@ utils::error::Result<void> OSTreeRepo::IniLikeFileRewrite(const QFileInfo &info,
 }
 
 utils::error::Result<package::ReferenceWithRepo>
-OSTreeRepo::latestRemoteReference(package::FuzzyReference &fuzzyRef) noexcept
+OSTreeRepo::latestRemoteReference(const package::FuzzyReference &fuzzyRef) const noexcept
 {
     LINGLONG_TRACE("get latest reference");
 
@@ -3258,6 +3025,49 @@ OSTreeRepo::latestLocalReference(const package::FuzzyReference &fuzzyRef) const 
         return LINGLONG_ERR(ref);
     }
     return ref;
+}
+
+utils::error::Result<std::vector<std::pair<package::Reference, package::ReferenceWithRepo>>>
+OSTreeRepo::upgradableApps() const noexcept
+{
+    LINGLONG_TRACE("get upgradable apps");
+
+    auto appPkgs = this->listLocalApps();
+    if (!appPkgs) {
+        return LINGLONG_ERR(appPkgs);
+    }
+
+    auto arch = package::Architecture::currentCPUArchitecture();
+    if (!arch) {
+        return LINGLONG_ERR(arch);
+    }
+
+    std::vector<std::pair<package::Reference, package::ReferenceWithRepo>> upgradeList;
+    for (const auto &pkg : *appPkgs) {
+        auto fuzzy = package::FuzzyReference::create(pkg.channel, pkg.id, std::nullopt, *arch);
+        if (!fuzzy) {
+            LogW("failed to create fuzzy reference: {}", fuzzy.error());
+            continue;
+        }
+
+        auto remoteRef = this->latestRemoteReference(*fuzzy);
+        if (!remoteRef) {
+            LogD("Failed to find remote latest reference: {}", remoteRef.error());
+            continue;
+        }
+
+        auto localRef = package::Reference::fromPackageInfo(pkg);
+        if (!localRef) {
+            LogW("failed to parse local reference: {}", localRef.error());
+            continue;
+        }
+
+        if (remoteRef->reference.version > localRef->version) {
+            upgradeList.emplace_back(
+              std::make_pair(std::move(localRef).value(), std::move(remoteRef).value()));
+        }
+    }
+    return upgradeList;
 }
 
 QDir OSTreeRepo::getEntriesDir() const noexcept
