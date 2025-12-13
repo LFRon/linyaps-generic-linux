@@ -1,3 +1,9 @@
+linglong (1.10.2-7) unstable; urgency=medium
+
+  * feat: improve the control of force-loading extensions and mount-dirs
+
+ -- LFRon <ronforever@qq.com>  Sat, 13 Dec 2025 09:58:28 +0800
+
 linglong (1.10.2-6) unstable; urgency=medium
 
   * feat: improve the control of force-loading extensions and mount-dirs

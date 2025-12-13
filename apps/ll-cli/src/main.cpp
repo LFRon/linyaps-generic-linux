@@ -647,20 +647,20 @@ using json = nlohmann::json;
 static std::string configUsageLines()
 {
     return std::string{
-        _("  ll-cli config set-extensions [--global | <appid> | --base <baseid>] ext1,ext2\n"
-           "  ll-cli config add-extensions [--global | <appid> | --base <baseid>] ext1,ext2\n"
-           "  ll-cli config set-env        [--global | <appid> | --base <baseid>] KEY=VAL [KEY=VAL ...]\n"
-           "  ll-cli config unset-env      [--global | <appid> | --base <baseid>] KEY [KEY ...]\n"
-           "  ll-cli config add-fs         [--global | <appid> | --base <baseid>] --host PATH --target PATH [--mode "
-           "ro|rw] [--persist]\n"
-           "  ll-cli config rm-fs          [--global | <appid> | --base <baseid>] (--target PATH | --index N)\n"
-           "  ll-cli config add-fs-allow   [--global | <appid> | --base <baseid>] --host PATH --target PATH [--mode "
-           "ro|rw] [--persist]\n"
-           "  ll-cli config rm-fs-allow    [--global | <appid> | --base <baseid>] (--target PATH | --index N)\n"
-           "  ll-cli config clear-fs-allow [--global | <appid> | --base <baseid>]\n"
-           "  ll-cli config set-command    [--global | <appid> | --base <baseid>] <cmd> [--entrypoint P] [--cwd D] "
+        _("  ll-cli config set-extensions [--global | --app <appid> | --base <baseid>] ext1,ext2\n"
+           "  ll-cli config add-extensions [--global | --app <appid> | --base <baseid>] ext1,ext2\n"
+           "  ll-cli config set-env        [--global | --app <appid> | --base <baseid>] KEY=VAL [KEY=VAL ...]\n"
+           "  ll-cli config unset-env      [--global | --app <appid> | --base <baseid>] KEY [KEY ...]\n"
+           "  ll-cli config add-fs         [--global | --app <appid> | --base <baseid>] --host PATH --target PATH "
+           "[--mode ro|rw] [--persist]\n"
+           "  ll-cli config rm-fs          [--global | --app <appid> | --base <baseid>] (--target PATH | --index N)\n"
+           "  ll-cli config add-fs-allow   [--global | --app <appid> | --base <baseid>] --host PATH --target PATH "
+           "[--mode ro|rw] [--persist]\n"
+           "  ll-cli config rm-fs-allow    [--global | --app <appid> | --base <baseid>] (--target PATH | --index N)\n"
+           "  ll-cli config clear-fs-allow [--global | --app <appid> | --base <baseid>]\n"
+           "  ll-cli config set-command    [--global | --app <appid> | --base <baseid>] <cmd> [--entrypoint P] [--cwd D] "
            "[--args-prefix \"...\"] [--args-suffix \"...\"] [KEY=VAL ...]\n"
-           "  ll-cli config unset-command  [--global | <appid> | --base <baseid>] <cmd>\n") };
+           "  ll-cli config unset-command  [--global | --app <appid> | --base <baseid>] <cmd>\n") };
 }
 
 static std::string configShortHelp()
@@ -1056,7 +1056,8 @@ static void addConfigScopeOptions(CLI::App *cmd, ConfigScopeOptions &opts)
 {
     auto *globalFlag = cmd->add_flag("--global", opts.global, _("Operate on global configuration"));
     auto *baseOpt = cmd->add_option("--base", opts.baseId, _("Operate on base configuration"));
-    auto *appOpt = cmd->add_option("appid", opts.appId, _("Application ID"))->type_name("APPID");
+    auto *appOpt = cmd->add_option("--app", opts.appId, _("Operate on application configuration"))
+                      ->type_name("APPID");
     baseOpt->excludes(globalFlag);
     appOpt->excludes(globalFlag);
     appOpt->excludes(baseOpt);
@@ -1070,7 +1071,7 @@ static bool resolveScopeOptions(const ConfigScopeOptions &opts,
 {
     int count = (opts.global ? 1 : 0) + (!opts.appId.empty() ? 1 : 0) + (!opts.baseId.empty() ? 1 : 0);
     if (count != 1) {
-        error = "specify exactly one of --global, --base or appid";
+        error = "specify exactly one of --global, --base or --app <appid>";
         return false;
     }
     if (opts.global) {
@@ -1139,7 +1140,7 @@ static bool saveConfig(Scope scope,
         fprintf(stderr, "failed to write %s\n", path.string().c_str());
         return false;
     }
-    printf("Written %s\n", path.string().c_str());
+    printf(_("Written %s\n"), path.string().c_str());
     return true;
 }
 
