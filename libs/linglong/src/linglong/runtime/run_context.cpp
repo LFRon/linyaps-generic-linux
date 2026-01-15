@@ -3,14 +3,14 @@
  */
 
 #include "run_context.h"
-#include "configure.h"
-
-#include "linglong/api/types/v1/Generators.hpp"
 
 #include "linglong/common/display.h"
 #include "linglong/extension/extension.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/utils/log/log.h"
+#include "linglong/utils/runtime_config_json.h"
+
+#include <fmt/ranges.h>
 
 #include <fstream>
 #include <unordered_map>
@@ -27,180 +27,19 @@
 #include <optional>
 #include <sstream>
 #include <unordered_set>
+
 #include <unistd.h>
+
 #include <vector>
 
 namespace linglong::runtime {
-
-static std::vector<std::filesystem::path> configBasesUserFirst()
-{
-    namespace fs = std::filesystem;
-    std::vector<fs::path> bases;
-    std::unordered_set<std::string> seen;
-
-    auto addBase = [&](const fs::path &candidate) {
-        if (candidate.empty()) {
-            return;
-        }
-        auto normalized = candidate.lexically_normal();
-        auto key = normalized.string();
-        if (key.empty()) {
-            return;
-        }
-        if (seen.insert(key).second) {
-            bases.emplace_back(std::move(normalized));
-        }
-    };
-
-    if (const char *xdgConfigHome = ::getenv("XDG_CONFIG_HOME");
-        xdgConfigHome && xdgConfigHome[0] != '\0') {
-        addBase(fs::path(xdgConfigHome) / "linglong");
-    } else if (const char *homeEnv = ::getenv("HOME"); homeEnv && homeEnv[0] != '\0') {
-        addBase(fs::path(homeEnv) / ".config" / "linglong");
-    }
-
-    addBase(fs::path(LINGLONG_DATA_DIR) / "config");
-    return bases;
-}
-
-static std::vector<std::filesystem::path> configBasesFallbackFirst()
-{
-    auto bases = configBasesUserFirst();
-    if (bases.size() <= 1) {
-        return bases;
-    }
-    std::rotate(bases.begin(), std::prev(bases.end()), bases.end());
-    return bases;
-}
-
-static std::vector<std::string> loadExtensionsFromConfig(const std::string &appId)
-{
-    namespace fs = std::filesystem;
-    std::vector<std::string> result;
-    std::unordered_set<std::string> seen;
-
-    auto addExtension = [&](std::string ext) {
-        if (seen.insert(ext).second) {
-            result.emplace_back(std::move(ext));
-        }
-    };
-
-    // Parse extensions from a JSON config file and collect unique entries
-    auto parseExtensions = [&](const fs::path &p) {
-        try {
-            if (!fs::exists(p)) {
-                return;
-            }
-            std::ifstream in(p);
-            if (!in.is_open()) {
-                return;
-            }
-            nlohmann::json j;
-            in >> j;
-            if (!j.contains("extensions") || !j.at("extensions").is_array()) {
-                return;
-            }
-            for (const auto &elem : j.at("extensions")) {
-                if (elem.is_string()) {
-                    addExtension(elem.get<std::string>());
-                }
-            }
-        } catch (...) {
-            // ignore parse failures or missing files
-        }
-    };
-
-    for (const auto &base : configBasesUserFirst()) {
-        parseExtensions(base / "config.json");
-        if (!appId.empty()) {
-            parseExtensions(base / "apps" / appId / "config.json");
-        }
-    }
-    
-    return result;
-}
-
-static std::vector<std::string> loadExtensionsFromBase(const std::string &baseId)
-{
-    namespace fs = std::filesystem;
-    std::vector<std::string> result;
-    std::unordered_set<std::string> seen;
-
-    if (baseId.empty()) {
-        return result;
-    }
-
-    for (const auto &root : configBasesUserFirst()) {
-        fs::path cfgPath = root / "base" / baseId / "config.json";
-        try {
-            if (!fs::exists(cfgPath)) {
-                continue;
-            }
-            std::ifstream in(cfgPath);
-            if (!in.is_open()) {
-                continue;
-            }
-            nlohmann::json j;
-            in >> j;
-            if (!j.contains("extensions") || !j.at("extensions").is_array()) {
-                continue;
-            }
-            for (const auto &elem : j.at("extensions")) {
-                if (elem.is_string()) {
-                    std::string ext = elem.get<std::string>();
-                    if (seen.insert(ext).second) {
-                        result.emplace_back(std::move(ext));
-                    }
-                }
-            }
-        } catch (...) {
-            // ignore parse errors
-        }
-    }
-    return result;
-}
 
 // ===== begin: config helpers for env/mount/commands (Global->Base->App merge) =====
 using json = nlohmann::json;
 
 static json loadMergedJsonWithBase(const std::string &appId, const std::string &baseId)
 {
-    namespace fs = std::filesystem;
-    json merged = json::object();
-
-    auto readIfExists = [](const fs::path &p) -> std::optional<json> {
-        try {
-            if (!fs::exists(p)) {
-                return std::nullopt;
-            }
-            std::ifstream in(p);
-            if (!in.is_open()) {
-                return std::nullopt;
-            }
-            json j;
-            in >> j;
-            return j;
-        } catch (...) {
-            return std::nullopt;
-        }
-    };
-
-    for (const auto &root : configBasesFallbackFirst()) {
-        if (auto g = readIfExists(root / "config.json")) {
-            merged.merge_patch(*g);
-        }
-        if (!baseId.empty()) {
-            if (auto b = readIfExists(root / "base" / baseId / "config.json")) {
-                merged.merge_patch(*b);
-            }
-        }
-        if (!appId.empty()) {
-            if (auto a = readIfExists(root / "apps" / appId / "config.json")) {
-                merged.merge_patch(*a);
-            }
-        }
-    }
-    return merged;
+    return linglong::utils::loadMergedRuntimeConfigJson(appId, baseId);
 }
 
 static std::string expandUserHome(const std::string &path)
@@ -284,6 +123,67 @@ static bool addReadonlyMount(generator::ContainerCfgBuilder &builder,
     };
     builder.addExtraMount(std::move(mount));
     return true;
+}
+
+static bool isConfigWhitelistMatch(const json &entry, const std::string &appId)
+{
+    if (!entry.is_string() || appId.empty()) {
+        return false;
+    }
+    auto val = entry.get<std::string>();
+    if (val == "*" || val == appId) {
+        return true;
+    }
+    return false;
+}
+
+static bool allowHostConfigAccess(const json &root, const std::string &appId)
+{
+    if (appId.empty()) {
+        return false;
+    }
+    auto it = root.find("config_access_whitelist");
+    if (it == root.end()) {
+        return false;
+    }
+    if (it->is_boolean()) {
+        return it->get<bool>();
+    }
+    if (it->is_string()) {
+        return isConfigWhitelistMatch(*it, appId);
+    }
+    if (!it->is_array()) {
+        return false;
+    }
+    for (const auto &entry : *it) {
+        if (isConfigWhitelistMatch(entry, appId)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool allowHostRootAccess(const json &root, const std::string &appId)
+{
+    auto it = root.find("host_root_whitelist");
+    if (it == root.end()) {
+        return false;
+    }
+    if (it->is_boolean()) {
+        return it->get<bool>();
+    }
+    if (it->is_string()) {
+        return isConfigWhitelistMatch(*it, appId);
+    }
+    if (!it->is_array()) {
+        return false;
+    }
+    for (const auto &entry : *it) {
+        if (isConfigWhitelistMatch(entry, appId)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void applyFilesystemPermissions(generator::ContainerCfgBuilder &builder,
@@ -380,67 +280,6 @@ static void applyPortalPermissions(const std::unordered_set<std::string> &enable
         auto envKey = "LINGLONG_PORTAL_" + key;
         environment[envKey] = enabled.count(name) > 0 ? "1" : "0";
     }
-}
-
-static bool isConfigWhitelistMatch(const json &entry, const std::string &appId)
-{
-    if (!entry.is_string() || appId.empty()) {
-        return false;
-    }
-    auto val = entry.get<std::string>();
-    if (val == "*" || val == appId) {
-        return true;
-    }
-    return false;
-}
-
-static bool allowHostConfigAccess(const json &root, const std::string &appId)
-{
-    if (appId.empty()) {
-        return false;
-    }
-    auto it = root.find("config_access_whitelist");
-    if (it == root.end()) {
-        return false;
-    }
-    if (it->is_boolean()) {
-        return it->get<bool>();
-    }
-    if (it->is_string()) {
-        return isConfigWhitelistMatch(*it, appId);
-    }
-    if (!it->is_array()) {
-        return false;
-    }
-    for (const auto &entry : *it) {
-        if (isConfigWhitelistMatch(entry, appId)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool allowHostRootAccess(const json &root, const std::string &appId)
-{
-    auto it = root.find("host_root_whitelist");
-    if (it == root.end()) {
-        return false;
-    }
-    if (it->is_boolean()) {
-        return it->get<bool>();
-    }
-    if (it->is_string()) {
-        return isConfigWhitelistMatch(*it, appId);
-    }
-    if (!it->is_array()) {
-        return false;
-    }
-    for (const auto &entry : *it) {
-        if (isConfigWhitelistMatch(entry, appId)) {
-            return true;
-        }
-    }
-    return false;
 }
 
 static bool bindPath(generator::ContainerCfgBuilder &builder,
@@ -542,7 +381,8 @@ static std::string sanitizeUdevRuleName(std::string raw)
 static std::filesystem::path prepareCustomUdevRulesDir()
 {
     auto uid = ::getuid();
-    std::filesystem::path dir = std::filesystem::path("/run/linglong/custom-udev") / std::to_string(uid);
+    std::filesystem::path dir =
+      std::filesystem::path("/run/linglong/custom-udev") / std::to_string(uid);
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec) {
@@ -603,16 +443,8 @@ static void applyDevicePermissions(generator::ContainerCfgBuilder &builder,
     if (enabled.count("udev") > 0) {
         bindPath(builder, "/run/udev", "/run/udev", true, false);
         const std::filesystem::path hostRulesBase = "/run/host-udev-rules";
-        bindPath(builder,
-                 "/etc/udev/rules.d",
-                 (hostRulesBase / "etc").string(),
-                 true,
-                 true);
-        bindPath(builder,
-                 "/lib/udev/rules.d",
-                 (hostRulesBase / "lib").string(),
-                 true,
-                 true);
+        bindPath(builder, "/etc/udev/rules.d", (hostRulesBase / "etc").string(), true, true);
+        bindPath(builder, "/lib/udev/rules.d", (hostRulesBase / "lib").string(), true, true);
         std::filesystem::path customDir;
         if (syncCustomUdevRules(mergedCfg, customDir)) {
             bindPath(builder,
@@ -767,7 +599,8 @@ static void collectMountsFromJson(const std::string &appId,
     std::move(mounts.begin(), mounts.end(), std::back_inserter(out));
 }
 
-struct CommandSettings {
+struct CommandSettings
+{
     std::vector<std::string> envKVs;
     std::vector<ocppi::runtime::config::types::Mount> mounts;
     std::vector<std::string> argsPrefix;
@@ -837,12 +670,28 @@ static CommandSettings parseCommandSettings(const std::string &appId, const json
 }
 // ===== end: config helpers =====
 
+utils::error::Result<RuntimeLayer> RuntimeLayer::create(package::Reference ref, RunContext &context)
+{
+    LINGLONG_TRACE(fmt::format("create runtime layer from ref {}", ref.toString()));
+
+    try {
+        return RuntimeLayer(ref, context);
+    } catch (const std::exception &e) {
+        return LINGLONG_ERR("failed to create runtime layer", e);
+    }
+}
 
 RuntimeLayer::RuntimeLayer(package::Reference ref, RunContext &context)
     : reference(std::move(ref))
     , runContext(context)
     , temporary(false)
 {
+    const auto &repo = context.getRepo();
+    auto item = repo.getLayerItem(reference);
+    if (!item) {
+        throw std::runtime_error("no cached item found");
+    }
+    cachedItem = std::move(item).value();
 }
 
 RuntimeLayer::~RuntimeLayer()
@@ -859,13 +708,14 @@ utils::error::Result<void> RuntimeLayer::resolveLayer(const std::vector<std::str
 
     auto &repo = runContext.get().getRepo();
     utils::error::Result<package::LayerDir> layer(LINGLONG_ERR("null"));
-    if (modules.empty()) {
-        layer = repo.getMergedModuleDir(reference);
+    if (modules.empty() || (modules.size() == 1 && modules[0] == "binary")) {
+        layer = repo.getMergedModuleDir(reference, true, subRef);
     } else if (modules.size() > 1) {
-        layer = repo.getMergedModuleDir(reference, modules);
+        layer = repo.createTempMergedModuleDir(reference, modules);
         temporary = true;
     } else {
-        layer = repo.getLayerDir(reference, modules[0], subRef);
+        return LINGLONG_ERR(
+          fmt::format("resolve module {} is not supported", fmt::join(modules, ",")));
     }
 
     if (!layer) {
@@ -874,22 +724,6 @@ utils::error::Result<void> RuntimeLayer::resolveLayer(const std::vector<std::str
 
     layerDir = *layer;
     return LINGLONG_OK;
-}
-
-utils::error::Result<api::types::v1::RepositoryCacheLayersItem> RuntimeLayer::getCachedItem()
-{
-    LINGLONG_TRACE("get cached item");
-
-    if (!cachedItem) {
-        auto &repo = runContext.get().getRepo();
-        auto item = repo.getLayerItem(reference);
-        if (!item) {
-            return LINGLONG_ERR("no cached item found: " + reference.toString());
-        }
-        cachedItem = std::move(item).value();
-    }
-
-    return *cachedItem;
 }
 
 RunContext::~RunContext()
@@ -909,24 +743,18 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
 {
     LINGLONG_TRACE("resolve RunContext from runnable " + runnable.toString());
 
-    filesystemPolicyCache.reset();
+    auto layer = RuntimeLayer::create(runnable, *this);
+    if (!layer) {
+        return LINGLONG_ERR(layer);
+    }
 
     containerID = runtime::genContainerID(runnable);
 
-    auto item = repo.getLayerItem(runnable);
-    if (!item) {
-        return LINGLONG_ERR("no cached item found: " + runnable.toString());
-    }
-    const auto &info = item->info;
-
-    // only base need resolved
+    const auto &info = layer->getCachedItem().info;
     if (info.kind == "base") {
-        baseLayer = RuntimeLayer(runnable, *this);
-        return resolveExtension(*baseLayer);
-    }
-
-    if (info.kind == "app") {
-        appLayer = RuntimeLayer(runnable, *this);
+        baseLayer = std::move(layer).value();
+    } else if (info.kind == "app") {
+        appLayer = std::move(layer).value();
         auto runtime = options.runtimeRef.value_or(info.runtime.value_or(""));
         if (!runtime.empty()) {
             auto runtimeFuzzyRef = package::FuzzyReference::parse(runtime);
@@ -943,87 +771,73 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
             if (!ref) {
                 return LINGLONG_ERR("ref doesn't exist " + runtimeFuzzyRef->toString());
             }
-            runtimeLayer = RuntimeLayer(std::move(ref).value(), *this);
+            auto res = RuntimeLayer::create(std::move(ref).value(), *this);
+            if (!res) {
+                return LINGLONG_ERR(res);
+            }
+            runtimeLayer = std::move(res).value();
         }
     } else if (info.kind == "runtime") {
-        runtimeLayer = RuntimeLayer(runnable, *this);
+        runtimeLayer = std::move(layer).value();
     } else {
         return LINGLONG_ERR("kind " + QString::fromStdString(info.kind) + " is not runnable");
     }
 
-    // all kinds of package has base
-    auto baseRef = options.baseRef.value_or(info.base);
-    auto baseFuzzyRef = package::FuzzyReference::parse(baseRef);
-    if (!baseFuzzyRef) {
-        return LINGLONG_ERR(baseFuzzyRef);
+    // base layer must be resolved for all kinds
+    if (!baseLayer) {
+        auto baseRef = options.baseRef.value_or(info.base);
+        auto baseFuzzyRef = package::FuzzyReference::parse(baseRef);
+        if (!baseFuzzyRef) {
+            return LINGLONG_ERR(baseFuzzyRef);
+        }
+
+        auto ref = repo.clearReference(*baseFuzzyRef,
+                                       {
+                                         .forceRemote = false,
+                                         .fallbackToRemote = false,
+                                         .semanticMatching = true,
+                                       });
+        if (!ref) {
+            return LINGLONG_ERR(ref);
+        }
+        auto res = RuntimeLayer::create(std::move(ref).value(), *this);
+        if (!res) {
+            return LINGLONG_ERR(res);
+        }
+        baseLayer = std::move(res).value();
     }
 
-    auto ref = repo.clearReference(*baseFuzzyRef,
-                                   {
-                                     .forceRemote = false,
-                                     .fallbackToRemote = false,
-                                     .semanticMatching = true,
-                                   });
-    if (!ref) {
-        return LINGLONG_ERR(ref);
+    // resolve base extension
+    auto ret = resolveExtension(
+      *baseLayer,
+      matchedExtensionDefines(baseLayer->getReference(), options.externalExtensionDefs));
+    if (!ret) {
+        return LINGLONG_ERR(ret);
     }
-    baseLayer = RuntimeLayer(std::move(ref).value(), *this);
 
     // resolve runtime extension
     if (runtimeLayer) {
-        auto ret = resolveExtension(*runtimeLayer);
+        auto ret = resolveExtension(
+          *runtimeLayer,
+          matchedExtensionDefines(runtimeLayer->getReference(), options.externalExtensionDefs));
         if (!ret) {
             return LINGLONG_ERR(ret);
         }
     }
 
-    // resolve base extension
-    auto ret = resolveExtension(*baseLayer);
-    if (!ret) {
-        return LINGLONG_ERR(ret);
+    // resolve app extension
+    if (appLayer) {
+        auto ret = resolveExtension(
+          *appLayer,
+          matchedExtensionDefines(appLayer->getReference(), options.externalExtensionDefs));
+        if (!ret) {
+            return LINGLONG_ERR(ret);
+        }
     }
 
-    // 手动解析多个扩展
-    // 先从命令行选项或配置文件获取扩展列表
-    // 先从命令行选项或应用/全局配置获取扩展列表
-    std::vector<std::string> extRefs;
+    // 手动解析多个扩展（仅来自命令行；默认扩展加载由主线机制负责）
     if (options.extensionRefs && !options.extensionRefs->empty()) {
-        extRefs = *options.extensionRefs;
-    } else {
-        extRefs = loadExtensionsFromConfig(runnable.id);
-    }
-
-    // 如果未获取到扩展列表，则尝试根据 base 层加载
-    if (extRefs.empty()) {
-        // 获取 baseId
-        std::string baseId;
-
-        // 1. 优先使用 ResolveOptions::baseRef（如果提供）
-        if (options.baseRef && !options.baseRef->empty()) {
-            // 假设存在 FuzzyReference::parse，可解析出 id 部分
-            auto baseRef = linglong::package::FuzzyReference::parse(*options.baseRef);
-            if (baseRef) {
-                baseId = baseRef->id;
-            }
-        }
-
-        // 2. 否则从当前运行包信息中获取
-        if (baseId.empty()) {
-            auto item = repo.getLayerItem(runnable);
-            if (item && !item->info.base.empty()) {
-                baseId = item->info.base;
-            }
-        }
-
-        // 3. 若 baseId 非空，则读取 base 配置
-        if (!baseId.empty()) {
-            extRefs = loadExtensionsFromBase(baseId);
-        }
-    }
-
-    // 若 extRefs 非空，继续使用原有的手动解析逻辑
-    if (!extRefs.empty()) {
-        auto manualExtensionDef = makeManualExtensionDefine(extRefs);
+        auto manualExtensionDef = makeManualExtensionDefine(*options.extensionRefs);
         if (!manualExtensionDef) {
             return LINGLONG_ERR(manualExtensionDef);
         }
@@ -1078,7 +892,11 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
     if (!ref) {
         return LINGLONG_ERR(ref);
     }
-    baseLayer = RuntimeLayer(std::move(ref).value(), *this);
+    auto res = RuntimeLayer::create(std::move(ref).value(), *this);
+    if (!res) {
+        return LINGLONG_ERR(res);
+    }
+    baseLayer = std::move(res).value();
 
     if (target.runtime) {
         auto runtimeFuzzyRef = package::FuzzyReference::parse(*target.runtime);
@@ -1095,14 +913,14 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
         if (!ref) {
             return LINGLONG_ERR("ref doesn't exist " + runtimeFuzzyRef->toString());
         }
-        runtimeLayer = RuntimeLayer(std::move(ref).value(), *this);
-
-        auto layer = runtimeLayer->getCachedItem();
-        if (!layer) {
-            return LINGLONG_ERR("no cached item found: " + runtimeLayer->getReference().toString());
+        auto res = RuntimeLayer::create(std::move(ref).value(), *this);
+        if (!res) {
+            return LINGLONG_ERR(res);
         }
+        runtimeLayer = std::move(res).value();
 
-        auto fuzzyRef = package::FuzzyReference::parse(layer->info.base);
+        const auto &info = runtimeLayer->getCachedItem().info;
+        auto fuzzyRef = package::FuzzyReference::parse(info.base);
         if (!fuzzyRef) {
             return LINGLONG_ERR(fuzzyRef);
         }
@@ -1117,7 +935,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
                                    "Current runtime: {}\n - Base required by runtime: {}",
                                    baseLayer->getReference().toString(),
                                    runtimeLayer->getReference().toString(),
-                                   layer->info.base);
+                                   info.base);
             return LINGLONG_ERR(msg);
         }
     }
@@ -1132,9 +950,9 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
 
     std::optional<std::string> subRef;
     if (appLayer) {
-        auto item = appLayer->getCachedItem();
-        if (item && item->info.uuid) {
-            subRef = item->info.uuid;
+        const auto &info = appLayer->getCachedItem().info;
+        if (info.uuid) {
+            subRef = info.uuid;
         }
     }
 
@@ -1173,11 +991,7 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
         }
 
         const auto &[extensionDefine, layer] = *extensionOf;
-        auto extItem = ext.getCachedItem();
-        if (!extItem) {
-            continue;
-        }
-        const auto &extInfo = extItem->info;
+        const auto &extInfo = ext.getCachedItem().info;
         if (!extInfo.extImpl) {
             LogW("no ext_impl found for {}", ext.getReference().toString());
             continue;
@@ -1220,18 +1034,22 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> RunContext::resolveExtension(RuntimeLayer &layer)
+utils::error::Result<void> RunContext::resolveExtension(
+  RuntimeLayer &layer, const std::vector<api::types::v1::ExtensionDefine> &externalExtensionDefs)
 {
     LINGLONG_TRACE("resolve RuntimeLayer extension");
 
-    auto item = layer.getCachedItem();
-    if (!item) {
-        return LINGLONG_ERR("no cached item found: " + layer.getReference().toString());
+    const auto &info = layer.getCachedItem().info;
+    if (info.extensions) {
+        auto res = resolveExtension(*info.extensions, info.channel, true);
+        if (!res) {
+            return LINGLONG_ERR(res);
+        }
     }
 
-    const auto &info = item->info;
-    if (info.extensions) {
-        return resolveExtension(*info.extensions, info.channel, true);
+    // merge external extensions
+    if (!externalExtensionDefs.empty()) {
+        return resolveExtension(externalExtensionDefs, info.channel, true);
     }
 
     return LINGLONG_OK;
@@ -1279,16 +1097,16 @@ RunContext::resolveExtension(const std::vector<api::types::v1::ExtensionDefine> 
             return LINGLONG_ERR("extension is not installed", ref);
         }
 
-        RuntimeLayer layer(*ref, *this);
-        auto item = layer.getCachedItem();
-        if (!item) {
-            return LINGLONG_ERR("failed to get layer item", item);
+        auto layer = RuntimeLayer::create(*ref, *this);
+        if (!layer) {
+            return LINGLONG_ERR(layer);
         }
-        if (item->info.kind != "extension") {
+
+        if (layer->getCachedItem().info.kind != "extension") {
             return LINGLONG_ERR(fmt::format("{} is not an extension", ref->toString()));
         }
 
-        auto &extensionLayer = extensionLayers.emplace_back(std::move(layer));
+        auto &extensionLayer = extensionLayers.emplace_back(std::move(layer).value());
         extensionLayer.setExtensionInfo(
           std::make_pair(extDef, std::reference_wrapper<RuntimeLayer>(extensionLayer)));
     }
@@ -1316,6 +1134,38 @@ RunContext::makeManualExtensionDefine(const std::vector<std::string> &refs)
         });
     }
     return extDefs;
+}
+
+std::vector<api::types::v1::ExtensionDefine> RunContext::matchedExtensionDefines(
+  const package::Reference &ref,
+  const std::optional<std::map<std::string, std::vector<api::types::v1::ExtensionDefine>>>
+    &externalExtensionDefs)
+{
+    std::vector<api::types::v1::ExtensionDefine> result;
+
+    if (externalExtensionDefs.has_value()) {
+        for (const auto &[key, defs] : *externalExtensionDefs) {
+            auto fuzzyRef = package::FuzzyReference::parse(key);
+            if (!fuzzyRef) {
+                LogE("invalid ref {}: {}", key, fuzzyRef.error());
+                continue;
+            }
+
+            if (fuzzyRef->id != ref.id) {
+                continue;
+            }
+
+            if (fuzzyRef->version) {
+                if (!ref.version.semanticMatch(*fuzzyRef->version)) {
+                    continue;
+                }
+            }
+
+            result.insert(result.end(), defs.begin(), defs.end());
+        }
+    }
+
+    return result;
 }
 
 void RunContext::detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept
@@ -1697,11 +1547,7 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder,
     }
 
     for (auto &ext : extensionLayers) {
-        auto item = ext.getCachedItem();
-        if (!item) {
-            continue;
-        }
-        const auto &info = item->info;
+        const auto &info = ext.getCachedItem().info;
         if (info.extImpl && info.extImpl->deviceNodes) {
             for (auto &node : *info.extImpl->deviceNodes) {
                 ocppi::runtime::config::types::Mount mount = {
@@ -1850,11 +1696,7 @@ utils::error::Result<void> RunContext::fillExtraAppMounts(generator::ContainerCf
                                  this](RuntimeLayer &layer) -> utils::error::Result<void> {
         LINGLONG_TRACE("fill permissions binds");
 
-        auto item = layer.getCachedItem();
-        if (!item) {
-            return LINGLONG_ERR(item);
-        }
-        const auto &info = item->info;
+        const auto &info = layer.getCachedItem().info;
 
         if (info.permissions) {
             std::vector<ocppi::runtime::config::types::Mount> applicationMounts{};

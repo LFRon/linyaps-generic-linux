@@ -129,7 +129,7 @@ Terminal=false
 
 ## Managing sandbox permissions with configuration files
 
-`ll-cli config` now understands Flatseal-style permission toggles through JSON configuration files. User-level settings live in `~/.config/linglong/config.json`, application overrides live in `~/.config/linglong/apps/<appid>/config.json`, and base overrides live under `~/.config/linglong/base/<baseid>/config.json`. Settings can also be defined system-wide inside `/var/lib/linglong/config/`.
+`ll-cli config` now understands Flatseal-style permission toggles through JSON configuration files. User-level settings live in `~/.config/linglong/config.json`, and application overrides live in `~/.config/linglong/apps/<appid>/config.json`.
 
 Use the new helpers to enable or disable presets:
 

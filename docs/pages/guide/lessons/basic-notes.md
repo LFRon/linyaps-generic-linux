@@ -128,7 +128,7 @@ Terminal=false
 
 ## 通过配置文件管理沙箱权限
 
-`ll-cli config` 已经支持 Flatseal 风格的权限开关。用户级别的设置位于 `~/.config/linglong/config.json`，应用以及基础环境的覆盖配置分别位于 `~/.config/linglong/apps/<appid>/config.json` 与 `~/.config/linglong/base/<baseid>/config.json`，也可以在 `/var/lib/linglong/config/` 中提供系统级默认值。
+`ll-cli config` 已经支持 Flatseal 风格的权限开关。用户级别的设置位于 `~/.config/linglong/config.json`，应用覆盖配置位于 `~/.config/linglong/apps/<appid>/config.json`。
 
 常用命令如下：
 

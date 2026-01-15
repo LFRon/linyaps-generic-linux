@@ -21,7 +21,6 @@
 #include "linglong/api/types/v1/PackageManager1SearchParameters.hpp"
 #include "linglong/api/types/v1/PackageManager1SearchResult.hpp"
 #include "linglong/api/types/v1/PackageManager1UninstallParameters.hpp"
-#include "linglong/api/types/v1/RepositoryCacheLayersItem.hpp"
 #include "linglong/api/types/v1/State.hpp"
 #include "linglong/api/types/v1/UpgradeListResult.hpp"
 #include "linglong/cli/printer.h"
@@ -39,6 +38,7 @@
 #include "linglong/utils/file.h"
 #include "linglong/utils/finally/finally.h"
 #include "linglong/utils/gettext.h"
+#include "linglong/utils/runtime_config.h"
 #include "linglong/utils/xdg/directory.h"
 #include "ocppi/runtime/ExecOption.hpp"
 #include "ocppi/runtime/RunOption.hpp"
@@ -48,7 +48,6 @@
 #include <linux/un.h>
 #include <nlohmann/json.hpp>
 
-#include <QCryptographicHash>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QProcess>
@@ -519,6 +518,13 @@ int Cli::run(const RunOptions &options)
         return -1;
     }
 
+    auto loaded = linglong::utils::loadRuntimeConfig(options.appid);
+    if (!loaded) {
+        this->printer.printErr(loaded.error());
+        return -1;
+    }
+    auto runtimeConfig = std::move(loaded).value();
+
     runtime::RunContext runContext(this->repository);
     linglong::runtime::ResolveOptions opts;
     opts.baseRef = options.base;
@@ -526,6 +532,10 @@ int Cli::run(const RunOptions &options)
     if (!options.extensions.empty()) {
         opts.extensionRefs = options.extensions;
     }
+    if (runtimeConfig && runtimeConfig->extDefs) {
+        opts.externalExtensionDefs = std::move(runtimeConfig->extDefs).value();
+    }
+
     auto configPath = extension_override::getUserConfigPath();
     if (configPath) {
         auto overrides = extension_override::loadOverrides(*configPath);
