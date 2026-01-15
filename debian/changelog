@@ -1,91 +1,10 @@
-linglong (1.10.3-1) unstable; urgency=medium
+linglong (1.10.4-0) unstable; urgency=medium
 
-  * bump version: 1.10.3
+  * release 1.10.4-0.
+  * Add NVIDIA Driver fallback.
+  * Add experimental extension force-loading.
 
- -- LFRon <ronforever@qq.com>  Sun, 14 Dec 2025 14:54:20 +0800
-
-linglong (1.10.2-7) unstable; urgency=medium
-
-  * feat: improve the control of force-loading extensions and mount-dirs
-
- -- LFRon <ronforever@qq.com>  Sat, 13 Dec 2025 09:58:28 +0800
-
-linglong (1.10.2-6) unstable; urgency=medium
-
-  * feat: improve the control of force-loading extensions and mount-dirs
-  * refactor(utils): improve namespace isolation implementation
-  * refactor: improve task management code quality and safety
-
- -- LFRon <ronforever@qq.com>  Fri, 12 Dec 2025 18:06:28 +0800
-
-linglong (1.10.2-5) unstable; urgency=medium
-
-  * feat: implement the control of force-loading extensions and mount-dirs
-
- -- LFRon <ronforever@qq.com>  Sat, 6 Dec 2025 22:04:28 +0800
-
-linglong (1.10.2-3) unstable; urgency=medium
-
-  * fix: can't rely on ssi_pid when cross pid_namespaces
-  * feat: add jmgpu device node to container bind list
-  * fix: replace unsafe temp-dir creation and fix fmt API usage
-  * build: add hardend compile/link flags
-
- -- LFRon <ronforever@qq.com>  Fri, 5 Dec 2025 15:02:28 +0800
-
-linglong (1.10.2-2) unstable; urgency=medium
-
-  * fix: using Qt5 building package as default
-
- -- LFRon <ronforever@qq.com>  Thu, 20 Nov 2025 16:42:28 +0800
-
-linglong (1.10.2-1) unstable; urgency=medium
-
-  * fix: Duplicate initialization causes incorrect stderr redirection
-  * fix: There will be multiple versions of the application when an error occurs during the upgrade process
-  * fix: base field is empty when use ll-cli search
-  * fix: fix repo config comparison and add debug logs
-  * fix: add DBusPrivate to Qt6 find_package
-  * feat: still implement loading of extensions from config files
-  * feat: Adding process-aware fileLock implementation
-  * feat: Disable backtrace by default
-  * fix: the application was abnormally removed due to an error in executing hooks
-
- -- dengbo <dengbo@deepin.org>  Fri, 14 Nov 2025 14:58:28 +0800
-
-linglong (1.10.1-1) unstable; urgency=medium
-
-  * release 1.10.1-1.
-
- -- dengbo <dengbo@deepin.org>  Fri, 31 Oct 2025 13:16:07 +0800
-
-linglong (1.9.13-1) unstable; urgency=medium
-
-  * fix: fix env is cleared by `env -i`.
-  * refactor: simplify container entrypoint generation.
-  * feat: enable git submodule fetching with environment variable control.
-  * feat: add mirror enable/disable functionality for repositories.
-  * feat: add no-clean-objects option for remove command.
-
- -- dengbo <dengbo@deepin.org>  Fri, 19 Sep 2025 16:03:17 +0800
-
-linglong (1.9.12-1) unstable; urgency=medium
-
-  * release 1.9.12-1.
-
- -- dengbo <dengbo@deepin.org>  Fri, 19 Sep 2025 11:12:40 +0800
-
-linglong (1.9.11-1) unstable; urgency=medium
-
-  * release 1.9.11-1.
-
- -- dengbo <dengbo@deepin.org>  Fri, 05 Sep 2025 10:29:45 +0800
-
-linglong (1.9.10-1) unstable; urgency=medium
-
-  * release 1.9.10-1.
-
- -- dengbo <dengbo@deepin.org>  Fri, 22 Aug 2025 12:38:12 +0800
+ -- LFRon <ronforever@qq.com>  Thu, 15 Jan 2026 12:04:20 +0800
 
 linglong (1.9.0-1) unstable; urgency=medium
 

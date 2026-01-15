@@ -72,7 +72,8 @@ set(LINGLONG_ENABLE_WAYLAND_SEC_CTX_SUPPORT
 # harden the build
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-z,relro -Wl,-z,now")
+set(CMAKE_EXE_LINKER_FLAGS
+    "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-z,relro -Wl,-z,now")
 
 add_compile_options(-fstack-protector-strong)
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -81,10 +82,9 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" SYSTEM_PROC_LOWER)
-if(SYSTEM_PROC_LOWER MATCHES "mips")
-    message(STATUS "MIPS architecture detected. Adding -mxgot to C/CXX flags.")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mxgot")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mxgot")
+if(SYSTEM_PROC_LOWER MATCHES "^mips")
+  message(STATUS "MIPS architecture detected. Adding -mxgot to C/CXX flags.")
+  add_compile_options(-mxgot)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -106,10 +106,12 @@ if(ENABLE_CPM)
   include(CPM)
   CPMFindPackage(
     NAME tl-expected
-    VERSION 1.2.0 # NOTE: Upstream cmake version doesn't match git tag, we need https://github.com/TartanLlama/expected/pull/62 in v1.1.0,
-                  # but cmake version of v1.1.0 is 1.0.0.
-                  # upstream fix this issue in https://github.com/TartanLlama/expected/commit/17d0058a5a5d3e0ea647884f9b29c518dd06f26e
-                  # so we require tl-expected >= 1.2.0
+    VERSION
+      1.2.0 # NOTE: Upstream cmake version doesn't match git tag, we need
+            # https://github.com/TartanLlama/expected/pull/62 in v1.1.0, but
+            # cmake version of v1.1.0 is 1.0.0. upstream fix this issue in
+            # https://github.com/TartanLlama/expected/commit/17d0058a5a5d3e0ea647884f9b29c518dd06f26e
+            # so we require tl-expected >= 1.2.0
     GITHUB_REPOSITORY TartanLlama/expected
     GIT_TAG v1.3.1
     GIT_SHALLOW ON
@@ -304,6 +306,7 @@ pkg_search_module(ostree1 REQUIRED IMPORTED_TARGET ostree-1)
 pkg_search_module(systemd REQUIRED IMPORTED_TARGET libsystemd)
 pkg_search_module(ELF REQUIRED IMPORTED_TARGET libelf)
 pkg_search_module(cap REQUIRED IMPORTED_TARGET libcap)
+pkg_search_module(uuid REQUIRED IMPORTED_TARGET uuid)
 
 set(ytj_ENABLE_TESTING NO)
 set(ytj_ENABLE_INSTALL NO)
@@ -328,7 +331,8 @@ pfl_add_libraries(
   ll-cli
   ll-package-manager
   llpkg
-  ll-session-helper)
+  ll-session-helper
+  ll-driver-detect)
 
 if(ENABLE_LINGLONG_APP_BUILDER_UTILS)
   add_subdirectory(apps/ll-builder-utils)

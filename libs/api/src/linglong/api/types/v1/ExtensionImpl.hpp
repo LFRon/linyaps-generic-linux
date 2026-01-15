@@ -17,6 +17,8 @@
 #include <nlohmann/json.hpp>
 #include "linglong/api/types/v1/helper.hpp"
 
+#include "linglong/api/types/v1/DeviceNode.hpp"
+
 namespace linglong {
 namespace api {
 namespace types {
@@ -24,6 +26,10 @@ namespace v1 {
 using nlohmann::json;
 
 struct ExtensionImpl {
+/**
+* device nodes to be mounted
+*/
+std::optional<std::vector<DeviceNode>> deviceNodes;
 /**
 * environment variables to set when extension effects
 */

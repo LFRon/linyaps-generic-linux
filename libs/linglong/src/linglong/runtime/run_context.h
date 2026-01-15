@@ -8,6 +8,7 @@
 
 #include "linglong/api/types/v1/BuilderProject.hpp"
 #include "linglong/api/types/v1/ContainerProcessStateInfo.hpp"
+#include "linglong/api/types/v1/DeviceNode.hpp"
 #include "linglong/api/types/v1/ExtensionDefine.hpp"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/repo/ostree_repo.h"
@@ -16,9 +17,11 @@
 
 #include <filesystem>
 #include <list>
+#include <map>
+#include <unordered_set>
+#include <vector>
 #include <optional>
 #include <string>
-#include <vector>
 
 namespace linglong::runtime {
 
@@ -65,6 +68,15 @@ struct ResolveOptions
     std::optional<std::vector<std::string>> extensionRefs;
 };
 
+struct ExtensionOverride
+{
+    std::string name;
+    bool fallbackOnly{ false };
+    std::map<std::string, std::string> env;
+    std::vector<ocppi::runtime::config::types::Mount> mounts;
+    std::vector<api::types::v1::DeviceNode> deviceNodes;
+};
+
 class RunContext
 {
 public:
@@ -88,7 +100,8 @@ public:
     utils::error::Result<void> resolve(const api::types::v1::BuilderProject &target,
                                        const std::filesystem::path &buildOutput);
 
-    utils::error::Result<void> fillContextCfg(generator::ContainerCfgBuilder &builder);
+    utils::error::Result<void> fillContextCfg(generator::ContainerCfgBuilder &builder,
+                                              const std::string &bundleSuffix = "");
     api::types::v1::ContainerProcessStateInfo stateInfo();
 
     repo::OSTreeRepo &getRepo() const { return repo; }
@@ -111,6 +124,13 @@ public:
 
     utils::error::Result<api::types::v1::RepositoryCacheLayersItem> getCachedAppItem();
 
+    void setExtensionOverrides(std::vector<ExtensionOverride> overrides)
+    {
+        extensionOverrides = std::move(overrides);
+    }
+
+    void setHostNvidiaFallbackEnabled(bool enabled) { hostNvidiaFallbackEnabled = enabled; }
+
     bool hasRuntime() const { return !!runtimeLayer; }
 
 private:
@@ -123,6 +143,11 @@ private:
                      bool skipOnNotFound = false);
     utils::error::Result<void> fillExtraAppMounts(generator::ContainerCfgBuilder &builder);
     void detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept;
+    void setupHostNvidiaFallbacks(
+      generator::ContainerCfgBuilder &builder,
+      std::vector<ocppi::runtime::config::types::Mount> &extensionMounts);
+    void applyExtensionOverrides(generator::ContainerCfgBuilder &builder,
+                                 std::vector<ocppi::runtime::config::types::Mount> &extensionMounts);
     utils::error::Result<std::vector<api::types::v1::ExtensionDefine>>
     makeManualExtensionDefine(const std::vector<std::string> &refs);
 
@@ -132,6 +157,9 @@ private:
     std::optional<RuntimeLayer> runtimeLayer;
     std::optional<RuntimeLayer> appLayer;
     std::list<RuntimeLayer> extensionLayers;
+    std::unordered_set<std::string> hostExtensions;
+    std::vector<ExtensionOverride> extensionOverrides;
+    bool hostNvidiaFallbackEnabled{ true };
 
     std::string targetId;
     std::optional<std::filesystem::path> appOutput;

@@ -41,6 +41,7 @@ class Printer;
 struct GlobalOptions
 {
     bool verbose{ false };
+    bool noProgress{ false };
 };
 
 // 各subcommand的独立选项结构体
@@ -133,6 +134,14 @@ struct InspectOptions
     std::string dirType{ "layer" };
 };
 
+struct ExtensionOptions
+{
+    std::optional<std::string> configPath;
+    std::optional<std::string> cdiPath;
+    std::string name{ "org.deepin.driver.display.nvidia" };
+    bool applyWhenInstalled{ false };
+};
+
 enum class TaskType : int {
     None,
     Install,
@@ -185,6 +194,7 @@ public:
     int content(const ContentOptions &options);
     int prune();
     int inspect(CLI::App *subcommand, const InspectOptions &options);
+    int extension(CLI::App *subcommand, const ExtensionOptions &options);
 
     void cancelCurrentTask();
 
@@ -215,15 +225,18 @@ private:
     utils::error::Result<void> runningAsRoot();
     utils::error::Result<void> runningAsRoot(const QList<QString> &args);
     utils::error::Result<std::vector<api::types::v1::UpgradeListResult>> listUpgradable();
-    int generateCache(const package::Reference &ref);
+    utils::error::Result<void> generateLDCache(runtime::RunContext &runContext,
+                                               const std::string &ldConf) noexcept;
     utils::error::Result<std::filesystem::path> ensureCache(
       runtime::RunContext &runContext, const generator::ContainerCfgBuilder &cfgBuilder) noexcept;
-    QDBusReply<QString> authorization();
+    QDBusReply<void> authorization();
     void updateAM() noexcept;
     std::vector<std::string> getRunningAppContainers(const std::string &appid);
     int getLayerDir(const InspectOptions &options);
     int getBundleDir(const InspectOptions &options);
+    int importCdi(const ExtensionOptions &options);
     utils::error::Result<void> initInteraction();
+    void detectDrivers();
 
     template <typename T>
     utils::error::Result<T> waitDBusReply(QDBusPendingReply<QVariantMap> &reply)

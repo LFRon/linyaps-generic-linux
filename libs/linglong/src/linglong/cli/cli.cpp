@@ -25,6 +25,7 @@
 #include "linglong/api/types/v1/State.hpp"
 #include "linglong/api/types/v1/UpgradeListResult.hpp"
 #include "linglong/cli/printer.h"
+#include "linglong/cli/extension_override.h"
 #include "linglong/common/dir.h"
 #include "linglong/common/strings.h"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
@@ -50,6 +51,7 @@
 #include <QCryptographicHash>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QProcess>
 
 #include <algorithm>
 #include <cassert>
@@ -57,7 +59,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <system_error>
 #include <thread>
@@ -66,6 +70,7 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 using namespace linglong::utils::error;
@@ -358,11 +363,12 @@ void Cli::interaction(const QDBusObjectPath &object_path,
 
 void Cli::onTaskAdded(const QDBusObjectPath &object_path)
 {
-    qDebug() << "task added" << object_path.path();
+    LogD("task added: {}", object_path.path());
 }
 
 void Cli::onTaskRemoved(const QDBusObjectPath &object_path)
 {
+    LogD("task removed: {}", object_path.path());
     if (object_path.path() != taskObjectPath) {
         return;
     }
@@ -375,7 +381,7 @@ void Cli::onTaskRemoved(const QDBusObjectPath &object_path)
 void Cli::handleTaskState() noexcept
 {
     if (taskState.state == api::types::v1::State::Unknown) {
-        LogI("task is invalid");
+        LogW("task state is unknown");
         return;
     }
 
@@ -392,7 +398,9 @@ void Cli::handleTaskState() noexcept
         return;
     }
 
-    this->printer.printProgress(taskState.percentage, taskState.message);
+    if (!this->globalOptions.noProgress) {
+        this->printer.printProgress(taskState.percentage, taskState.message);
+    }
 }
 
 void Cli::printOnTaskFailed()
@@ -467,6 +475,8 @@ int Cli::run(const RunOptions &options)
     auto gid = getgid();
     auto pid = getpid();
 
+    detectDrivers();
+
     auto userContainerDir = std::filesystem::path{ "/run/linglong" } / std::to_string(uid);
     if (auto ret = utils::ensureDirectory(userContainerDir); !ret) {
         this->printer.printErr(ret.error());
@@ -513,9 +523,20 @@ int Cli::run(const RunOptions &options)
     linglong::runtime::ResolveOptions opts;
     opts.baseRef = options.base;
     opts.runtimeRef = options.runtime;
-    // 处理多个扩展
     if (!options.extensions.empty()) {
         opts.extensionRefs = options.extensions;
+    }
+    auto configPath = extension_override::getUserConfigPath();
+    if (configPath) {
+        auto overrides = extension_override::loadOverrides(*configPath);
+        if (overrides) {
+            if (!overrides->empty()) {
+                runContext.setExtensionOverrides(std::move(*overrides));
+            }
+        } else {
+            qWarning() << "failed to load extension overrides:"
+                       << overrides.error().message().c_str();
+        }
     }
 
     // 调整日志输出，打印扩展列表（用逗号拼接）
@@ -601,12 +622,6 @@ int Cli::run(const RunOptions &options)
         break;
     }
 
-    auto *homeEnv = ::getenv("HOME");
-    if (homeEnv == nullptr) {
-        qCritical() << "Couldn't get HOME env.";
-        return -1;
-    }
-
     runContext.enableSecurityContext(runtime::getDefaultSecurityContexts());
 
     linglong::generator::ContainerCfgBuilder cfgBuilder;
@@ -620,13 +635,6 @@ int Cli::run(const RunOptions &options)
       .bindXDGRuntime()
       .bindUserGroup()
       .bindRemovableStorageMounts()
-      .bindHostRoot()
-      .bindHostStatics()
-      .bindHome(homeEnv)
-      .enablePrivateDir()
-      .mapPrivate(std::string{ homeEnv } + "/.ssh", true)
-      .mapPrivate(std::string{ homeEnv } + "/.gnupg", true)
-      .bindIPC()
       .forwardDefaultEnv()
       .enableSelfAdjustingMount();
 
@@ -677,10 +685,6 @@ int Cli::run(const RunOptions &options)
                              std::string(split + 1, env.cend()),
                              true);
     }
-
-#ifdef LINGLONG_FONT_CACHE_GENERATOR
-    cfgBuilder.enableFontCache();
-#endif
 
     auto appCache = this->ensureCache(runContext, cfgBuilder);
     if (!appCache) {
@@ -904,22 +908,28 @@ int Cli::installFromFile(const QFileInfo &fileInfo,
     auto filePath = fileInfo.absoluteFilePath();
     LINGLONG_TRACE(fmt::format("install from file {}", filePath.toStdString()));
 
-    QDBusReply<QString> authReply = this->authorization();
-    if (!authReply.isValid() && authReply.error().type() == QDBusError::AccessDenied) {
-        auto args = QCoreApplication::instance()->arguments();
-        // pkexec在0.120版本之前没有keep-cwd选项，会将目录切换到/root
-        // 所以将layer或uab文件的相对路径转为绝对路径，再传给pkexec
-        auto path = fileInfo.absoluteFilePath();
-        for (auto i = 0; i < args.length(); i++) {
-            if (args[i] == QString::fromStdString(appid)) {
-                args[i] = path.toLocal8Bit().constData();
+    auto authReply = this->authorization();
+    if (!authReply.isValid()) {
+        if (authReply.error().type() == QDBusError::AccessDenied) {
+            auto args = QCoreApplication::instance()->arguments();
+            // pkexec在0.120版本之前没有keep-cwd选项，会将目录切换到/root
+            // 所以将layer或uab文件的相对路径转为绝对路径，再传给pkexec
+            auto path = fileInfo.absoluteFilePath();
+            for (auto i = 0; i < args.length(); i++) {
+                if (args[i] == QString::fromStdString(appid)) {
+                    args[i] = path.toLocal8Bit().constData();
+                }
             }
+
+            auto ret = this->runningAsRoot(args);
+            if (!ret) {
+                this->printer.printErr(ret.error());
+            }
+            return -1;
         }
 
-        auto ret = this->runningAsRoot(args);
-        if (!ret) {
-            this->printer.printErr(ret.error());
-        }
+        this->printer.printErr(LINGLONG_ERRV(authReply.error().message() + authReply.error().name(),
+                                             static_cast<int>(authReply.error().type())));
         return -1;
     }
 
@@ -1096,9 +1106,12 @@ int Cli::search(const SearchOptions &options)
     };
 
     auto repoConfig = this->repository.getOrderedConfig();
+    if (repoConfig.repos.empty()) {
+        this->printer.printErr(LINGLONG_ERRV("no repo found"));
+        return -1;
+    }
 
     if (options.repo) {
-        // 检查repo是否存在
         auto it = std::find_if(repoConfig.repos.begin(),
                                repoConfig.repos.end(),
                                [&options](const api::types::v1::Repo &repo) {
@@ -1106,17 +1119,13 @@ int Cli::search(const SearchOptions &options)
                                });
         if (it == repoConfig.repos.end()) {
             this->printer.printErr(
-              LINGLONG_ERRV(QString{ "repo %1 not found" }.arg(options.repo.value().c_str())));
+              LINGLONG_ERRV(fmt::format("repo {} not found", options.repo.value())));
             return -1;
         }
         params.repos.emplace_back(options.repo.value());
     } else {
-        // 如果没有指定repo，则搜索优先级最高的所有仓库, 仓库的优先级可以相同
-        assert(!repoConfig.repos.empty());
+        // search all repos
         for (const auto &repo : repoConfig.repos) {
-            if (repo.priority < repoConfig.repos[0].priority) {
-                break;
-            }
             params.repos.emplace_back(repo.alias.value_or(repo.name));
         }
     }
@@ -1881,14 +1890,19 @@ utils::error::Result<void> Cli::ensureAuthorized()
 {
     LINGLONG_TRACE("ensure authorized");
 
-    QDBusReply<QString> authReply = this->authorization();
-    if (!authReply.isValid() && authReply.error().type() == QDBusError::AccessDenied) {
-        auto ret = this->runningAsRoot();
-        std::string message = "failed to authorize";
-        if (!ret) {
-            message += ": " + ret.error().message();
+    auto authReply = this->authorization();
+    if (!authReply.isValid()) {
+        if (authReply.error().type() == QDBusError::AccessDenied) {
+            auto ret = this->runningAsRoot();
+            std::string message = "failed to authorize";
+            if (!ret) {
+                message += ": " + ret.error().message();
+            }
+            return LINGLONG_ERR(message);
         }
-        return LINGLONG_ERR(message);
+
+        return LINGLONG_ERR(authReply.error().message() + authReply.error().name(),
+                            static_cast<int>(authReply.error().type()));
     }
 
     return LINGLONG_OK;
@@ -1922,15 +1936,11 @@ utils::error::Result<void> Cli::runningAsRoot(const QList<QString> &args)
     return LINGLONG_ERR("execve error", ret);
 }
 
-QDBusReply<QString> Cli::authorization()
+QDBusReply<void> Cli::authorization()
 {
     // Note: we have marked the method Permissions of PM as rejected.
     // Use this method to determin that this client whether have permission to call PM.
-    QDBusInterface dbusIntrospect(this->pkgMan.service(),
-                                  this->pkgMan.path(),
-                                  this->pkgMan.service(),
-                                  this->pkgMan.connection());
-    return dbusIntrospect.call("Permissions");
+    return this->pkgMan.Permissions();
 }
 
 utils::error::Result<void>
@@ -2124,33 +2134,130 @@ Cli::RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept
     return LINGLONG_OK;
 }
 
-int Cli::generateCache(const package::Reference &ref)
+utils::error::Result<void> Cli::generateLDCache(runtime::RunContext &runContext,
+                                                const std::string &ldConf) noexcept
 {
-    LINGLONG_TRACE("generate cache for " + ref.toString());
-    QEventLoop loop;
-    QString jobIDReply;
-    connect(&this->pkgMan,
-            &api::dbus::v1::PackageManager::GenerateCacheFinished,
-            [&loop, &jobIDReply](const QString &jobID, bool success) {
-                if (jobIDReply != jobID) {
-                    return;
-                }
-                if (!success) {
-                    loop.exit(-1);
-                    return;
-                }
-                loop.exit(0);
-            });
+    LINGLONG_TRACE("generate ld cache");
 
-    auto pendingReply = this->pkgMan.GenerateCache(QString::fromStdString(ref.toString()));
-    auto result = waitDBusReply<api::types::v1::PackageManager1JobInfo>(pendingReply);
-    if (!result) {
-        this->printer.printErr(result.error());
-        return -1;
+    {
+        struct rlimit limit {};
+        if (::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
+            rlim_t target = limit.rlim_max;
+            if (target == RLIM_INFINITY) {
+                target = 65535;
+            }
+            if (limit.rlim_cur < target) {
+                struct rlimit newLimit { target, limit.rlim_max };
+                if (::setrlimit(RLIMIT_NOFILE, &newLimit) != 0) {
+                    qWarning() << "failed to raise RLIMIT_NOFILE:" << ::strerror(errno);
+                }
+            }
+        }
     }
-    jobIDReply = QString::fromStdString(result->id);
 
-    return loop.exec();
+    auto appLayerItem = runContext.getCachedAppItem();
+    if (!appLayerItem) {
+        return LINGLONG_ERR(appLayerItem);
+    }
+
+    auto appLayer = runContext.getAppLayer();
+    if (!appLayer) {
+        return LINGLONG_ERR("app layer not found");
+    }
+    auto appRef = appLayer->getReference();
+
+    auto appCache = common::dir::getUserCacheDir() / appLayerItem->commit;
+    std::error_code ec;
+    std::filesystem::create_directories(appCache, ec);
+    if (ec) {
+        return LINGLONG_ERR(fmt::format("failed to create cache directory {}: ", appCache), ec);
+    }
+
+    generator::ContainerCfgBuilder cfgBuilder;
+    auto res = runContext.fillContextCfg(cfgBuilder, ".ldcache");
+    if (!res) {
+        return LINGLONG_ERR(res);
+    }
+
+    auto uid = getuid();
+    auto gid = getgid();
+
+    std::filesystem::path ldConfPath{ appCache / "ld.so.conf" };
+
+    cfgBuilder.setAppId(appRef.id)
+      .setAppCache(appCache, false)
+      .addUIdMapping(uid, uid, 1)
+      .addGIdMapping(gid, gid, 1)
+      .bindDefault()
+      .bindCgroup()
+      .bindXDGRuntime()
+      .bindUserGroup()
+      .forwardDefaultEnv()
+      .addExtraMounts(
+        std::vector<ocppi::runtime::config::types::Mount>{ ocppi::runtime::config::types::Mount{
+          .destination = "/etc/ld.so.conf.d/zz_deepin-linglong-app.conf",
+          .options = { { "rbind", "ro" } },
+          .source = ldConfPath,
+          .type = "bind",
+        } })
+      .enableSelfAdjustingMount();
+
+    // generate ld config
+    {
+        std::ofstream ofs(ldConfPath, std::ios::binary | std::ios::out | std::ios::trunc);
+        Q_ASSERT(ofs.is_open());
+        if (!ofs.is_open()) {
+            return LINGLONG_ERR("create ld config in bundle directory");
+        }
+        ofs << ldConf;
+    }
+
+    if (!cfgBuilder.build()) {
+        auto err = cfgBuilder.getError();
+        return LINGLONG_ERR("build cfg error: " + QString::fromStdString(err.reason));
+    }
+
+    auto container = this->containerBuilder.create(cfgBuilder);
+    if (!container) {
+        return LINGLONG_ERR(container);
+    }
+
+    ocppi::runtime::config::types::Process process{};
+    process.cwd = "/";
+    process.noNewPrivileges = true;
+    process.terminal = true;
+    process.args =
+      std::vector<std::string>{ "/sbin/ldconfig", "-X", "-C", "/run/linglong/cache/ld.so.cache" };
+
+    {
+        // Ensure ldconfig inside the container has a sufficiently large FD limit.
+        // Raising RLIMIT_NOFILE only on the host process may not reliably propagate
+        // into the OCI process, depending on the runtime's defaults.
+        rlim_t target = 65535;
+        struct rlimit limit {};
+        if (::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
+            if (limit.rlim_max != RLIM_INFINITY) {
+                target = limit.rlim_max;
+            }
+        }
+        if (target == RLIM_INFINITY) {
+            target = 65535;
+        }
+        int64_t nofile = static_cast<int64_t>(target);
+        process.rlimits = std::vector<ocppi::runtime::config::types::Rlimit>{
+            ocppi::runtime::config::types::Rlimit{ .hard = nofile,
+                                                   .soft = nofile,
+                                                   .type = "RLIMIT_NOFILE" },
+        };
+    }
+
+    ocppi::runtime::RunOption opt{};
+    auto result = (*container)->run(process, opt);
+    if (!result) {
+        return LINGLONG_ERR(result);
+    }
+
+    return LINGLONG_OK;
 }
 
 utils::error::Result<std::filesystem::path> Cli::ensureCache(
@@ -2169,7 +2276,10 @@ utils::error::Result<std::filesystem::path> Cli::ensureCache(
     }
     auto appRef = appLayer->getReference();
 
-    auto appCache = std::filesystem::path(LINGLONG_ROOT) / "cache" / appLayerItem->commit;
+    auto appCache = common::dir::getUserCacheDir() / appLayerItem->commit;
+    bool ldCacheGen = true;
+    auto ldConf = cfgBuilder.ldConf(appRef.arch.getTriplet());
+
     do {
         std::error_code ec;
         if (!std::filesystem::exists(appCache, ec)) {
@@ -2179,12 +2289,12 @@ utils::error::Result<std::filesystem::path> Cli::ensureCache(
         // check ld.so.conf
         {
             auto ldSoConf = appCache / "ld.so.conf";
-            if (!std::filesystem::exists(ldSoConf, ec)) {
+            if (!std::filesystem::exists(ldSoConf, ec)
+                || !std::filesystem::exists(appCache / "ld.so.cache")) {
                 break;
             }
 
             // If the ld.so.conf exists, check if it is consistent with the current configuration.
-            auto ldConf = cfgBuilder.ldConf(appRef.arch.getTriplet());
             std::stringstream oldCache;
             std::ifstream ifs(ldSoConf, std::ios::binary | std::ios::in);
             if (!ifs.is_open()) {
@@ -2196,29 +2306,17 @@ utils::error::Result<std::filesystem::path> Cli::ensureCache(
             if (oldCache.str() != ldConf) {
                 break;
             }
-        }
 
-        return appCache;
+            ldCacheGen = false;
+        }
     } while (false);
 
-    // Try to generate cache here
-    QProcess process;
-    process.setProgram(LINGLONG_LIBEXEC_DIR "/ll-dialog");
-    process.setArguments(
-      { "-m", "startup", "--id", QString::fromStdString(appLayerItem->info.id) });
-    process.start();
-    qDebug() << process.program() << process.arguments();
-
-    auto ret = this->generateCache(appRef);
-    if (ret != 0) {
-        auto ret = this->notifier->notify(api::types::v1::InteractionRequest{
-          .summary =
-            _("The cache generation failed, please uninstall and reinstall the application.") });
-        if (!ret) {
-            qWarning() << "failed to notify" << ret.error();
+    if (ldCacheGen) {
+        auto res = generateLDCache(runContext, ldConf);
+        if (!res) {
+            return LINGLONG_ERR("failed to generate ld cache", res);
         }
     }
-    process.close();
 
     return appCache;
 }
@@ -2264,6 +2362,21 @@ int Cli::inspect(CLI::App *app, const InspectOptions &options)
                               .arg(QString::fromStdString(options.dirType))));
             return -1;
         }
+    }
+
+    return 0;
+}
+
+int Cli::extension(CLI::App *app, const ExtensionOptions &options)
+{
+    LINGLONG_TRACE("command extension");
+
+    auto argsParseFunc = [&app](const std::string &name) -> bool {
+        return app->get_subcommand(name)->parsed();
+    };
+
+    if (argsParseFunc("import-cdi")) {
+        return importCdi(options);
     }
 
     return 0;
@@ -2330,6 +2443,35 @@ int Cli::getBundleDir(const InspectOptions &options)
     return 0;
 }
 
+int Cli::importCdi(const ExtensionOptions &options)
+{
+    LINGLONG_TRACE("import CDI config");
+
+    std::filesystem::path configPath;
+    if (options.configPath) {
+        configPath = *options.configPath;
+    } else {
+        auto userConfigPath = extension_override::getUserConfigPath();
+        if (!userConfigPath) {
+            this->printer.printErr(LINGLONG_ERRV("failed to resolve user config path"));
+            return -1;
+        }
+        configPath = *userConfigPath;
+    }
+
+    auto res = extension_override::importCdiOverrides(configPath,
+                                                      options.cdiPath,
+                                                      options.name,
+                                                      !options.applyWhenInstalled);
+    if (!res) {
+        this->printer.printErr(res.error());
+        return -1;
+    }
+
+    this->printer.printMessage("CDI config imported into " + configPath.string());
+    return 0;
+}
+
 utils::error::Result<void> Cli::initInteraction()
 {
     LINGLONG_TRACE("initInteraction");
@@ -2368,6 +2510,8 @@ utils::error::Result<void> Cli::waitTaskCreated(QDBusPendingReply<QVariantMap> &
     this->task = new api::dbus::v1::Task1(pkgMan.service(), taskObjectPath, conn);
     this->taskState.state = linglong::api::types::v1::State::Queued;
     this->taskState.taskType = taskType;
+
+    LogD("task object path: {}", this->taskObjectPath);
 
     if (!conn.connect(pkgMan.service(),
                       taskObjectPath,
@@ -2530,6 +2674,19 @@ bool Cli::handleCommonError(const utils::error::Error &error)
     }
 
     return true;
+}
+
+void Cli::detectDrivers()
+{
+    QProcess process;
+    process.setProgram(QString(LINGLONG_LIBEXEC_DIR "/ll-driver-detect"));
+    // 禁用标准输入 (stdin)
+    process.setStandardInputFile("/dev/null");
+    // 禁用标准输出 (stdout)
+    process.setStandardOutputFile("/dev/null");
+    // 禁用标准错误输出 (stderr)
+    process.setStandardErrorFile("/dev/null");
+    process.startDetached();
 }
 
 } // namespace linglong::cli

@@ -29,16 +29,22 @@ pfl_add_library(
   src/linglong/cli/dbus_notifier.h
   src/linglong/cli/dummy_notifier.cpp
   src/linglong/cli/dummy_notifier.h
+  src/linglong/cli/extension_override.cpp
+  src/linglong/cli/extension_override.h
   src/linglong/cli/interactive_notifier.h
   src/linglong/cli/json_printer.cpp
   src/linglong/cli/json_printer.h
   src/linglong/cli/printer.h
   src/linglong/cli/terminal_notifier.cpp
   src/linglong/cli/terminal_notifier.h
+  src/linglong/extension/cdi.cpp
+  src/linglong/extension/cdi.h
   src/linglong/extension/extension.cpp
   src/linglong/extension/extension.h
   src/linglong/package/architecture.cpp
   src/linglong/package/architecture.h
+  src/linglong/package/elf_handler.cpp
+  src/linglong/package/elf_handler.h
   src/linglong/package/fallback_version.cpp
   src/linglong/package/fallback_version.h
   src/linglong/package/fuzzy_reference.cpp
@@ -92,6 +98,7 @@ pfl_add_library(
   src/linglong/runtime/container_builder.h
   src/linglong/runtime/container.cpp
   src/linglong/runtime/container.h
+  src/linglong/runtime/host_nvidia_fallback.cpp
   src/linglong/runtime/run_context.cpp
   src/linglong/runtime/run_context.h
   src/linglong/runtime/security_context.cpp
@@ -118,7 +125,8 @@ pfl_add_library(
   tl::expected
   linglong::oci-cfg-generators
   CLI11::CLI11
-  ${YAML_CPP})
+  ${YAML_CPP}
+  PkgConfig::uuid)
 
 if(LINGLONG_ENABLE_WAYLAND_SEC_CTX_SUPPORT)
   # pkg_get_variable() cannot reliably get variables in a .pc file if those
