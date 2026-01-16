@@ -33,7 +33,7 @@ set(ENABLE_LINGLONG_INSTALLER
     CACHE BOOL "enable linglong installer")
 
 set(ENABLE_TESTING
-    ON
+    OFF
     CACHE BOOL "enable testing")
 
 set(LINGLONG_USERNAME
