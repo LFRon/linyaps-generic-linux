@@ -24,7 +24,6 @@
 #include "linglong/api/types/v1/State.hpp"
 #include "linglong/api/types/v1/UpgradeListResult.hpp"
 #include "linglong/cli/printer.h"
-#include "linglong/cli/extension_override.h"
 #include "linglong/common/dir.h"
 #include "linglong/common/strings.h"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
@@ -58,9 +57,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <map>
 #include <optional>
 #include <system_error>
 #include <thread>
@@ -69,7 +66,6 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <sys/resource.h>
 #include <unistd.h>
 
 using namespace linglong::utils::error;
@@ -529,24 +525,12 @@ int Cli::run(const RunOptions &options)
     linglong::runtime::ResolveOptions opts;
     opts.baseRef = options.base;
     opts.runtimeRef = options.runtime;
+    // 处理多个扩展
     if (!options.extensions.empty()) {
         opts.extensionRefs = options.extensions;
     }
     if (runtimeConfig && runtimeConfig->extDefs) {
         opts.externalExtensionDefs = std::move(runtimeConfig->extDefs).value();
-    }
-
-    auto configPath = extension_override::getUserConfigPath();
-    if (configPath) {
-        auto overrides = extension_override::loadOverrides(*configPath);
-        if (overrides) {
-            if (!overrides->empty()) {
-                runContext.setExtensionOverrides(std::move(*overrides));
-            }
-        } else {
-            qWarning() << "failed to load extension overrides:"
-                       << overrides.error().message().c_str();
-        }
     }
 
     // 调整日志输出，打印扩展列表（用逗号拼接）
@@ -632,6 +616,12 @@ int Cli::run(const RunOptions &options)
         break;
     }
 
+    auto *homeEnv = ::getenv("HOME");
+    if (homeEnv == nullptr) {
+        qCritical() << "Couldn't get HOME env.";
+        return -1;
+    }
+
     runContext.enableSecurityContext(runtime::getDefaultSecurityContexts());
 
     linglong::generator::ContainerCfgBuilder cfgBuilder;
@@ -645,6 +635,13 @@ int Cli::run(const RunOptions &options)
       .bindXDGRuntime()
       .bindUserGroup()
       .bindRemovableStorageMounts()
+      .bindHostRoot()
+      .bindHostStatics()
+      .bindHome(homeEnv)
+      .enablePrivateDir()
+      .mapPrivate(std::string{ homeEnv } + "/.ssh", true)
+      .mapPrivate(std::string{ homeEnv } + "/.gnupg", true)
+      .bindIPC()
       .forwardDefaultEnv()
       .enableSelfAdjustingMount();
 
@@ -688,6 +685,12 @@ int Cli::run(const RunOptions &options)
                                             .options = std::vector<std::string>{ "bind" },
                                             .source = socketDir.string(),
                                             .type = "bind" });
+
+    if (runtimeConfig && runtimeConfig->env) {
+        for (const auto &[key, value] : *runtimeConfig->env) {
+            cfgBuilder.appendEnv(key, value, true);
+        }
+    }
 
     for (const auto &env : options.envs) {
         auto split = env.cbegin() + env.find('='); // already checked by CLI
@@ -2149,22 +2152,6 @@ utils::error::Result<void> Cli::generateLDCache(runtime::RunContext &runContext,
 {
     LINGLONG_TRACE("generate ld cache");
 
-    {
-        struct rlimit limit {};
-        if (::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
-            rlim_t target = limit.rlim_max;
-            if (target == RLIM_INFINITY) {
-                target = 65535;
-            }
-            if (limit.rlim_cur < target) {
-                struct rlimit newLimit { target, limit.rlim_max };
-                if (::setrlimit(RLIMIT_NOFILE, &newLimit) != 0) {
-                    qWarning() << "failed to raise RLIMIT_NOFILE:" << ::strerror(errno);
-                }
-            }
-        }
-    }
-
     auto appLayerItem = runContext.getCachedAppItem();
     if (!appLayerItem) {
         return LINGLONG_ERR(appLayerItem);
@@ -2238,28 +2225,6 @@ utils::error::Result<void> Cli::generateLDCache(runtime::RunContext &runContext,
     process.terminal = true;
     process.args =
       std::vector<std::string>{ "/sbin/ldconfig", "-X", "-C", "/run/linglong/cache/ld.so.cache" };
-
-    {
-        // Ensure ldconfig inside the container has a sufficiently large FD limit.
-        // Raising RLIMIT_NOFILE only on the host process may not reliably propagate
-        // into the OCI process, depending on the runtime's defaults.
-        rlim_t target = 65535;
-        struct rlimit limit {};
-        if (::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
-            if (limit.rlim_max != RLIM_INFINITY) {
-                target = limit.rlim_max;
-            }
-        }
-        if (target == RLIM_INFINITY) {
-            target = 65535;
-        }
-        int64_t nofile = static_cast<int64_t>(target);
-        process.rlimits = std::vector<ocppi::runtime::config::types::Rlimit>{
-            ocppi::runtime::config::types::Rlimit{ .hard = nofile,
-                                                   .soft = nofile,
-                                                   .type = "RLIMIT_NOFILE" },
-        };
-    }
 
     ocppi::runtime::RunOption opt{};
     auto result = (*container)->run(process, opt);
@@ -2377,21 +2342,6 @@ int Cli::inspect(CLI::App *app, const InspectOptions &options)
     return 0;
 }
 
-int Cli::extension(CLI::App *app, const ExtensionOptions &options)
-{
-    LINGLONG_TRACE("command extension");
-
-    auto argsParseFunc = [&app](const std::string &name) -> bool {
-        return app->get_subcommand(name)->parsed();
-    };
-
-    if (argsParseFunc("import-cdi")) {
-        return importCdi(options);
-    }
-
-    return 0;
-}
-
 int Cli::getLayerDir(const InspectOptions &options)
 {
     LINGLONG_TRACE("Get Layer dir");
@@ -2450,35 +2400,6 @@ int Cli::getBundleDir(const InspectOptions &options)
 
     std::cout << bundleDir.string() << std::endl;
 
-    return 0;
-}
-
-int Cli::importCdi(const ExtensionOptions &options)
-{
-    LINGLONG_TRACE("import CDI config");
-
-    std::filesystem::path configPath;
-    if (options.configPath) {
-        configPath = *options.configPath;
-    } else {
-        auto userConfigPath = extension_override::getUserConfigPath();
-        if (!userConfigPath) {
-            this->printer.printErr(LINGLONG_ERRV("failed to resolve user config path"));
-            return -1;
-        }
-        configPath = *userConfigPath;
-    }
-
-    auto res = extension_override::importCdiOverrides(configPath,
-                                                      options.cdiPath,
-                                                      options.name,
-                                                      !options.applyWhenInstalled);
-    if (!res) {
-        this->printer.printErr(res.error());
-        return -1;
-    }
-
-    this->printer.printMessage("CDI config imported into " + configPath.string());
     return 0;
 }
 

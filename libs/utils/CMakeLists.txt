@@ -50,8 +50,6 @@ pfl_add_library(
   src/linglong/utils/packageinfo_handler.h
   src/linglong/utils/runtime_config.cpp
   src/linglong/utils/runtime_config.h
-  src/linglong/utils/runtime_config_json.cpp
-  src/linglong/utils/runtime_config_json.h
   src/linglong/utils/serialize/json.cpp
   src/linglong/utils/serialize/json.h
   src/linglong/utils/serialize/yaml.cpp
