@@ -1,3 +1,11 @@
+linglong (1.11.0-1) unstable; urgency=medium
+
+  * release 1.11.0-1.
+  * Improve NVIDIA Driver fallback.
+  * Add extension force-loading function upstream.
+
+ -- LFRon <ronforever@qq.com>  Fri, 16 Jan 2026 21:00:20 +0800
+
 linglong (1.10.4-0) unstable; urgency=medium
 
   * release 1.10.4-0.

@@ -1334,7 +1334,8 @@ utils::error::Result<void> Builder::build(const QStringList &args) noexcept
 
     utils::error::Result<bool> success;
     if (!(success = buildStageBuild(args))) {
-        return LINGLONG_ERR("stage build error", success);
+        return LINGLONG_ERR(fmt::format("stage build error: {}", success.error().message()),
+                            success);
     }
     // skip build stage means skip all following stage
     if (!*success) {
