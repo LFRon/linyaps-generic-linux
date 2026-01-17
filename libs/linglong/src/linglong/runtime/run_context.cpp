@@ -1585,72 +1585,76 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder,
         return res;
     }
 
-    // === begin: merge Global->Base->App config ===
-    std::string currentAppId;
-    if (appLayer) currentAppId = appLayer->getReference().id;
-    else if (!targetId.empty()) currentAppId = targetId;
+    if (appLayer) {
+        // === begin: merge Global->Base->App config ===
+        std::string currentAppId = appLayer->getReference().id;
+        std::string currentBaseId;
+        if (baseLayer) currentBaseId = baseLayer->getReference().id;
 
-    std::string currentBaseId;
-    if (baseLayer) currentBaseId = baseLayer->getReference().id;
+        auto mergedCfg = loadMergedJsonWithBase(currentAppId, currentBaseId);
+        bool allowConfigDir = allowHostConfigAccess(mergedCfg, currentAppId);
+        std::optional<std::string> mergedPath;
 
-    auto mergedCfg = loadMergedJsonWithBase(currentAppId, currentBaseId);
-    bool allowConfigDir = allowHostConfigAccess(mergedCfg, currentAppId);
-    std::optional<std::string> mergedPath;
+        // 1) common env
+        {
+            std::vector<std::string> envKVs;
+            collectEnvFromJson(mergedCfg, envKVs);
+            mergedPath = appendEnvWithMergedPath(builder, envKVs, environment, mergedPath, "");
+        }
 
-    // 1) common env
-    {
-        std::vector<std::string> envKVs;
-        collectEnvFromJson(mergedCfg, envKVs);
-        mergedPath = appendEnvWithMergedPath(builder, envKVs, environment, mergedPath, "");
-    }
-
-    // 2) common filesystem
-    {
-        const auto &fsPolicy = filesystemPolicy();
-        if (fsPolicy.allowListConfigured) {
-            if (!fsPolicy.allowList.empty()) {
-                auto allowList = fsPolicy.allowList;
-                builder.addExtraMounts(std::move(allowList));
+        // 2) common filesystem
+        {
+            const auto &fsPolicy = filesystemPolicy();
+            if (fsPolicy.allowListConfigured) {
+                if (!fsPolicy.allowList.empty()) {
+                    auto allowList = fsPolicy.allowList;
+                    builder.addExtraMounts(std::move(allowList));
+                }
+            } else if (!fsPolicy.extra.empty()) {
+                auto extraMounts = fsPolicy.extra;
+                builder.addExtraMounts(std::move(extraMounts));
             }
-        } else if (!fsPolicy.extra.empty()) {
-            auto extraMounts = fsPolicy.extra;
-            builder.addExtraMounts(std::move(extraMounts));
         }
-    }
-    // === end: merge Global->Base->App config ===
+        // === end: merge Global->Base->App config ===
 
-    bool allowHostRoot = allowHostRootAccess(mergedCfg, currentAppId);
-    applyFilesystemPermissions(
-      builder, getPermissionSet(mergedCfg, "filesystem"), allowConfigDir, allowHostRoot);
-    applySocketPermissions(builder, getPermissionSet(mergedCfg, "sockets"));
-    applyPortalPermissions(getPermissionSet(mergedCfg, "portals"), environment);
-    applyDevicePermissions(builder, environment, getPermissionSet(mergedCfg, "devices"), mergedCfg);
+        bool allowHostRoot = allowHostRootAccess(mergedCfg, currentAppId);
+        applyFilesystemPermissions(
+          builder, getPermissionSet(mergedCfg, "filesystem"), allowConfigDir, allowHostRoot);
+        applySocketPermissions(builder, getPermissionSet(mergedCfg, "sockets"));
+        applyPortalPermissions(getPermissionSet(mergedCfg, "portals"), environment);
+        applyDevicePermissions(builder,
+                               environment,
+                               getPermissionSet(mergedCfg, "devices"),
+                               mergedCfg);
 
-    if (!environment.empty()) {
-        if (auto it = environment.find("PATH"); it != environment.end()) {
-            mergedPath = it->second;
+        if (!environment.empty()) {
+            if (auto it = environment.find("PATH"); it != environment.end()) {
+                mergedPath = it->second;
+            }
+            builder.appendEnv(environment);
         }
+
+        // === begin: command-level settings (highest priority) ===
+        {
+            std::string execName = currentAppId;
+            if (!execName.empty()) {
+                if (const json *node = pickCommandNode(mergedCfg, execName)) {
+                    CommandSettings cs = parseCommandSettings(currentAppId, *node);
+
+                    if (!cs.envKVs.empty()) {
+                        mergedPath = appendEnvWithMergedPath(
+                          builder, cs.envKVs, environment, mergedPath, "in command settings");
+                    }
+
+                    if (!cs.mounts.empty()) builder.addExtraMounts(cs.mounts);
+                    // TODO: when builder exposes API for entrypoint/cwd/args, apply here as well.
+                }
+            }
+        }
+        // === end: command-level settings ===
+    } else if (!environment.empty()) {
         builder.appendEnv(environment);
     }
-
-    // === begin: command-level settings (highest priority) ===
-    {
-        std::string execName = currentAppId;
-        if (!execName.empty()) {
-            if (const json *node = pickCommandNode(mergedCfg, execName)) {
-                CommandSettings cs = parseCommandSettings(currentAppId, *node);
-
-                if (!cs.envKVs.empty()) {
-                    mergedPath = appendEnvWithMergedPath(
-                      builder, cs.envKVs, environment, mergedPath, "in command settings");
-                }
-
-                if (!cs.mounts.empty()) builder.addExtraMounts(cs.mounts);
-                // TODO: when builder exposes API for entrypoint/cwd/args, apply here as well.
-            }
-        }
-    }
-    // === end: command-level settings ===
 
     detectDisplaySystem(builder);
 

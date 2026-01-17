@@ -8,7 +8,7 @@
 
 #include "linglong/extension/cdi.h"
 #include "linglong/extension/extension.h"
-#include "linglong/utils/command/cmd.h"
+#include "linglong/utils/cmd.h"
 
 #include <nlohmann/json.hpp>
 
@@ -208,15 +208,15 @@ bool isVendorLibraryName(const std::string &name)
 std::unordered_map<std::string, std::vector<std::filesystem::path>> readLdconfigCache()
 {
     std::unordered_map<std::string, std::vector<std::filesystem::path>> cache;
-    linglong::utils::command::Cmd cmd("ldconfig");
+    linglong::utils::Cmd cmd("ldconfig");
     if (!cmd.exists()) {
         return cache;
     }
-    auto output = cmd.exec(QStringList{ "-p" });
+    auto output = cmd.exec({ "-p" });
     if (!output) {
         return cache;
     }
-    std::stringstream stream(output->toStdString());
+    std::stringstream stream(*output);
     std::string line;
     while (std::getline(stream, line)) {
         auto arrow = line.find("=>");

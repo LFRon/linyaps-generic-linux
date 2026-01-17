@@ -117,6 +117,41 @@ std::vector<std::string> transformOldExec(int argc, char **argv) noexcept
     return res;
 }
 
+int lockCheck() noexcept
+{
+    std::error_code ec;
+    constexpr auto lock = "/run/linglong/lock";
+    auto fd = ::open(lock, O_RDONLY);
+    if (fd == -1) {
+        if (errno == ENOENT) {
+            return 0;
+        }
+
+        qCritical() << "failed to open lock" << lock << errorString(errno);
+        return -1;
+    }
+
+    auto closeFd = linglong::utils::finally::finally([fd]() {
+        ::close(fd);
+    });
+
+    struct flock lock_info{ .l_type = F_RDLCK,
+                            .l_whence = SEEK_SET,
+                            .l_start = 0,
+                            .l_len = 0,
+                            .l_pid = 0 };
+
+    if (::fcntl(fd, F_GETLK, &lock_info) == -1) {
+        qCritical() << "failed to get lock" << lock;
+        return -1;
+    }
+
+    if (lock_info.l_type == F_UNLCK) {
+        return 0;
+    }
+
+    return lock_info.l_pid;
+}
 
 // Validator for string inputs
 CLI::Validator validatorString{

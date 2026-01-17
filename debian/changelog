@@ -1,3 +1,10 @@
+linglong (1.11.0-2) unstable; urgency=medium
+
+  * Improve NVIDIA Driver fallback.
+  * Fix serious IPC issue.
+
+ -- LFRon <ronforever@qq.com>  Sat, 17 Jan 2026 09:09:20 +0800
+
 linglong (1.11.0-1) unstable; urgency=medium
 
   * release 1.11.0-1.

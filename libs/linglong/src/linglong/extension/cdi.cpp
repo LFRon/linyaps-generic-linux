@@ -6,7 +6,7 @@
 
 #include "linglong/extension/cdi.h"
 
-#include "linglong/utils/command/cmd.h"
+#include "linglong/utils/cmd.h"
 
 #include <nlohmann/json.hpp>
 
@@ -17,7 +17,7 @@ namespace linglong::extension::cdi {
 
 namespace {
 
-using linglong::utils::command::Cmd;
+using linglong::utils::Cmd;
 
 utils::error::Result<nlohmann::json> loadJsonFile(const std::filesystem::path &path)
 {
@@ -335,7 +335,7 @@ utils::error::Result<ContainerEdits> loadFromNvidiaCtk() noexcept
         return LINGLONG_ERR(output.error());
     }
 
-    return loadFromJson(output->toStdString());
+    return loadFromJson(*output);
 }
 
 utils::error::Result<ContainerEdits> loadFromHostNvidia() noexcept
