@@ -27,7 +27,7 @@ std::vector<std::filesystem::path> runtimeConfigBasesFallbackFirst();
 // across all roots, using JSON merge_patch.
 //
 // This is intentionally JSON-level and schema-agnostic so it can carry both
-// mainline RuntimeConfigure keys (env/ext_defs) and 1471-style keys
+// mainline RuntimeConfigure keys (env/ext_defs) and legacy keys
 // (permissions, filesystem, udev, whitelist, ...).
 //
 // On any read/parse failure for a single file, that file is ignored.

@@ -1331,8 +1331,7 @@ utils::error::Result<void> Builder::build(const QStringList &args) noexcept
 
     utils::error::Result<bool> success;
     if (!(success = buildStageBuild(args))) {
-        return LINGLONG_ERR(fmt::format("stage build error: {}", success.error().message()),
-                            success);
+        return LINGLONG_ERR("stage build error", success);
     }
     // skip build stage means skip all following stage
     if (!*success) {
@@ -1791,6 +1790,7 @@ utils::error::Result<void> Builder::run(std::vector<std::string> modules,
     if (!res) {
         return LINGLONG_ERR(res);
     }
+    runContext.setRuntimeConfigEnabled(false);
 
     auto *homeEnv = ::getenv("HOME");
     if (homeEnv == nullptr) {
@@ -1973,6 +1973,7 @@ utils::error::Result<void> Builder::runFromRepo(const package::Reference &ref,
     if (!res) {
         return LINGLONG_ERR(res);
     }
+    runContext.setRuntimeConfigEnabled(false);
 
     uid = getuid();
     gid = getgid();

@@ -7,15 +7,11 @@
 #include "linglong/common/display.h"
 #include "linglong/extension/extension.h"
 #include "linglong/runtime/container_builder.h"
+#include "linglong/runtime/host_nvidia_extension.h"
 #include "linglong/utils/log/log.h"
 #include "linglong/utils/runtime_config_json.h"
 
 #include <fmt/ranges.h>
-
-#include <fstream>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 
 #include <algorithm>
 #include <cctype>
@@ -27,22 +23,108 @@
 #include <optional>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include <unistd.h>
 
-#include <vector>
+#include <string_view>
 
 namespace linglong::runtime {
 
-// ===== begin: config helpers for env/mount/commands (Global->Base->App merge) =====
+namespace {
+
+constexpr std::string_view kNvidiaExtensionPrefix =
+  extension::ExtensionImplNVIDIADisplayDriver::Identify;
+
+bool isNvidiaDriverExtensionName(std::string_view name)
+{
+    return name.rfind(kNvidiaExtensionPrefix, 0) == 0;
+}
+
+std::vector<std::string> splitEnvPaths(const std::string &value)
+{
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= value.size()) {
+        size_t end = value.find(':', start);
+        auto part = (end == std::string::npos) ? value.substr(start) : value.substr(start, end - start);
+        if (!part.empty()) {
+            parts.push_back(part);
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return parts;
+}
+
+std::string mergePathValues(const std::string &preferred, const std::string &existing)
+{
+    std::vector<std::string> ordered;
+    std::unordered_set<std::string> seen;
+    for (const auto &part : splitEnvPaths(preferred)) {
+        if (seen.insert(part).second) {
+            ordered.push_back(part);
+        }
+    }
+    for (const auto &part : splitEnvPaths(existing)) {
+        if (seen.insert(part).second) {
+            ordered.push_back(part);
+        }
+    }
+    std::string merged;
+    for (size_t i = 0; i < ordered.size(); ++i) {
+        if (i) {
+            merged.push_back(':');
+        }
+        merged.append(ordered[i]);
+    }
+    return merged;
+}
+
+void mergeEnv(std::map<std::string, std::string> &base,
+              const std::map<std::string, std::string> &extra)
+{
+    static const std::unordered_set<std::string> pathKeys = {
+        "LD_LIBRARY_PATH",
+        "EGL_EXTERNAL_PLATFORM_CONFIG_DIRS",
+        "__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS",
+        "__EGL_VENDOR_LIBRARY_DIRS",
+        "VK_ICD_FILENAMES",
+        "VK_ADD_DRIVER_FILES",
+    };
+
+    for (const auto &pair : extra) {
+        const auto &key = pair.first;
+        const auto &value = pair.second;
+        if (value.empty()) {
+            continue;
+        }
+        if (pathKeys.find(key) != pathKeys.end()) {
+            auto it = base.find(key);
+            std::string merged = mergePathValues(value, it != base.end() ? it->second : "");
+            if (!merged.empty()) {
+                base[key] = merged;
+            }
+            continue;
+        }
+        auto it = base.find(key);
+        if (it == base.end() || it->second.empty()) {
+            base[key] = value;
+        }
+    }
+}
+
 using json = nlohmann::json;
 
-static json loadMergedJsonWithBase(const std::string &appId, const std::string &baseId)
+json loadMergedJsonWithBase(const std::string &appId, const std::string &baseId)
 {
     return linglong::utils::loadMergedRuntimeConfigJson(appId, baseId);
 }
 
-static std::string expandUserHome(const std::string &path)
+std::string expandUserHome(const std::string &path)
 {
     if (path == "~" || path.rfind("~/", 0) == 0) {
         const char *home = ::getenv("HOME");
@@ -53,7 +135,7 @@ static std::string expandUserHome(const std::string &path)
     return path;
 }
 
-static void collectEnvFromJson(const json &j, std::vector<std::string> &out)
+void collectEnvFromJson(const json &j, std::vector<std::string> &out)
 {
     if (!j.contains("env") || !j.at("env").is_object()) {
         return;
@@ -73,7 +155,7 @@ static void collectEnvFromJson(const json &j, std::vector<std::string> &out)
     }
 }
 
-static std::unordered_set<std::string> getPermissionSet(const json &root, const char *category)
+std::unordered_set<std::string> getPermissionSet(const json &root, const char *category)
 {
     std::unordered_set<std::string> enabled;
     auto it = root.find("permissions");
@@ -103,9 +185,9 @@ static std::unordered_set<std::string> getPermissionSet(const json &root, const 
     return enabled;
 }
 
-static bool addReadonlyMount(generator::ContainerCfgBuilder &builder,
-                             const std::filesystem::path &source,
-                             const std::string &destination)
+bool addReadonlyMount(generator::ContainerCfgBuilder &builder,
+                      const std::filesystem::path &source,
+                      const std::string &destination)
 {
     std::error_code ec;
     if (!std::filesystem::exists(source, ec)) {
@@ -125,7 +207,7 @@ static bool addReadonlyMount(generator::ContainerCfgBuilder &builder,
     return true;
 }
 
-static bool isConfigWhitelistMatch(const json &entry, const std::string &appId)
+bool isConfigWhitelistMatch(const json &entry, const std::string &appId)
 {
     if (!entry.is_string() || appId.empty()) {
         return false;
@@ -137,7 +219,7 @@ static bool isConfigWhitelistMatch(const json &entry, const std::string &appId)
     return false;
 }
 
-static bool allowHostConfigAccess(const json &root, const std::string &appId)
+bool allowHostConfigAccess(const json &root, const std::string &appId)
 {
     if (appId.empty()) {
         return false;
@@ -163,7 +245,7 @@ static bool allowHostConfigAccess(const json &root, const std::string &appId)
     return false;
 }
 
-static bool allowHostRootAccess(const json &root, const std::string &appId)
+bool allowHostRootAccess(const json &root, const std::string &appId)
 {
     auto it = root.find("host_root_whitelist");
     if (it == root.end()) {
@@ -186,10 +268,10 @@ static bool allowHostRootAccess(const json &root, const std::string &appId)
     return false;
 }
 
-static void applyFilesystemPermissions(generator::ContainerCfgBuilder &builder,
-                                       const std::unordered_set<std::string> &enabled,
-                                       bool allowLinglongConfig,
-                                       bool allowHostRoot)
+void applyFilesystemPermissions(generator::ContainerCfgBuilder &builder,
+                                const std::unordered_set<std::string> &enabled,
+                                bool allowLinglongConfig,
+                                bool allowHostRoot)
 {
     bool wantsHost = enabled.count("host") > 0;
     bool wantsHostOS = enabled.count("host-os") > 0;
@@ -234,8 +316,8 @@ static void applyFilesystemPermissions(generator::ContainerCfgBuilder &builder,
     }
 }
 
-static void applySocketPermissions(generator::ContainerCfgBuilder &builder,
-                                   const std::unordered_set<std::string> &enabled)
+void applySocketPermissions(generator::ContainerCfgBuilder &builder,
+                            const std::unordered_set<std::string> &enabled)
 {
     auto mountRwDir = [&](const std::filesystem::path &source, const std::string &destination) {
         std::error_code ec;
@@ -263,8 +345,8 @@ static void applySocketPermissions(generator::ContainerCfgBuilder &builder,
     }
 }
 
-static void applyPortalPermissions(const std::unordered_set<std::string> &enabled,
-                                   std::map<std::string, std::string> &environment)
+void applyPortalPermissions(const std::unordered_set<std::string> &enabled,
+                            std::map<std::string, std::string> &environment)
 {
     const std::vector<std::string> known = {
         "background", "notifications", "microphone", "speaker", "camera", "location"
@@ -282,11 +364,11 @@ static void applyPortalPermissions(const std::unordered_set<std::string> &enable
     }
 }
 
-static bool bindPath(generator::ContainerCfgBuilder &builder,
-                     const std::filesystem::path &source,
-                     const std::string &destination,
-                     bool recursive,
-                     bool readOnly)
+bool bindPath(generator::ContainerCfgBuilder &builder,
+              const std::filesystem::path &source,
+              const std::string &destination,
+              bool recursive,
+              bool readOnly)
 {
     std::error_code ec;
     if (!std::filesystem::exists(source, ec)) {
@@ -310,7 +392,7 @@ static bool bindPath(generator::ContainerCfgBuilder &builder,
     return true;
 }
 
-static void bindHidrawNodes(generator::ContainerCfgBuilder &builder)
+void bindHidrawNodes(generator::ContainerCfgBuilder &builder)
 {
     std::error_code ec;
     const std::filesystem::path devDir = "/dev";
@@ -329,7 +411,7 @@ static void bindHidrawNodes(generator::ContainerCfgBuilder &builder)
     }
 }
 
-static std::vector<std::pair<std::string, std::string>> collectCustomUdevRules(const json &root)
+std::vector<std::pair<std::string, std::string>> collectCustomUdevRules(const json &root)
 {
     std::vector<std::pair<std::string, std::string>> rules;
     auto it = root.find("udev_rules");
@@ -357,7 +439,7 @@ static std::vector<std::pair<std::string, std::string>> collectCustomUdevRules(c
     return rules;
 }
 
-static std::string sanitizeUdevRuleName(std::string raw)
+std::string sanitizeUdevRuleName(std::string raw)
 {
     if (raw.empty()) {
         return {};
@@ -378,7 +460,7 @@ static std::string sanitizeUdevRuleName(std::string raw)
     return raw;
 }
 
-static std::filesystem::path prepareCustomUdevRulesDir()
+std::filesystem::path prepareCustomUdevRulesDir()
 {
     auto uid = ::getuid();
     std::filesystem::path dir =
@@ -392,7 +474,7 @@ static std::filesystem::path prepareCustomUdevRulesDir()
     return dir;
 }
 
-static bool syncCustomUdevRules(const json &root, std::filesystem::path &outDir)
+bool syncCustomUdevRules(const json &root, std::filesystem::path &outDir)
 {
     auto rules = collectCustomUdevRules(root);
     if (rules.empty()) {
@@ -425,10 +507,10 @@ static bool syncCustomUdevRules(const json &root, std::filesystem::path &outDir)
     return true;
 }
 
-static void applyDevicePermissions(generator::ContainerCfgBuilder &builder,
-                                   std::map<std::string, std::string> &environment,
-                                   const std::unordered_set<std::string> &enabled,
-                                   const json &mergedCfg)
+void applyDevicePermissions(generator::ContainerCfgBuilder &builder,
+                            std::map<std::string, std::string> &environment,
+                            const std::unordered_set<std::string> &enabled,
+                            const json &mergedCfg)
 {
     if (enabled.empty()) {
         return;
@@ -447,17 +529,13 @@ static void applyDevicePermissions(generator::ContainerCfgBuilder &builder,
         bindPath(builder, "/lib/udev/rules.d", (hostRulesBase / "lib").string(), true, true);
         std::filesystem::path customDir;
         if (syncCustomUdevRules(mergedCfg, customDir)) {
-            bindPath(builder,
-                     customDir,
-                     (hostRulesBase / "custom").string(),
-                     true,
-                     true);
+            bindPath(builder, customDir, (hostRulesBase / "custom").string(), true, true);
         }
         environment["LINGLONG_UDEV_RULES_DIR"] = hostRulesBase.string();
     }
 }
 
-static std::optional<std::string> appendEnvWithMergedPath(
+std::optional<std::string> appendEnvWithMergedPath(
   linglong::generator::ContainerCfgBuilder &builder,
   const std::vector<std::string> &envKVs,
   const std::map<std::string, std::string> &baseEnv,
@@ -530,8 +608,8 @@ static std::optional<std::string> appendEnvWithMergedPath(
     return currentPath;
 }
 
-static std::vector<ocppi::runtime::config::types::Mount>
-parseFilesystemMounts(const std::string &appId, const json &arr)
+std::vector<ocppi::runtime::config::types::Mount> parseFilesystemMounts(const std::string &appId,
+                                                                       const json &arr)
 {
     using Mount = ocppi::runtime::config::types::Mount;
     std::vector<Mount> mounts;
@@ -581,16 +659,16 @@ parseFilesystemMounts(const std::string &appId, const json &arr)
         m.type = "bind";
         m.source = host;
         m.destination = target;
-        m.options = { { (mode == "rw" ? "rw" : "ro"), "rbind" } };
+        m.options = { (mode == "rw" ? "rw" : "ro"), "rbind" };
         mounts.emplace_back(std::move(m));
     }
 
     return mounts;
 }
 
-static void collectMountsFromJson(const std::string &appId,
-                                  const json &j,
-                                  std::vector<ocppi::runtime::config::types::Mount> &out)
+void collectMountsFromJson(const std::string &appId,
+                           const json &j,
+                           std::vector<ocppi::runtime::config::types::Mount> &out)
 {
     if (!j.contains("filesystem") || !j.at("filesystem").is_array()) {
         return;
@@ -599,17 +677,7 @@ static void collectMountsFromJson(const std::string &appId,
     std::move(mounts.begin(), mounts.end(), std::back_inserter(out));
 }
 
-struct CommandSettings
-{
-    std::vector<std::string> envKVs;
-    std::vector<ocppi::runtime::config::types::Mount> mounts;
-    std::vector<std::string> argsPrefix;
-    std::vector<std::string> argsSuffix;
-    std::optional<std::string> entrypoint;
-    std::optional<std::string> cwd;
-};
-
-static const json *pickCommandNode(const json &merged, const std::string &execName)
+const json *pickCommandNode(const json &merged, const std::string &execName)
 {
     if (!merged.contains("commands") || !merged.at("commands").is_object()) {
         return nullptr;
@@ -624,7 +692,7 @@ static const json *pickCommandNode(const json &merged, const std::string &execNa
     return nullptr;
 }
 
-static void loadStrVec(const json &node, const char *key, std::vector<std::string> &out)
+void loadStrVec(const json &node, const char *key, std::vector<std::string> &out)
 {
     if (!node.contains(key) || !node.at(key).is_array()) {
         return;
@@ -636,9 +704,9 @@ static void loadStrVec(const json &node, const char *key, std::vector<std::strin
     }
 }
 
-static CommandSettings parseCommandSettings(const std::string &appId, const json &node)
+RunContext::CommandSettings parseCommandSettings(const std::string &appId, const json &node)
 {
-    CommandSettings cs;
+    RunContext::CommandSettings cs;
     if (node.contains("env") && node.at("env").is_object()) {
         for (auto it = node.at("env").begin(); it != node.at("env").end(); ++it) {
             const std::string key = it.key();
@@ -668,7 +736,8 @@ static CommandSettings parseCommandSettings(const std::string &appId, const json
     }
     return cs;
 }
-// ===== end: config helpers =====
+
+} // namespace
 
 utils::error::Result<RuntimeLayer> RuntimeLayer::create(package::Reference ref, RunContext &context)
 {
@@ -742,6 +811,8 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
                                                const ResolveOptions &options)
 {
     LINGLONG_TRACE("resolve RunContext from runnable " + runnable.toString());
+    runtimeConfigEnabled = true;
+    hostNvidiaExtensionName.reset();
 
     auto layer = RuntimeLayer::create(runnable, *this);
     if (!layer) {
@@ -835,7 +906,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
         }
     }
 
-    // 手动解析多个扩展（仅来自命令行；默认扩展加载由主线机制负责）
+    // 手动解析多个扩展
     if (options.extensionRefs && !options.extensionRefs->empty()) {
         auto manualExtensionDef = makeManualExtensionDefine(*options.extensionRefs);
         if (!manualExtensionDef) {
@@ -857,8 +928,8 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
                                                const std::filesystem::path &buildOutput)
 {
     LINGLONG_TRACE("resolve RunContext from builder project " + target.package.id);
-
-    filesystemPolicyCache.reset();
+    runtimeConfigEnabled = false;
+    hostNvidiaExtensionName.reset();
 
     auto targetRef = package::Reference::fromBuilderProject(target);
     if (!targetRef) {
@@ -1087,8 +1158,11 @@ RunContext::resolveExtension(const std::vector<api::types::v1::ExtensionDefine> 
           repo.clearReference(*fuzzyRef, { .fallbackToRemote = false, .semanticMatching = true });
         if (!ref) {
             LogD("extension is not installed: {}", fuzzyRef->toString());
-            if (extension::isNvidiaDisplayDriverExtension(name)) {
-                hostExtensions.insert(name);
+            if (isNvidiaDriverExtensionName(name)) {
+                if (!hostNvidiaExtensionName) {
+                    hostNvidiaExtensionName = name;
+                    LogI("use host NVIDIA driver fallback for {}", name);
+                }
                 continue;
             }
             if (skipOnNotFound) {
@@ -1222,283 +1296,8 @@ void RunContext::detectDisplaySystem(generator::ContainerCfgBuilder &builder) no
     }
 }
 
-void RunContext::applyExtensionOverrides(
-  generator::ContainerCfgBuilder &builder,
-  std::vector<ocppi::runtime::config::types::Mount> &extensionMounts)
-{
-    if (extensionOverrides.empty()) {
-        return;
-    }
-
-    auto matchesPrefix = [](const std::string &extensionName, const std::string &prefix) -> bool {
-        if (extensionName == prefix) {
-            return true;
-        }
-        if (extensionName.size() <= prefix.size()) {
-            return false;
-        }
-        return extensionName.compare(0, prefix.size(), prefix) == 0
-          && extensionName[prefix.size()] == '.';
-    };
-    auto hasInstalledExtension = [&](const std::string &prefix) -> bool {
-        for (const auto &ext : extensionLayers) {
-            if (matchesPrefix(ext.getReference().id, prefix)) {
-                return true;
-            }
-        }
-        return false;
-    };
-    auto ensureExtensionRoot = [&](const std::string &rootName, bool has32Bit) {
-        if (rootName.empty()) {
-            return;
-        }
-        std::string destination = "/opt/extensions/" + rootName;
-        for (const auto &mount : extensionMounts) {
-            if (mount.destination == destination) {
-                return;
-            }
-        }
-        if (bundle.empty()) {
-            LogW("bundle path is empty, skip CDI extension mount for {}", rootName);
-            return;
-        }
-        std::filesystem::path sourceDir = bundle / "cdi-extensions" / rootName;
-        std::error_code ec;
-        std::filesystem::create_directories(sourceDir / "etc", ec);
-        if (ec) {
-            LogW("failed to create CDI extension dir {}: {}", sourceDir.string(), ec.message());
-            return;
-        }
-        std::filesystem::create_directories(sourceDir / "orig", ec);
-        if (has32Bit) {
-            std::filesystem::create_directories(sourceDir / "orig/32", ec);
-        }
-
-        std::ofstream ldConf(sourceDir / "etc/ld.so.conf", std::ios::binary | std::ios::out | std::ios::trunc);
-        if (ldConf.is_open()) {
-            ldConf << destination << "/orig\n";
-            if (has32Bit) {
-                ldConf << destination << "/orig/32\n";
-            }
-        }
-
-        extensionMounts.push_back(ocppi::runtime::config::types::Mount{
-          .destination = destination,
-          .gidMappings = {},
-          .options = { { "rbind", "ro" } },
-          .source = sourceDir.string(),
-          .type = "bind",
-          .uidMappings = {},
-        });
-    };
-    auto collectExtensionRoots = [&](const ExtensionOverride &overrideDef) {
-        std::unordered_map<std::string, bool> roots;
-        const std::string prefix = "/opt/extensions/";
-        for (const auto &mount : overrideDef.mounts) {
-            if (mount.destination.empty()) {
-                continue;
-            }
-            const auto &dest = mount.destination;
-            if (dest.rfind(prefix, 0) != 0) {
-                continue;
-            }
-            auto rest = dest.substr(prefix.size());
-            if (rest.empty()) {
-                continue;
-            }
-            auto slash = rest.find('/');
-            std::string root = (slash == std::string::npos) ? rest : rest.substr(0, slash);
-            if (root.empty()) {
-                continue;
-            }
-            bool has32 = dest.find("/orig/32") != std::string::npos;
-            auto it = roots.find(root);
-            if (it == roots.end()) {
-                roots.emplace(root, has32);
-            } else if (has32) {
-                it->second = true;
-            }
-        }
-        for (const auto &item : roots) {
-            ensureExtensionRoot(item.first, item.second);
-        }
-    };
-
-    std::unordered_map<std::string, std::filesystem::path> hostDirRelMap;
-    std::unordered_map<std::string, int> hostDirCounters;
-    std::unordered_set<std::string> hostDirMounts;
-    auto ensureHostDir = [&](const std::string &rootName,
-                             const std::filesystem::path &sourceDir,
-                             const std::vector<std::string> &options)
-      -> std::optional<std::filesystem::path> {
-        if (sourceDir.empty() || !sourceDir.is_absolute()) {
-            return std::nullopt;
-        }
-        auto key = rootName + "|" + sourceDir.lexically_normal().string();
-        auto it = hostDirRelMap.find(key);
-        if (it != hostDirRelMap.end()) {
-            return it->second;
-        }
-        int &counter = hostDirCounters[rootName];
-        auto rel = std::filesystem::path("host") / std::to_string(counter++);
-        hostDirRelMap.emplace(key, rel);
-        std::error_code ec;
-        std::filesystem::create_directories(bundle / "cdi-extensions" / rootName / rel, ec);
-        ec.clear();
-        auto mountKey = rootName + "|" + rel.string();
-        if (hostDirMounts.insert(mountKey).second) {
-            builder.addExtraMount(ocppi::runtime::config::types::Mount{
-              .destination = (std::filesystem::path("/opt/extensions") / rootName / rel).string(),
-              .gidMappings = {},
-              .options = options,
-              .source = sourceDir.string(),
-              .type = "bind",
-              .uidMappings = {},
-            });
-        }
-        return rel;
-    };
-
-    auto linkOverrideMount = [&](const ocppi::runtime::config::types::Mount &mount) -> bool {
-        if (!mount.source || mount.source->empty() || mount.destination.empty()) {
-            return false;
-        }
-        std::filesystem::path sourcePath{ *mount.source };
-        if (!sourcePath.is_absolute()) {
-            return false;
-        }
-        std::filesystem::path destPath{ mount.destination };
-        const std::string prefix = "/opt/extensions/";
-        auto destStr = destPath.generic_string();
-        if (destStr.rfind(prefix, 0) != 0) {
-            return false;
-        }
-        auto rest = destStr.substr(prefix.size());
-        auto slash = rest.find('/');
-        if (slash == std::string::npos) {
-            return false;
-        }
-        std::string rootName = rest.substr(0, slash);
-        if (rootName.empty()) {
-            return false;
-        }
-        if (bundle.empty()) {
-            return false;
-        }
-        std::filesystem::path rel =
-          destPath.lexically_relative(std::filesystem::path("/opt/extensions") / rootName);
-        if (rel.empty() || rel == "." || rel.native().rfind("..", 0) == 0) {
-            return false;
-        }
-        std::vector<std::string> options =
-          mount.options.value_or(std::vector<std::string>{ "rbind", "ro" });
-        auto relDir = ensureHostDir(rootName, sourcePath.parent_path(), options);
-        if (!relDir) {
-            return false;
-        }
-        std::filesystem::path destInRoot = bundle / "cdi-extensions" / rootName / rel;
-        std::filesystem::path target =
-          std::filesystem::path("/opt/extensions") / rootName / *relDir / sourcePath.filename();
-        std::error_code ec;
-        std::filesystem::create_directories(destInRoot.parent_path(), ec);
-        ec.clear();
-        if (std::filesystem::is_symlink(destInRoot, ec)) {
-            auto existing = std::filesystem::read_symlink(destInRoot, ec);
-            if (!ec && existing == target) {
-                ec.clear();
-                return true;
-            }
-        }
-        ec.clear();
-        if (std::filesystem::exists(destInRoot, ec)) {
-            std::filesystem::remove(destInRoot, ec);
-        }
-        ec.clear();
-        std::filesystem::create_symlink(target, destInRoot, ec);
-        if (ec) {
-            LogW("failed to create CDI link {} -> {}: {}",
-                 destInRoot.string(),
-                 target.string(),
-                 ec.message());
-            ec.clear();
-            return false;
-        }
-        auto destFilename = destPath.filename();
-        auto sourceFilename = sourcePath.filename();
-        if (!sourceFilename.empty() && destFilename != sourceFilename) {
-            std::filesystem::path aliasPath = destInRoot.parent_path() / sourceFilename;
-            std::filesystem::path aliasTarget = destFilename;
-            std::error_code aliasEc;
-            bool needsCreate = true;
-            if (std::filesystem::is_symlink(aliasPath, aliasEc)) {
-                auto existing = std::filesystem::read_symlink(aliasPath, aliasEc);
-                if (!aliasEc && existing == aliasTarget) {
-                    needsCreate = false;
-                }
-            }
-            aliasEc.clear();
-            if (needsCreate) {
-                if (std::filesystem::exists(aliasPath, aliasEc)) {
-                    std::filesystem::remove(aliasPath, aliasEc);
-                }
-                aliasEc.clear();
-                std::filesystem::create_symlink(aliasTarget, aliasPath, aliasEc);
-                if (aliasEc) {
-                    LogW("failed to create CDI alias {} -> {}: {}",
-                         aliasPath.string(),
-                         aliasTarget.string(),
-                         aliasEc.message());
-                }
-            }
-        }
-
-        return true;
-    };
-
-    for (const auto &overrideDef : extensionOverrides) {
-        bool installed = hasInstalledExtension(overrideDef.name);
-        bool isNvidiaOverride = extension::isNvidiaDisplayDriverExtension(overrideDef.name);
-        if (installed && (overrideDef.fallbackOnly || isNvidiaOverride)) {
-            continue;
-        }
-
-        collectExtensionRoots(overrideDef);
-
-        for (const auto &env : overrideDef.env) {
-            environment[env.first] = env.second;
-        }
-
-        for (auto mount : overrideDef.mounts) {
-            if (mount.destination.empty() || !mount.source) {
-                continue;
-            }
-            if (!mount.options || mount.options->empty()) {
-                mount.options = std::vector<std::string>{ "rbind", "ro" };
-            }
-            if (!mount.type) {
-                mount.type = "bind";
-            }
-            if (linkOverrideMount(mount)) {
-                continue;
-            }
-            builder.addExtraMount(mount);
-        }
-
-        for (const auto &node : overrideDef.deviceNodes) {
-            ocppi::runtime::config::types::Mount mount = {
-                .destination = node.path,
-                .options = { { "bind" } },
-                .source = node.hostPath.value_or(node.path),
-                .type = "bind",
-            };
-            builder.addExtraMount(mount);
-        }
-    }
-}
-
-utils::error::Result<void>
-RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder,
-                           const std::string &bundleSuffix)
+utils::error::Result<void> RunContext::fillContextCfg(
+  linglong::generator::ContainerCfgBuilder &builder, const std::string &bundleSuffix)
 {
     LINGLONG_TRACE("fill ContainerCfgBuilder with run context");
 
@@ -1535,6 +1334,7 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder,
     }
 
     std::vector<ocppi::runtime::config::types::Mount> extensionMounts{};
+    std::optional<HostNvidiaExtension> hostNvidiaExtension;
     if (extensionOutput) {
         extensionMounts.push_back(ocppi::runtime::config::types::Mount{
           .destination = "/opt/extensions/" + targetId,
@@ -1574,8 +1374,40 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder,
         });
     }
 
-    setupHostNvidiaFallbacks(builder, extensionMounts);
-    applyExtensionOverrides(builder, extensionMounts);
+    if (hostNvidiaExtensionName) {
+        auto hostExt = prepareHostNvidiaExtension(bundle, *hostNvidiaExtensionName);
+        if (!hostExt) {
+            return LINGLONG_ERR(hostExt);
+        }
+        if (hostExt->has_value()) {
+            hostNvidiaExtension = std::move(*hostExt);
+            bool mountHostExtension =
+              !(extensionOutput && hostNvidiaExtension->name == targetId);
+            if (mountHostExtension) {
+                extensionMounts.push_back(ocppi::runtime::config::types::Mount{
+                  .destination = "/opt/extensions/" + hostNvidiaExtension->name,
+                  .gidMappings = {},
+                  .options = { { "rbind", "ro" } },
+                  .source = hostNvidiaExtension->root.string(),
+                  .type = "bind",
+                  .uidMappings = {},
+                });
+                for (const auto &node : hostNvidiaExtension->deviceNodes) {
+                    ocppi::runtime::config::types::Mount mount = {
+                        .destination = node.path,
+                        .options = { { "bind" } },
+                        .source = node.hostPath.value_or(node.path),
+                        .type = "bind",
+                    };
+                    builder.addExtraMount(mount);
+                }
+                if (!hostNvidiaExtension->extraMounts.empty()) {
+                    builder.addExtraMounts(hostNvidiaExtension->extraMounts);
+                }
+                mergeEnv(environment, hostNvidiaExtension->env);
+            }
+        }
+    }
     if (!extensionMounts.empty()) {
         builder.setExtensionMounts(extensionMounts);
     }
@@ -1585,14 +1417,16 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder,
         return res;
     }
 
-    if (appLayer) {
-        // === begin: merge Global->Base->App config ===
-        std::string currentAppId = appLayer->getReference().id;
-        std::string currentBaseId;
-        if (baseLayer) currentBaseId = baseLayer->getReference().id;
+    if (runtimeConfigEnabled) {
+        builder.bindIPC();
+        std::string currentApp = currentAppId();
+        std::string currentBase;
+        if (baseLayer) {
+            currentBase = baseLayer->getReference().id;
+        }
 
-        auto mergedCfg = loadMergedJsonWithBase(currentAppId, currentBaseId);
-        bool allowConfigDir = allowHostConfigAccess(mergedCfg, currentAppId);
+        auto mergedCfg = loadMergedJsonWithBase(currentApp, currentBase);
+        bool allowConfigDir = allowHostConfigAccess(mergedCfg, currentApp);
         std::optional<std::string> mergedPath;
 
         // 1) common env
@@ -1603,29 +1437,28 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder,
         }
 
         // 2) common filesystem
-        {
-            const auto &fsPolicy = filesystemPolicy();
-            if (fsPolicy.allowListConfigured) {
-                if (!fsPolicy.allowList.empty()) {
-                    auto allowList = fsPolicy.allowList;
+        if (auto it = mergedCfg.find("filesystem_allow_only"); it != mergedCfg.end()) {
+            if (it->is_array()) {
+                auto allowList = parseFilesystemMounts(currentApp, *it);
+                if (!allowList.empty()) {
                     builder.addExtraMounts(std::move(allowList));
                 }
-            } else if (!fsPolicy.extra.empty()) {
-                auto extraMounts = fsPolicy.extra;
-                builder.addExtraMounts(std::move(extraMounts));
+            }
+        } else if (auto it = mergedCfg.find("filesystem"); it != mergedCfg.end()) {
+            if (it->is_array()) {
+                auto extraMounts = parseFilesystemMounts(currentApp, *it);
+                if (!extraMounts.empty()) {
+                    builder.addExtraMounts(std::move(extraMounts));
+                }
             }
         }
-        // === end: merge Global->Base->App config ===
 
-        bool allowHostRoot = allowHostRootAccess(mergedCfg, currentAppId);
+        bool allowHostRoot = allowHostRootAccess(mergedCfg, currentApp);
         applyFilesystemPermissions(
           builder, getPermissionSet(mergedCfg, "filesystem"), allowConfigDir, allowHostRoot);
         applySocketPermissions(builder, getPermissionSet(mergedCfg, "sockets"));
         applyPortalPermissions(getPermissionSet(mergedCfg, "portals"), environment);
-        applyDevicePermissions(builder,
-                               environment,
-                               getPermissionSet(mergedCfg, "devices"),
-                               mergedCfg);
+        applyDevicePermissions(builder, environment, getPermissionSet(mergedCfg, "devices"), mergedCfg);
 
         if (!environment.empty()) {
             if (auto it = environment.find("PATH"); it != environment.end()) {
@@ -1634,24 +1467,19 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder,
             builder.appendEnv(environment);
         }
 
-        // === begin: command-level settings (highest priority) ===
-        {
-            std::string execName = currentAppId;
-            if (!execName.empty()) {
-                if (const json *node = pickCommandNode(mergedCfg, execName)) {
-                    CommandSettings cs = parseCommandSettings(currentAppId, *node);
-
-                    if (!cs.envKVs.empty()) {
-                        mergedPath = appendEnvWithMergedPath(
-                          builder, cs.envKVs, environment, mergedPath, "in command settings");
-                    }
-
-                    if (!cs.mounts.empty()) builder.addExtraMounts(cs.mounts);
-                    // TODO: when builder exposes API for entrypoint/cwd/args, apply here as well.
-                }
+        // 3) command-level settings (highest priority)
+        if (auto settings = commandSettings()) {
+            if (!settings->envKVs.empty()) {
+                mergedPath = appendEnvWithMergedPath(builder,
+                                                     settings->envKVs,
+                                                     environment,
+                                                     mergedPath,
+                                                     "in command settings");
+            }
+            if (!settings->mounts.empty()) {
+                builder.addExtraMounts(settings->mounts);
             }
         }
-        // === end: command-level settings ===
     } else if (!environment.empty()) {
         builder.appendEnv(environment);
     }
@@ -1786,9 +1614,6 @@ api::types::v1::ContainerProcessStateInfo RunContext::stateInfo()
     for (auto &ext : extensionLayers) {
         state.extensions->push_back(ext.getReference().toString());
     }
-    for (const auto &name : hostExtensions) {
-        state.extensions->push_back(name);
-    }
 
     return state;
 }
@@ -1813,35 +1638,29 @@ std::string RunContext::currentAppId() const
     return targetId;
 }
 
-const RunContext::FilesystemPolicy &RunContext::filesystemPolicy() const
+std::optional<RunContext::CommandSettings> RunContext::commandSettings() const
 {
-    if (!filesystemPolicyCache) {
-        FilesystemPolicy policy;
-
-        auto appId = currentAppId();
-        std::string baseId;
-        if (baseLayer) {
-            baseId = baseLayer->getReference().id;
-        }
-
-        auto mergedCfg = loadMergedJsonWithBase(appId, baseId);
-        if (auto it = mergedCfg.find("filesystem_allow_only"); it != mergedCfg.end()) {
-            policy.allowListConfigured = true;
-            if (it->is_array()) {
-                policy.allowList = parseFilesystemMounts(appId, *it);
-            }
-        }
-
-        if (!policy.allowListConfigured) {
-            if (auto it = mergedCfg.find("filesystem"); it != mergedCfg.end()) {
-                policy.extra = parseFilesystemMounts(appId, *it);
-            }
-        }
-
-        filesystemPolicyCache = std::move(policy);
+    if (!runtimeConfigEnabled) {
+        return std::nullopt;
     }
 
-    return *filesystemPolicyCache;
+    auto appId = currentAppId();
+    if (appId.empty()) {
+        return std::nullopt;
+    }
+
+    std::string baseId;
+    if (baseLayer) {
+        baseId = baseLayer->getReference().id;
+    }
+
+    auto mergedCfg = loadMergedJsonWithBase(appId, baseId);
+    const json *node = pickCommandNode(mergedCfg, appId);
+    if (!node) {
+        return std::nullopt;
+    }
+
+    return parseCommandSettings(appId, *node);
 }
 
 utils::error::Result<std::filesystem::path> RunContext::getRuntimeLayerPath() const

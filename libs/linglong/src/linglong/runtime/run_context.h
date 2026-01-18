@@ -8,7 +8,6 @@
 
 #include "linglong/api/types/v1/BuilderProject.hpp"
 #include "linglong/api/types/v1/ContainerProcessStateInfo.hpp"
-#include "linglong/api/types/v1/DeviceNode.hpp"
 #include "linglong/api/types/v1/ExtensionDefine.hpp"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/repo/ostree_repo.h"
@@ -22,7 +21,6 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace linglong::runtime {
@@ -74,23 +72,17 @@ struct ResolveOptions
       externalExtensionDefs;
 };
 
-struct ExtensionOverride
-{
-    std::string name;
-    bool fallbackOnly{ false };
-    std::map<std::string, std::string> env;
-    std::vector<ocppi::runtime::config::types::Mount> mounts;
-    std::vector<api::types::v1::DeviceNode> deviceNodes;
-};
-
 class RunContext
 {
 public:
-    struct FilesystemPolicy
+    struct CommandSettings
     {
-        bool allowListConfigured{ false };
-        std::vector<ocppi::runtime::config::types::Mount> allowList;
-        std::vector<ocppi::runtime::config::types::Mount> extra;
+        std::vector<std::string> envKVs;
+        std::vector<ocppi::runtime::config::types::Mount> mounts;
+        std::vector<std::string> argsPrefix;
+        std::vector<std::string> argsSuffix;
+        std::optional<std::string> entrypoint;
+        std::optional<std::string> cwd;
     };
 
     RunContext(repo::OSTreeRepo &r)
@@ -112,8 +104,8 @@ public:
 
     repo::OSTreeRepo &getRepo() const { return repo; }
 
-    std::string currentAppId() const;
-    const FilesystemPolicy &filesystemPolicy() const;
+    std::optional<CommandSettings> commandSettings() const;
+    void setRuntimeConfigEnabled(bool enabled) { runtimeConfigEnabled = enabled; }
 
     const std::string &getContainerId() const { return containerID; }
 
@@ -130,13 +122,6 @@ public:
 
     utils::error::Result<api::types::v1::RepositoryCacheLayersItem> getCachedAppItem();
 
-    void setExtensionOverrides(std::vector<ExtensionOverride> overrides)
-    {
-        extensionOverrides = std::move(overrides);
-    }
-
-    void setHostNvidiaFallbackEnabled(bool enabled) { hostNvidiaFallbackEnabled = enabled; }
-
     bool hasRuntime() const { return !!runtimeLayer; }
 
 private:
@@ -151,17 +136,13 @@ private:
                      bool skipOnNotFound = false);
     utils::error::Result<void> fillExtraAppMounts(generator::ContainerCfgBuilder &builder);
     void detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept;
-    void setupHostNvidiaFallbacks(
-      generator::ContainerCfgBuilder &builder,
-      std::vector<ocppi::runtime::config::types::Mount> &extensionMounts);
-    void applyExtensionOverrides(generator::ContainerCfgBuilder &builder,
-                                 std::vector<ocppi::runtime::config::types::Mount> &extensionMounts);
     utils::error::Result<std::vector<api::types::v1::ExtensionDefine>>
     makeManualExtensionDefine(const std::vector<std::string> &refs);
     std::vector<api::types::v1::ExtensionDefine> matchedExtensionDefines(
       const package::Reference &ref,
       const std::optional<std::map<std::string, std::vector<api::types::v1::ExtensionDefine>>>
         &externalExtensionDefs);
+    std::string currentAppId() const;
 
     repo::OSTreeRepo &repo;
     std::unordered_map<SecurityContextType, std::unique_ptr<SecurityContext>> securityContexts;
@@ -169,19 +150,18 @@ private:
     std::optional<RuntimeLayer> runtimeLayer;
     std::optional<RuntimeLayer> appLayer;
     std::list<RuntimeLayer> extensionLayers;
-    std::unordered_set<std::string> hostExtensions;
-    std::vector<ExtensionOverride> extensionOverrides;
-    bool hostNvidiaFallbackEnabled{ true };
+    std::optional<std::string> hostNvidiaExtensionName;
 
     std::string targetId;
     std::optional<std::filesystem::path> appOutput;
     std::optional<std::filesystem::path> runtimeOutput;
     std::optional<std::filesystem::path> extensionOutput;
 
+    bool runtimeConfigEnabled{ false };
+
     std::string containerID;
     std::filesystem::path bundle;
     std::map<std::string, std::string> environment;
-    mutable std::optional<FilesystemPolicy> filesystemPolicyCache;
 };
 
 } // namespace linglong::runtime

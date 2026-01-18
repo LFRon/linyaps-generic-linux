@@ -1,3 +1,11 @@
+linglong (1.11.0-3) unstable; urgency=medium
+
+  * Improve NVIDIA Driver fallback.
+  * Mainline config from upstream.
+  * Fix known issues.
+
+ -- LFRon <ronforever@qq.com>  Sun, 18 Jan 2026 09:54:20 +0800
+
 linglong (1.11.0-2) unstable; urgency=medium
 
   * Improve NVIDIA Driver fallback.
