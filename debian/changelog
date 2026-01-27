@@ -1,3 +1,10 @@
+linglong (1.11.1-1) unstable; urgency=medium
+
+  * Improve Tray icon load.
+  * Follow 1.11.1 update upstream.
+
+ -- LFRon <ronforever@qq.com>  Tue, 27 Jan 2026 21:52:20 +0800
+
 linglong (1.11.0-3) unstable; urgency=medium
 
   * Improve NVIDIA Driver fallback.

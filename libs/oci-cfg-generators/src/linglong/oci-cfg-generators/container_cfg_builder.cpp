@@ -277,6 +277,26 @@ bool ContainerCfgBuilder::buildXDGRuntime() noexcept
                                   .type = "bind" });
     environment["XDG_RUNTIME_DIR"] = *containerXDGRuntimeDir;
 
+    // Best-effort: share $XDG_RUNTIME_DIR/tray-icon with host for tray-icon users
+    // (e.g. Tauri) that write the icon to disk and expose the path via SNI.
+    auto hostXDGRuntimeDir = common::xdg::getXDGRuntimeDir();
+    if (!hostXDGRuntimeDir.empty()) {
+        auto hostTrayDir = hostXDGRuntimeDir / "tray-icon";
+        std::filesystem::create_directories(hostTrayDir, ec);
+        if (!ec) {
+            // Ensure destination exists inside the container runtime dir.
+            std::filesystem::create_directories(hostXDGRuntimeMountPoint / "tray-icon", ec);
+            if (!ec) {
+                runMount->emplace_back(Mount{
+                  .destination = (*containerXDGRuntimeDir / "tray-icon").string(),
+                  .options = string_list{ "bind" },
+                  .source = hostTrayDir,
+                  .type = "bind",
+                });
+            }
+        }
+    }
+
     return true;
 }
 
@@ -1363,6 +1383,19 @@ bool ContainerCfgBuilder::buildEnv() noexcept
 
     if (appPath) {
         environment["LINGLONG_APPID"] = appId;
+        environment["LINGLONG_APP_FILES_HOST"] = appPath->string();
+    }
+
+    auto iconRewriteIt = environment.find("LINGLONG_ICON_REWRITE_LIB");
+    if (iconRewriteIt != environment.end() && !iconRewriteIt->second.empty()) {
+        const auto &libPath = iconRewriteIt->second;
+        auto ldPreloadIt = environment.find("LD_PRELOAD");
+        if (ldPreloadIt == environment.end() || ldPreloadIt->second.empty()) {
+            environment["LD_PRELOAD"] = libPath;
+        } else if (ldPreloadIt->second.find(libPath) == std::string::npos) {
+            environment["LD_PRELOAD"] = libPath + ":" + ldPreloadIt->second;
+        }
+        environment.erase(iconRewriteIt);
     }
 
     auto envShFile = bundlePath / "00env.sh";

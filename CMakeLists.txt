@@ -321,6 +321,7 @@ pfl_add_libraries(
   common
   dbus-api
   utils
+  icon-rewrite
   ocppi
   linglong
   oci-cfg-generators

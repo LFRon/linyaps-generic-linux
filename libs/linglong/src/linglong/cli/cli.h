@@ -195,9 +195,19 @@ private:
     [[nodiscard]] static utils::error::Result<void>
     RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept;
     [[nodiscard]] std::vector<std::string> filePathMapping(
-      const std::vector<std::string> &command, const RunOptions &options) const noexcept;
-    static std::string mappingFile(const std::filesystem::path &file) noexcept;
-    static std::string mappingUrl(std::string_view url) noexcept;
+      const std::vector<std::string> &command,
+      const RunOptions &options,
+      bool allowHostRoot,
+      bool allowHostOs,
+      bool allowHostEtc) const noexcept;
+    static std::string mappingFile(const std::filesystem::path &file,
+                                   bool allowHostRoot,
+                                   bool allowHostOs,
+                                   bool allowHostEtc) noexcept;
+    static std::string mappingUrl(std::string_view url,
+                                  bool allowHostRoot,
+                                  bool allowHostOs,
+                                  bool allowHostEtc) noexcept;
 
     static void filterPackageInfosByType(
       std::map<std::string, std::vector<api::types::v1::PackageInfoV2>> &list,

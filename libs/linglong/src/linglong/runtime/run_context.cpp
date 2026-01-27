@@ -4,6 +4,7 @@
 
 #include "run_context.h"
 
+#include "configure.h"
 #include "linglong/common/display.h"
 #include "linglong/extension/extension.h"
 #include "linglong/runtime/container_builder.h"
@@ -82,6 +83,23 @@ std::string mergePathValues(const std::string &preferred, const std::string &exi
         merged.append(ordered[i]);
     }
     return merged;
+}
+
+std::optional<std::string> findIconRewriteLib()
+{
+    std::string installLib = std::string(LINGLONG_LIBDIR) + "/libll-icon-rewrite.so";
+    static const std::vector<std::string> candidates = {
+        installLib,
+        "/usr/lib/libll-icon-rewrite.so",
+        "/usr/lib64/libll-icon-rewrite.so",
+    };
+    std::error_code ec;
+    for (const auto &path : candidates) {
+        if (std::filesystem::exists(path, ec)) {
+            return path;
+        }
+    }
+    return std::nullopt;
 }
 
 void mergeEnv(std::map<std::string, std::string> &base,
@@ -311,6 +329,13 @@ void applyFilesystemPermissions(generator::ContainerCfgBuilder &builder,
               .mapPrivate(std::string{ home } + "/.gnupg", true);
             if (!allowLinglongConfig) {
                 builder.mapPrivate(std::string{ home } + "/.config/linglong", true);
+                if (allowHostRoot) {
+                    std::filesystem::path hostCfg =
+                      std::filesystem::path("/run/host/rootfs")
+                      / std::filesystem::path(home).lexically_relative("/")
+                      / ".config/linglong";
+                    builder.mapPrivate(hostCfg.string(), true);
+                }
             }
         }
     }
@@ -1333,6 +1358,16 @@ utils::error::Result<void> RunContext::fillContextCfg(
         }
     }
 
+    if (auto libPath = findIconRewriteLib(); libPath) {
+        builder.addExtraMount(ocppi::runtime::config::types::Mount{
+          .destination = *libPath,
+          .options = { { "bind", "ro" } },
+          .source = *libPath,
+          .type = "bind",
+        });
+        builder.appendEnv("LINGLONG_ICON_REWRITE_LIB", *libPath, true);
+    }
+
     std::vector<ocppi::runtime::config::types::Mount> extensionMounts{};
     std::optional<HostNvidiaExtension> hostNvidiaExtension;
     if (extensionOutput) {
@@ -1661,6 +1696,44 @@ std::optional<RunContext::CommandSettings> RunContext::commandSettings() const
     }
 
     return parseCommandSettings(appId, *node);
+}
+
+RunContext::HostAccessPolicy RunContext::hostAccessPolicy() const
+{
+    HostAccessPolicy policy;
+    if (!runtimeConfigEnabled) {
+        return policy;
+    }
+
+    auto appId = currentAppId();
+    if (appId.empty()) {
+        return policy;
+    }
+
+    std::string baseId;
+    if (baseLayer) {
+        baseId = baseLayer->getReference().id;
+    }
+
+    auto mergedCfg = loadMergedJsonWithBase(appId, baseId);
+    auto enabled = getPermissionSet(mergedCfg, "filesystem");
+
+    bool wantsHost = enabled.count("host") > 0;
+    bool wantsHostOS = enabled.count("host-os") > 0;
+    bool wantsHostEtc = enabled.count("host-etc") > 0;
+    bool wantsHome = enabled.count("home") > 0;
+
+    if (!wantsHost && !wantsHostOS && !wantsHostEtc && !wantsHome) {
+        wantsHost = true;
+        wantsHostOS = true;
+        wantsHome = true;
+    }
+
+    policy.allowHostOs = wantsHostOS;
+    policy.allowHostEtc = wantsHostEtc;
+    policy.allowHostRoot = wantsHost && allowHostRootAccess(mergedCfg, appId);
+
+    return policy;
 }
 
 utils::error::Result<std::filesystem::path> RunContext::getRuntimeLayerPath() const
