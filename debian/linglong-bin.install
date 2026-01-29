@@ -4,6 +4,8 @@ etc/profile.d/linglong.sh
 usr/bin/ll-cli
 usr/bin/llpkg
 usr/lib/linglong/*
+usr/lib/x86_64-linux-gnu/libll-icon-rewrite.so
+usr/lib/x86_64-linux-gnu/libll-icon-rewrite.so.1.11.1
 usr/lib/systemd/system-environment-generators/61-linglong
 usr/lib/systemd/user-generators/linglong-user-systemd-generator
 usr/lib/systemd/system/org.deepin.linglong.PackageManager.service lib/systemd/system/
@@ -17,6 +19,7 @@ usr/libexec/linglong/font-cache-generator
 usr/libexec/linglong/ll-dialog
 usr/libexec/linglong/dialog/99-linglong-permission
 usr/libexec/linglong/ll-init
+usr/libexec/linglong/ll-driver-detect
 usr/share/bash-completion/completions/ll-cli
 usr/share/zsh/vendor-completions/_ll-cli
 usr/share/dbus-1/system-services/org.deepin.linglong.PackageManager1.service
