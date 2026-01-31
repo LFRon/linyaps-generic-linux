@@ -6,13 +6,31 @@
 
 #include <gtest/gtest.h>
 
-#include "common/tempdir.h"
 #include "driver_detection_config.h"
 
 #include <filesystem>
 
+namespace {
+std::filesystem::path GetTempFilePath()
+{
+    return std::filesystem::temp_directory_path() / ("test_config.json");
+}
+} // namespace
+
 class DriverDetectionConfigTest : public ::testing::Test
 {
+protected:
+    void SetUp() override
+    {
+        configFilePath = GetTempFilePath();
+        // Ensure the file does not exist initially
+        std::filesystem::remove(configFilePath);
+        ASSERT_FALSE(configFilePath.empty()) << "Failed to create temporary directory";
+    }
+
+    void TearDown() override { std::filesystem::remove(configFilePath); }
+
+    std::filesystem::path configFilePath;
 };
 
 TEST_F(DriverDetectionConfigTest, DefaultConstruction)
@@ -26,8 +44,6 @@ TEST_F(DriverDetectionConfigTest, DefaultConstruction)
 
 TEST_F(DriverDetectionConfigTest, ConfigManagerConstruction)
 {
-    TempDir temp_dir;
-    auto configFilePath = temp_dir.path() / "test_config.json";
     using namespace linglong::driver::detect;
 
     // Test that construction works
@@ -36,8 +52,6 @@ TEST_F(DriverDetectionConfigTest, ConfigManagerConstruction)
 
 TEST_F(DriverDetectionConfigTest, LoadNonExistentConfig)
 {
-    TempDir temp_dir;
-    auto configFilePath = temp_dir.path() / "test_config.json";
     using namespace linglong::driver::detect;
 
     DriverDetectionConfigManager manager(configFilePath.string());
@@ -48,8 +62,6 @@ TEST_F(DriverDetectionConfigTest, LoadNonExistentConfig)
 
 TEST_F(DriverDetectionConfigTest, SaveAndLoadConfig)
 {
-    TempDir temp_dir;
-    auto configFilePath = temp_dir.path() / "test_config.json";
     using namespace linglong::driver::detect;
 
     // Create manager and modify config

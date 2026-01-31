@@ -10,7 +10,6 @@
 #include "linglong/utils/error/error.h"
 
 #include <QFile>
-#include <QSharedPointer>
 
 namespace linglong::package {
 

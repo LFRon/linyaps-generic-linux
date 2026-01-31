@@ -85,6 +85,13 @@ public:
         std::optional<std::string> cwd;
     };
 
+    struct HostAccessPolicy
+    {
+        bool allowHostRoot{ false };
+        bool allowHostOs{ false };
+        bool allowHostEtc{ false };
+    };
+
     RunContext(repo::OSTreeRepo &r)
         : repo(r)
     {
@@ -105,6 +112,7 @@ public:
     repo::OSTreeRepo &getRepo() const { return repo; }
 
     std::optional<CommandSettings> commandSettings() const;
+    HostAccessPolicy hostAccessPolicy() const;
     void setRuntimeConfigEnabled(bool enabled) { runtimeConfigEnabled = enabled; }
 
     const std::string &getContainerId() const { return containerID; }

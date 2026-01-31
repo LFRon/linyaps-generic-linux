@@ -12,10 +12,12 @@
 
 #include <atomic>
 
-namespace linglong::common::global {
+namespace linglong::utils::global {
 
-void applicationInitialize();
+void applicationInitialize(bool appForceStderrLogging = false);
+void installMessageHandler();
 bool linglongInstalled();
+void cancelAllTask() noexcept;
 void initLinyapsLogSystem(linglong::utils::log::LogBackend backend);
 
 class GlobalTaskControl : public QObject
@@ -32,4 +34,4 @@ private:
     std::atomic<bool> cancelFlag = false;
 };
 
-} // namespace linglong::common::global
+} // namespace linglong::utils::global

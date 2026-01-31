@@ -6,8 +6,6 @@
 
 #include "linglong/package/architecture.h"
 
-#include "linglong/utils/log/log.h"
-
 #include <elf.h>
 
 #include <QSysInfo>
@@ -117,7 +115,7 @@ bool isNewWorldLoongArch()
     // 打开可执行文件
     std::ifstream file("/proc/self/exe", std::ios::binary);
     if (!file) {
-        LogE("Failed to open executable file");
+        qCritical() << "Failed to open executable file";
         isLoongArch = false;
         return false;
     }
@@ -126,7 +124,7 @@ bool isNewWorldLoongArch()
     Elf64_Ehdr ehdr;
     file.read(reinterpret_cast<char *>(&ehdr), sizeof(ehdr));
     if (!file || std::memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0) {
-        LogE("Not a valid ELF file.");
+        qCritical() << "Not a valid ELF file.";
         isLoongArch = false;
         return false;
     }

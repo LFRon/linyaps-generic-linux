@@ -7,7 +7,6 @@
 #include "linglong/runtime/container_builder.h"
 
 #include "linglong/common/dir.h"
-#include "linglong/utils/log/log.h"
 
 namespace linglong::runtime {
 
@@ -23,12 +22,14 @@ utils::error::Result<std::filesystem::path> makeBundleDir(const std::string &con
     if (std::filesystem::exists(bundle, ec)) {
         std::filesystem::remove_all(bundle, ec);
         if (ec) {
-            LogW("failed to remove bundle directory {}: {}", bundle.c_str(), ec.message());
+            qWarning() << QString("failed to remove bundle directory %1: %2")
+                            .arg(bundle.c_str(), ec.message().c_str());
         }
     }
 
     if (!std::filesystem::create_directories(bundle, ec) && ec) {
-        return LINGLONG_ERR(fmt::format("failed to create bundle directory {}", bundle), ec);
+        return LINGLONG_ERR(QString("failed to create bundle directory %1: %2")
+                              .arg(bundle.c_str(), ec.message().c_str()));
     }
 
     return bundle;

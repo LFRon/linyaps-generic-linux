@@ -5,7 +5,7 @@
 #include "linglong/utils/filelock.h"
 
 #include "linglong/common/constants.h"
-#include "linglong/common/error.h"
+#include "linglong/utils/finally/finally.h"
 #include "linglong/utils/log/log.h"
 
 #include <fmt/format.h>
@@ -52,7 +52,7 @@ utils::error::Result<FileLock> FileLock::create(std::filesystem::path path,
 
     auto fd = ::open(abs_path.c_str(), flags, default_file_mode);
     if (fd < 0) {
-        return LINGLONG_ERR(fmt::format("open file failed: {}", common::error::errorString(errno)));
+        return LINGLONG_ERR(fmt::format("open file failed: {}", errorString(errno)));
     }
 
     locked_paths[abs_path] = true;
@@ -71,7 +71,7 @@ FileLock::~FileLock() noexcept
     }
 
     if (fd > 0 && ::close(fd) < 0) {
-        LogW("close file failed: {}", common::error::errorString(errno));
+        LogW("close file failed: {}", errorString(errno));
     }
 
     fd = -1;
@@ -168,8 +168,7 @@ utils::error::Result<void> FileLock::lock(LockType type) noexcept
             continue;
         }
 
-        return LINGLONG_ERR(
-          fmt::format("failed to lock file {}: {}", path, common::error::errorString(errno)));
+        return LINGLONG_ERR(fmt::format("failed to lock file {}: {}", path, errorString(errno)));
     }
 }
 
@@ -212,8 +211,7 @@ utils::error::Result<bool> FileLock::tryLock(LockType type) noexcept
             return false;
         }
 
-        return LINGLONG_ERR(
-          fmt::format("failed to lock file {}: {}", path, common::error::errorString(errno)));
+        return LINGLONG_ERR(fmt::format("failed to lock file {}: {}", path, errorString(errno)));
     }
 }
 
@@ -244,8 +242,7 @@ utils::error::Result<void> FileLock::unlock() noexcept
         if (errno == EINTR) {
             continue;
         }
-        return LINGLONG_ERR(
-          fmt::format("failed to unlock file {}: {}", path, common::error::errorString(errno)));
+        return LINGLONG_ERR(fmt::format("failed to unlock file {}: {}", path, errorString(errno)));
     }
 }
 
@@ -278,8 +275,7 @@ utils::error::Result<void> FileLock::relock(LockType new_type) noexcept
             continue;
         }
 
-        return LINGLONG_ERR(
-          fmt::format("failed to relock file {}: {}", path, common::error::errorString(errno)));
+        return LINGLONG_ERR(fmt::format("failed to relock file {}: {}", path, errorString(errno)));
     }
 }
 

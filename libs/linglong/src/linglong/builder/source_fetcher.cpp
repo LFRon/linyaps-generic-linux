@@ -7,9 +7,8 @@
 #include "source_fetcher.h"
 
 #include "configure.h"
-#include "linglong/common/formatter.h"
-#include "linglong/common/global/initialize.h"
 #include "linglong/utils/error/error.h"
+#include "linglong/utils/global/initialize.h"
 #include "linglong/utils/log/log.h"
 
 #include <QDir>
@@ -22,8 +21,7 @@ auto SourceFetcher::fetch(QDir destination) noexcept -> utils::error::Result<voi
     LINGLONG_TRACE("fetch source");
 
     if (!destination.mkpath(".")) {
-        return LINGLONG_ERR(destination.absolutePath().toStdString()
-                            + "source directory failed to create.");
+        return LINGLONG_ERR(destination.absolutePath() + "source directory failed to create.");
     }
 
     if (this->source.kind != "git" && this->source.kind != "dsc" && this->source.kind != "file"
@@ -46,14 +44,14 @@ auto SourceFetcher::fetch(QDir destination) noexcept -> utils::error::Result<voi
     auto scriptName = QString("fetch-%1-source").arg(source.kind.c_str());
     // 如果二进制安装在系统目录中，优先使用系统中安装的脚本文件（便于用户更改），否则使用二进制内嵌的脚本（便于开发调试）
     auto scriptFile = QDir(LINGLONG_LIBEXEC_DIR).filePath(scriptName);
-    auto useInstalledFile = common::global::linglongInstalled() && QFile(scriptFile).exists();
+    auto useInstalledFile = utils::global::linglongInstalled() && QFile(scriptFile).exists();
     QScopedPointer<QTemporaryDir> dir;
     if (!useInstalledFile) {
         dir.reset(new QTemporaryDir);
         // 便于在执行失败时进行调试
         dir->setAutoRemove(false);
         scriptFile = dir->filePath(scriptName);
-        LogD("Dumping {} from qrc to {}", scriptName.toStdString(), scriptFile.toStdString());
+        LogD("Dumping {} from qrc to {}", scriptName, scriptFile);
         QFile::copy(":/scripts/" + scriptName, scriptFile);
     }
     if (source.kind == "git") {
@@ -86,7 +84,7 @@ QString SourceFetcher::getSourceName()
         QUrl url(source.url->c_str());
         return url.fileName();
     }
-    LogE("missing name and url field");
+    qCritical() << "missing name and url field";
     Q_ASSERT(false);
     return "unknown";
 }
@@ -99,7 +97,7 @@ SourceFetcher::SourceFetcher(api::types::v1::BuilderProjectSource source, const 
         return;
     }
 
-    LogE("mkpath {} failed", this->cacheDir.absolutePath().toStdString());
+    qCritical() << "mkpath" << this->cacheDir << "failed";
     Q_ASSERT(false);
 }
 

@@ -4,9 +4,8 @@
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
 
-#include "linglong/utils/error/error.h"
+#pragma once
 
-std::string errorString(int err)
-{
-    return std::system_category().message(err);
-}
+#include "QLoggingCategory"
+
+Q_DECLARE_LOGGING_CATEGORY(linglong_utils_dbus); // NOLINT

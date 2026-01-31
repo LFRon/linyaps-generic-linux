@@ -9,7 +9,6 @@
 #include "configure.h"
 #include "linglong/common/dir.h"
 #include "linglong/utils/bash_command_helper.h"
-#include "linglong/utils/file.h"
 #include "linglong/utils/finally/finally.h"
 #include "linglong/utils/log/log.h"
 #include "ocppi/runtime/RunOption.hpp"
@@ -17,7 +16,6 @@
 
 #include <fmt/format.h>
 
-#include <cassert>
 #include <fstream>
 #include <utility>
 
@@ -72,7 +70,8 @@ void mergeProcessConfig(ocppi::runtime::config::types::Process &dst,
                   });
 
                 if (it != dstEnv.end()) {
-                    LogW("environment set multiple times {} {}", *it, env);
+                    qWarning() << "environment set multiple times " << QString::fromStdString(*it)
+                               << QString::fromStdString(env);
                     *it = env;
                 } else {
                     dstEnv.emplace_back(env);
@@ -126,7 +125,7 @@ Container::Container(ocppi::runtime::config::types::Config cfg,
     , bundleDir(std::move(bundleDir))
     , cli(cli)
 {
-    assert(cfg.process.has_value());
+    Q_ASSERT(cfg.process.has_value());
 }
 
 utils::error::Result<void> Container::run(const ocppi::runtime::config::types::Process &process,
@@ -192,10 +191,14 @@ utils::error::Result<void> Container::run(const ocppi::runtime::config::types::P
       this->cfg.process->args.value_or(std::vector<std::string>{ "echo", "noting to run" });
 
     auto entrypoint = bundleDir / "entrypoint.sh";
-    auto res = utils::writeFile(entrypoint,
-                                utils::BashCommandHelper::generateEntrypointScript(originalArgs));
-    if (!res) {
-        return LINGLONG_ERR(fmt::format("failed to write to {}", entrypoint), res);
+    {
+        std::ofstream ofs(entrypoint);
+        Q_ASSERT(ofs.is_open());
+        if (!ofs.is_open()) {
+            return LINGLONG_ERR("create font config in bundle directory");
+        }
+
+        ofs << utils::BashCommandHelper::generateEntrypointScript(originalArgs);
     }
 
     std::filesystem::permissions(entrypoint, std::filesystem::perms::owner_all, ec);
@@ -214,18 +217,24 @@ utils::error::Result<void> Container::run(const ocppi::runtime::config::types::P
 
     auto cmd = utils::BashCommandHelper::generateExecCommand(entrypointPath);
     this->cfg.process->args = cmd;
-    res = utils::writeFile(bundleDir / "config.json", nlohmann::json(this->cfg).dump());
-    if (!res) {
-        return LINGLONG_ERR("failed to write to config.json", res);
-    }
 
+    {
+        std::ofstream ofs(bundleDir / "config.json");
+        Q_ASSERT(ofs.is_open());
+        if (!ofs.is_open()) {
+            return LINGLONG_ERR("create config.json in bundle directory");
+        }
+
+        ofs << nlohmann::json(this->cfg);
+        ofs.close();
+    }
     LogD("run container with bundle {}", bundleDir);
     // 禁用crun自己创建cgroup，便于AM识别和管理玲珑应用
     opt.GlobalOption::extra.emplace_back("--cgroup-manager=disabled");
 
     auto result = this->cli.run(this->id, bundleDir, opt);
     if (!result) {
-        return LINGLONG_ERR("cli run", result.error());
+        return LINGLONG_ERR("cli run", result);
     }
 
     return LINGLONG_OK;

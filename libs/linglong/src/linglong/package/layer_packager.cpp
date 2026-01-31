@@ -105,12 +105,12 @@ LayerPackager::pack(const LayerDir &dir, const QString &layerFilePath) const
     }
 
     if (!layer.open(QIODevice::WriteOnly | QIODevice::Append)) {
-        return LINGLONG_ERR(layer.errorString().toStdString());
+        return LINGLONG_ERR(layer);
     }
 
     const auto &number = magicNumber();
     if (layer.write(number) < 0) {
-        return LINGLONG_ERR(layer.errorString().toStdString());
+        return LINGLONG_ERR(layer);
     }
 
     // generate LayerInfo
@@ -137,11 +137,11 @@ LayerPackager::pack(const LayerDir &dir, const QString &layerFilePath) const
     Q_ASSERT(dataSizeStream.status() == QDataStream::Status::Ok);
 
     if (layer.write(dataSizeBytes) < 0) {
-        return LINGLONG_ERR(layer.errorString().toStdString());
+        return LINGLONG_ERR(layer);
     }
 
     if (layer.write(data) < 0) {
-        return LINGLONG_ERR(layer.errorString().toStdString());
+        return LINGLONG_ERR(layer);
     }
 
     layer.close();
@@ -155,7 +155,7 @@ LayerPackager::pack(const LayerDir &dir, const QString &layerFilePath) const
                                                  "-b4096",
                                                  compressedFilePath.string(),
                                                  "--exclude-regex=minified*",
-                                                 dir.path() });
+                                                 dir.absolutePath().toStdString() });
     if (!ret) {
         return LINGLONG_ERR(ret);
     }
@@ -190,8 +190,7 @@ utils::error::Result<void> LayerPackager::copyFile(LayerFile &file,
     while (true) {
         auto n = file.read(buff, 4096);
         if (n < 0) {
-            return LINGLONG_ERR("Failed to read from layer file: "
-                                + file.errorString().toStdString());
+            return LINGLONG_ERR("Failed to read from layer file: " + file.errorString());
         }
         if (n == 0) {
             break;
@@ -212,11 +211,8 @@ utils::error::Result<LayerDir> LayerPackager::unpack(LayerFile &file)
 {
     LINGLONG_TRACE("unpack layer file");
 
-    auto unpackDir = this->workDir / "unpack";
-    auto res = utils::ensureDirectory(unpackDir);
-    if (!res) {
-        return LINGLONG_ERR(res);
-    }
+    auto unpackDir = QDir((this->workDir / "unpack").string().c_str());
+    unpackDir.mkpath(".");
 
     auto offset = file.binaryDataOffset();
     if (!offset) {
@@ -241,14 +237,15 @@ utils::error::Result<LayerDir> LayerPackager::unpack(LayerFile &file)
             }
             fuseOffset = "0";
         }
-        auto ret =
-          utils::Cmd("erofsfuse")
-            .exec({ "--offset=" + fuseOffset.toStdString(), fdPath.toStdString(), unpackDir });
+        auto ret = utils::Cmd("erofsfuse")
+                     .exec({ "--offset=" + fuseOffset.toStdString(),
+                             fdPath.toStdString(),
+                             unpackDir.absolutePath().toStdString() });
         if (!ret) {
             return LINGLONG_ERR(ret);
         }
         this->isMounted = true;
-        return unpackDir;
+        return unpackDir.absolutePath();
     }
     // 判断fsck.erofs命令是否存在，fsck.erofs是erofs-utils的命令，可用于解压erofs文件
     // 在旧版本中fsck.erofs不支持offset参数，所以需要提前将erofs文件复制到临时目录
@@ -259,12 +256,13 @@ utils::error::Result<LayerDir> LayerPackager::unpack(LayerFile &file)
         if (!ret) {
             return LINGLONG_ERR(ret);
         }
-        auto cmdRet = utils::Cmd("fsck.erofs")
-                        .exec({ "--extract=" + unpackDir.string(), fdPath.toStdString() });
+        auto cmdRet =
+          utils::Cmd("fsck.erofs")
+            .exec({ "--extract=" + unpackDir.absolutePath().toStdString(), fdPath.toStdString() });
         if (!cmdRet) {
             return LINGLONG_ERR(cmdRet);
         }
-        return unpackDir;
+        return unpackDir.absolutePath();
     }
     return LINGLONG_ERR(
       "erofsfuse or fsck.erofs not found, please install erofs-utils or erofsfuse",

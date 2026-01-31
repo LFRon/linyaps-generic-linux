@@ -7,7 +7,6 @@
 #include "hooks.h"
 
 #include "configure.h"
-#include "linglong/common/error.h"
 #include "linglong/utils/env.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/log/log.h"
@@ -68,22 +67,22 @@ utils::error::Result<void> executeHookCommands(
         if (ret == -1) {
             return LINGLONG_ERR(fmt::format("Failed to execute command: '{}'. System error: {}.",
                                             fullCommand,
-                                            common::error::errorString(errno)));
+                                            errorString(errno)));
         }
 
         if (!WIFEXITED(ret)) {
             int signalNum = WTERMSIG(ret);
-            return LINGLONG_ERR(fmt::format("Command '{}' terminated by signal {} ({}).",
-                                            fullCommand,
-                                            signalNum,
-                                            strsignal(signalNum)));
+            return LINGLONG_ERR(QString("Command '%1' terminated by signal %2 (%3).")
+                                  .arg(QString::fromStdString(fullCommand))
+                                  .arg(signalNum)
+                                  .arg(strsignal(signalNum)));
         }
 
         int exitStatus = WEXITSTATUS(ret);
         if (exitStatus != 0) {
-            return LINGLONG_ERR(fmt::format("Command '{}' exited with non-zero status: {}.",
-                                            fullCommand,
-                                            exitStatus));
+            return LINGLONG_ERR(QString("Command '%1' exited with non-zero status: %2.")
+                                  .arg(QString::fromStdString(fullCommand))
+                                  .arg(exitStatus));
         }
     }
     return LINGLONG_OK;
@@ -97,8 +96,8 @@ utils::error::Result<void> InstallHookManager::parseInstallHooks()
     for (const auto &entry : std::filesystem::directory_iterator(LINGLONG_INSTALL_HOOKS_DIR, ec)) {
         if (ec) {
             return LINGLONG_ERR(
-              fmt::format("Failed to iterate directory {}", LINGLONG_INSTALL_HOOKS_DIR),
-              ec);
+              QString("Failed to iterate directory %1: %2")
+                .arg(LINGLONG_INSTALL_HOOKS_DIR, QString::fromStdString(ec.message())));
         }
 
         if (!std::filesystem::is_regular_file(entry.status(ec))) {
@@ -110,7 +109,7 @@ utils::error::Result<void> InstallHookManager::parseInstallHooks()
 
         std::ifstream file(entry.path());
         if (!file.is_open()) {
-            return LINGLONG_ERR(fmt::format("Couldn't open file: {}", entry.path()));
+            return LINGLONG_ERR(QString{ "Couldn't open file: %1" }.arg(entry.path().c_str()));
         }
 
         std::string line;
@@ -157,9 +156,8 @@ utils::error::Result<void> InstallHookManager::executeInstallHooks(int fd) noexc
     auto size = readlink(oss.str().c_str(), pathBuf.data(), PATH_MAX);
 
     if (size == -1) {
-        return LINGLONG_ERR(fmt::format("Failed to read file link for fd {}: {}",
-                                        fd,
-                                        common::error::errorString(errno)));
+        return LINGLONG_ERR(
+          fmt::format("Failed to read file link for fd {}: {}", fd, errorString(errno)));
     }
 
     pathBuf[size] = '\0';

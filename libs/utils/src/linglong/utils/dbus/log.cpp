@@ -4,9 +4,6 @@
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
 
-#include "linglong/utils/error/error.h"
+#include "linglong/utils/dbus/log.h"
 
-std::string errorString(int err)
-{
-    return std::system_category().message(err);
-}
+Q_LOGGING_CATEGORY(linglong_utils_dbus, "linglong::utils::dbus") // NOLINT

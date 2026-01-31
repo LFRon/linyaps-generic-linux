@@ -6,12 +6,10 @@
 
 #include "linglong/package/layer_file.h"
 
-#include "linglong/api/types/v1/Generators.hpp" // IWYU pragma: keep
+#include "linglong/api/types/v1/Generators.hpp"
 #include "linglong/api/types/v1/LayerInfo.hpp"
-#include "linglong/common/error.h"
-#include "linglong/common/formatter.h"
 #include "linglong/utils/error/error.h"
-#include "linglong/utils/log/formatter.h" // IWYU pragma: keep
+#include "linglong/utils/log/formatter.h"
 #include "linglong/utils/serialize/json.h"
 
 #include <QDataStream>
@@ -35,8 +33,7 @@ utils::error::Result<QSharedPointer<LayerFile>> LayerFile::New(const QString &pa
     LINGLONG_TRACE("install layer file from path")
     auto fd = ::open(path.toLocal8Bit(), O_RDONLY);
     if (fd < 0) {
-        return LINGLONG_ERR(
-          fmt::format("failed to open {}: {}", path, common::error::errorString(errno)));
+        return LINGLONG_ERR(fmt::format("failed to open {}: {}", path, ::errorString(errno)));
     }
 
     return New(fd);
@@ -131,7 +128,7 @@ utils::error::Result<void> LayerFile::saveTo(const QString &destination) noexcep
     LINGLONG_TRACE(fmt::format("save layer file to {}", destination.toStdString()));
 
     if (!this->copy(destination)) {
-        return LINGLONG_ERR(this->errorString().toStdString());
+        return LINGLONG_ERR(*this);
     }
 
     return LINGLONG_OK;
