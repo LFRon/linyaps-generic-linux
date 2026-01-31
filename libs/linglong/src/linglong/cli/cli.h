@@ -13,11 +13,11 @@
 #include "linglong/api/types/v1/RepositoryCacheLayersItem.hpp"
 #include "linglong/cli/interactive_notifier.h"
 #include "linglong/cli/printer.h"
+#include "linglong/common/serialize/json.h"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/log/log.h"
-#include "linglong/utils/serialize/json.h"
 
 #include <CLI/CLI.hpp>
 
@@ -195,19 +195,9 @@ private:
     [[nodiscard]] static utils::error::Result<void>
     RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept;
     [[nodiscard]] std::vector<std::string> filePathMapping(
-      const std::vector<std::string> &command,
-      const RunOptions &options,
-      bool allowHostRoot,
-      bool allowHostOs,
-      bool allowHostEtc) const noexcept;
-    static std::string mappingFile(const std::filesystem::path &file,
-                                   bool allowHostRoot,
-                                   bool allowHostOs,
-                                   bool allowHostEtc) noexcept;
-    static std::string mappingUrl(std::string_view url,
-                                  bool allowHostRoot,
-                                  bool allowHostOs,
-                                  bool allowHostEtc) noexcept;
+      const std::vector<std::string> &command, const RunOptions &options) const noexcept;
+    static std::string mappingFile(const std::filesystem::path &file) noexcept;
+    static std::string mappingUrl(std::string_view url) noexcept;
 
     static void filterPackageInfosByType(
       std::map<std::string, std::vector<api::types::v1::PackageInfoV2>> &list,
@@ -245,10 +235,10 @@ private:
 
         reply.waitForFinished();
         if (reply.isError()) {
-            return LINGLONG_ERR(reply.error().message(), reply.error().type());
+            return LINGLONG_ERR(reply.error().message().toStdString(), reply.error().type());
         }
 
-        auto result = utils::serialize::fromQVariantMap<T>(reply.value());
+        auto result = common::serialize::fromQVariantMap<T>(reply.value());
         if (!result) {
             LogF("bug detected: {}", result.error());
             std::abort();

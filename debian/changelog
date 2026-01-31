@@ -1,3 +1,11 @@
+linglong (1.11.2-0) unstable; urgency=medium
+
+  * revert: Fix tray-icon issue.
+  * feat: introduce host filesystem control.
+  * fix: Do not umount host-root default.
+
+ -- LFRon <ronforever@qq.com>  Sat, 31 Jan 2026 18:31:20 +0800
+
 linglong (1.11.1-1) unstable; urgency=medium
 
   * Improve Tray icon load.

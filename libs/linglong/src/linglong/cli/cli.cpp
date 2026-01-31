@@ -45,6 +45,7 @@
 #include "ocppi/runtime/Signal.hpp"
 #include "ocppi/types/ContainerListItem.hpp"
 
+#include <fmt/ranges.h>
 #include <linux/un.h>
 #include <nlohmann/json.hpp>
 
@@ -218,7 +219,7 @@ bool delegateToContainerInit(const std::string &containerID,
 
     int result{ -1 };
     ret = ::recv(containerSocket, &result, sizeof(result), 0);
-    qDebug() << "delegate result:" << result;
+    LogD("delegate result: {}", result);
     return result == 0;
 }
 
@@ -243,7 +244,7 @@ void Cli::onTaskPropertiesChanged(
             bool ok{ false };
             auto val = value.toInt(&ok);
             if (!ok) {
-                qCritical() << "dbus ipc error, State couldn't convert to int";
+                LogE("dbus ipc error, State couldn't convert to int");
                 continue;
             }
 
@@ -255,7 +256,7 @@ void Cli::onTaskPropertiesChanged(
             bool ok{ false };
             auto val = value.toDouble(&ok);
             if (!ok) {
-                qCritical() << "dbus ipc error, Percentage couldn't convert to int";
+                LogE("dbus ipc error, Percentage couldn't convert to int");
                 continue;
             }
 
@@ -265,7 +266,7 @@ void Cli::onTaskPropertiesChanged(
 
         if (key == "Message") {
             if (!value.canConvert<QString>()) {
-                qCritical() << "dbus ipc error, Message couldn't convert to QString";
+                LogE("dbus ipc error, Message couldn't convert to QString");
                 continue;
             }
 
@@ -277,7 +278,7 @@ void Cli::onTaskPropertiesChanged(
             bool ok{ false };
             auto val = value.toInt(&ok);
             if (!ok) {
-                qCritical() << "dbus ipc error, Code couldn't convert to int";
+                LogE("dbus ipc error, Code couldn't convert to int");
                 continue;
             }
 
@@ -298,7 +299,7 @@ void Cli::interaction(const QDBusObjectPath &object_path,
     }
 
     auto messageType = static_cast<api::types::v1::InteractionMessageType>(messageID);
-    auto msg = utils::serialize::fromQVariantMap<
+    auto msg = common::serialize::fromQVariantMap<
       api::types::v1::PackageManager1RequestInteractionAdditionalMessage>(additionalMessage);
 
     std::vector<std::string> actions{ "yes", "Yes", "no", "No" };
@@ -328,7 +329,7 @@ void Cli::interaction(const QDBusObjectPath &object_path,
     std::string action;
     auto notifyReply = notifier->request(req);
     if (!notifyReply) {
-        qCritical() << "internal error: notify failed";
+        LogE("internal error: notify failed");
         action = "no";
     } else {
         action = notifyReply->action.value();
@@ -343,27 +344,27 @@ void Cli::interaction(const QDBusObjectPath &object_path,
         action = "no";
     }
 
-    qDebug() << "action: " << QString::fromStdString(action);
+    LogD("action: {}", action);
 
     auto reply = api::types::v1::InteractionReply{ .action = action };
 
     QDBusPendingReply<void> dbusReply =
-      this->pkgMan.ReplyInteraction(object_path, utils::serialize::toQVariantMap(reply));
+      this->pkgMan.ReplyInteraction(object_path, common::serialize::toQVariantMap(reply));
     dbusReply.waitForFinished();
     if (dbusReply.isError()) {
         this->printer.printErr(
-          LINGLONG_ERRV(dbusReply.error().message(), dbusReply.error().type()));
+          LINGLONG_ERRV(dbusReply.error().message().toStdString(), dbusReply.error().type()));
     }
 }
 
 void Cli::onTaskAdded(const QDBusObjectPath &object_path)
 {
-    LogD("task added: {}", object_path.path());
+    LogD("task added: {}", object_path.path().toStdString());
 }
 
 void Cli::onTaskRemoved(const QDBusObjectPath &object_path)
 {
-    LogD("task removed: {}", object_path.path());
+    LogD("task removed: {}", object_path.path().toStdString());
     if (object_path.path() != taskObjectPath) {
         return;
     }
@@ -492,8 +493,7 @@ int Cli::run(const RunOptions &options)
     QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, [pidFile] {
         std::error_code ec;
         if (!std::filesystem::remove(pidFile, ec) && ec) {
-            qCritical().nospace() << "failed to remove file " << pidFile.c_str() << ": "
-                                  << ec.message().c_str();
+            LogE("failed to remove file {}: {}", pidFile.c_str(), ec.message());
         }
     });
 
@@ -557,11 +557,6 @@ int Cli::run(const RunOptions &options)
     }
     const auto &info = appLayerItem->info;
 
-    auto ret = RequestDirectories(info);
-    if (!ret) {
-        qWarning() << ret.error().message();
-    }
-
     auto commands = options.commands;
     bool usingDefaultCommand = commands.empty();
     if (usingDefaultCommand) {
@@ -592,12 +587,7 @@ int Cli::run(const RunOptions &options)
         }
     }
 
-    auto hostAccess = runContext.hostAccessPolicy();
-    commands = filePathMapping(commands,
-                               options,
-                               hostAccess.allowHostRoot,
-                               hostAccess.allowHostOs,
-                               hostAccess.allowHostEtc);
+    commands = filePathMapping(commands, options);
 
     // this lambda will dump reference of containerID, app, base and runtime to
     // /run/linglong/getuid()/getpid() to store these needed infomation
@@ -606,19 +596,18 @@ int Cli::run(const RunOptions &options)
         std::error_code ec;
         if (!std::filesystem::exists(pidFile, ec)) {
             if (ec) {
-                qCritical() << "couldn't get status of" << pidFile.c_str() << ":"
-                            << ec.message().c_str();
+                LogE("couldn't get status of {}: {}", pidFile.c_str(), ec.message());
                 return false;
             }
 
-            auto msg = "state file " + pidFile.string() + "doesn't exist, abort.";
-            qFatal("%s", msg.c_str());
+            LogE("state file {} doesn't exist", pidFile.string());
+            return false;
         }
 
         std::ofstream stream{ pidFile };
         if (!stream.is_open()) {
-            auto msg = QString{ "failed to open %1" }.arg(pidFile.c_str());
-            this->printer.printErr(LINGLONG_ERRV(msg));
+            this->printer.printErr(
+              LINGLONG_ERRV(fmt::format("failed to open {}", pidFile.c_str())));
             return false;
         }
         stream << nlohmann::json(runContext.stateInfo());
@@ -629,7 +618,7 @@ int Cli::run(const RunOptions &options)
 
     auto containers = getCurrentContainers().value_or(std::vector<api::types::v1::CliContainer>{});
     for (const auto &container : containers) {
-        qDebug() << "found running container: " << container.package.c_str();
+        LogD("found running container: {}", container.package);
         if (container.package != curAppRef->toString()) {
             continue;
         }
@@ -719,7 +708,7 @@ int Cli::run(const RunOptions &options)
 
     if (!cfgBuilder.build()) {
         auto err = cfgBuilder.getError();
-        qCritical() << "build cfg error: " << QString::fromStdString(err.reason);
+        LogE("build cfg error: {}", err.reason);
         return -1;
     }
 
@@ -764,7 +753,7 @@ int Cli::enter(const EnterOptions &options)
     }
 
     auto containerID = containerIDList.front();
-    qInfo() << "select container id" << QString::fromStdString(containerID);
+    LogI("select container id: {}", containerID);
     auto commands = options.commands;
     if (commands.empty()) {
         commands = utils::BashCommandHelper::generateDefaultBashCommand();
@@ -806,8 +795,7 @@ Cli::getCurrentContainers() const noexcept
             return myContainers;
         }
 
-        return LINGLONG_ERR(
-          QString{ "failed to list %1: %2" }.arg(infoDir.c_str(), ec.message().c_str()));
+        return LINGLONG_ERR(fmt::format("failed to list {}", infoDir), ec);
     }
 
     for (const auto &pidFile : it) {
@@ -817,7 +805,7 @@ Cli::getCurrentContainers() const noexcept
         std::error_code ec;
         if (!std::filesystem::exists(process, ec)) {
             // this process may exit abnormally, skip it.
-            qDebug() << process.c_str() << "doesn't exist";
+            LogD("{} doesn't exist", process.string());
             continue;
         }
 
@@ -828,7 +816,7 @@ Cli::getCurrentContainers() const noexcept
         auto info = linglong::utils::serialize::LoadJSONFile<
           linglong::api::types::v1::ContainerProcessStateInfo>(file);
         if (!info) {
-            qDebug() << "load info from" << file.c_str() << "error:" << info.error().message();
+            LogD("load info from {}: {}", file.string(), info.error());
             continue;
         }
 
@@ -838,8 +826,7 @@ Cli::getCurrentContainers() const noexcept
                                           return item.id == info->containerID;
                                       });
         if (container == containers.cend()) {
-            qDebug() << "couldn't find container that process " << file.filename().c_str()
-                     << "belongs to";
+            LogD("couldn't find container that process {} belongs to", file.filename().string());
             continue;
         }
 
@@ -887,7 +874,7 @@ std::vector<std::string> Cli::getRunningAppContainers(const std::string &appid)
     for (const auto &container : *containers) {
         auto fuzzyRef = package::FuzzyReference::parse(container.package);
         if (!fuzzyRef) {
-            qWarning() << LINGLONG_ERRV(fuzzyRef).message();
+            LogW("{}", fuzzyRef.error());
             continue;
         }
 
@@ -907,7 +894,7 @@ int Cli::kill(const KillOptions &options)
 
     auto ret = 0;
     for (const auto &containerID : containerIDList) {
-        qInfo() << "select container id" << QString::fromStdString(containerID);
+        LogI("select container id {}", containerID);
         auto result = this->ociCLI.kill(ocppi::runtime::ContainerID(containerID),
                                         ocppi::runtime::Signal(options.signal));
         if (!result) {
@@ -955,8 +942,9 @@ int Cli::installFromFile(const QFileInfo &fileInfo,
             return -1;
         }
 
-        this->printer.printErr(LINGLONG_ERRV(authReply.error().message() + authReply.error().name(),
-                                             static_cast<int>(authReply.error().type())));
+        this->printer.printErr(LINGLONG_ERRV(
+          fmt::format("{} {}", authReply.error().message() + authReply.error().name()),
+          static_cast<int>(authReply.error().type())));
         return -1;
     }
 
@@ -966,10 +954,10 @@ int Cli::installFromFile(const QFileInfo &fileInfo,
         return -1;
     }
 
-    LogI("install from file {}", filePath);
+    LogI("install from file {}", filePath.toStdString());
     QFile file{ filePath };
     if (!file.open(QIODevice::ReadOnly | QIODevice::ExistingOnly)) {
-        auto err = LINGLONG_ERR(file);
+        auto err = LINGLONG_ERR(file.errorString().toStdString());
         this->printer.printErr(err.value());
         return -1;
     }
@@ -979,7 +967,7 @@ int Cli::installFromFile(const QFileInfo &fileInfo,
     auto pendingReply =
       this->pkgMan.InstallFromFile(dbusFileDescriptor,
                                    fileInfo.suffix(),
-                                   utils::serialize::toQVariantMap(commonOptions));
+                                   common::serialize::toQVariantMap(commonOptions));
     res = waitTaskCreated(pendingReply, TaskType::InstallFromFile);
     if (!res) {
         this->handleCommonError(res.error());
@@ -1045,7 +1033,7 @@ int Cli::install(const InstallOptions &options)
 
     LogD("install module: {}", common::strings::join(*params.package.modules));
 
-    auto pendingReply = this->pkgMan.Install(utils::serialize::toQVariantMap(params));
+    auto pendingReply = this->pkgMan.Install(common::serialize::toQVariantMap(params));
     auto res = waitTaskCreated(pendingReply, TaskType::Install);
     if (!res) {
         handleInstallError(res.error(), params);
@@ -1109,7 +1097,7 @@ int Cli::upgrade(const UpgradeOptions &options)
         params.packages.emplace_back(std::move(package));
     }
 
-    auto pendingReply = this->pkgMan.Update(utils::serialize::toQVariantMap(params));
+    auto pendingReply = this->pkgMan.Update(common::serialize::toQVariantMap(params));
     auto res = waitTaskCreated(pendingReply, TaskType::Upgrade);
     if (!res) {
         handleUpgradeError(res.error());
@@ -1170,7 +1158,7 @@ int Cli::search(const SearchOptions &options)
               return;
           }
           auto result =
-            utils::serialize::fromQVariantMap<api::types::v1::PackageManager1SearchResult>(data);
+            common::serialize::fromQVariantMap<api::types::v1::PackageManager1SearchResult>(data);
           if (!result) {
               this->printer.printErr(result.error());
               loop.exit(-1);
@@ -1180,8 +1168,7 @@ int Cli::search(const SearchOptions &options)
           auto resultCode = static_cast<utils::error::ErrorCode>(result->code);
           if (resultCode != utils::error::ErrorCode::Success) {
               if (resultCode == utils::error::ErrorCode::Failed) {
-                  this->printer.printErr(
-                    LINGLONG_ERRV("\n" + QString::fromStdString(result->message), result->code));
+                  this->printer.printErr(LINGLONG_ERRV("\n" + result->message, result->code));
                   loop.exit(result->code);
                   return;
               }
@@ -1193,8 +1180,7 @@ int Cli::search(const SearchOptions &options)
               }
 
               if (this->globalOptions.verbose) {
-                  this->printer.printErr(
-                    LINGLONG_ERRV("\n" + QString::fromStdString(result->message), result->code));
+                  this->printer.printErr(LINGLONG_ERRV("\n" + result->message, result->code));
               }
 
               loop.exit(result->code);
@@ -1237,7 +1223,7 @@ int Cli::search(const SearchOptions &options)
           loop.exit(0);
       });
 
-    auto pendingReply = this->pkgMan.Search(utils::serialize::toQVariantMap(params));
+    auto pendingReply = this->pkgMan.Search(common::serialize::toQVariantMap(params));
     auto result = waitDBusReply<api::types::v1::PackageManager1JobInfo>(pendingReply);
     if (!result) {
         this->printer.printErr(result.error());
@@ -1269,7 +1255,7 @@ int Cli::prune()
                     return;
                 }
                 auto ret =
-                  utils::serialize::fromQVariantMap<api::types::v1::PackageManager1PruneResult>(
+                  common::serialize::fromQVariantMap<api::types::v1::PackageManager1PruneResult>(
                     data);
                 if (!ret) {
                     this->printer.printErr(ret.error());
@@ -1330,7 +1316,7 @@ int Cli::uninstall(const UninstallOptions &options)
         params.package.packageManager1PackageModule = options.module;
     }
 
-    auto pendingReply = this->pkgMan.Uninstall(utils::serialize::toQVariantMap(params));
+    auto pendingReply = this->pkgMan.Uninstall(common::serialize::toQVariantMap(params));
     auto res = waitTaskCreated(pendingReply, TaskType::Uninstall);
     if (!res) {
         this->handleUninstallError(res.error());
@@ -1409,15 +1395,14 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
 
     auto propCfg = this->pkgMan.configuration();
     if (this->pkgMan.lastError().isValid()) {
-        auto err = LINGLONG_ERRV(this->pkgMan.lastError().message());
+        auto err = LINGLONG_ERRV(this->pkgMan.lastError().message().toStdString());
         this->printer.printErr(err);
         return -1;
     }
 
-    auto cfg = utils::serialize::fromQVariantMap<api::types::v1::RepoConfigV2>(propCfg);
+    auto cfg = common::serialize::fromQVariantMap<api::types::v1::RepoConfigV2>(propCfg);
     if (!cfg) {
-        qCritical() << cfg.error();
-        qCritical() << "linglong bug detected.";
+        LogE("fatal error: {}", cfg.error());
         std::abort();
     }
 
@@ -1441,7 +1426,7 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
 
     if (argsParsed("add") || argsParsed("update")) {
         if (url.rfind("http", 0) != 0) {
-            this->printer.printErr(LINGLONG_ERRV(QString{ "url is invalid: " } + url.c_str()));
+            this->printer.printErr(LINGLONG_ERRV(fmt::format("url is invalid: {}", url)));
             return EINVAL;
         }
 
@@ -1467,8 +1452,7 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
               return repo.alias.value_or(repo.name) == alias;
           });
         if (isExist) {
-            this->printer.printErr(
-              LINGLONG_ERRV(QString{ "repo " } + alias.c_str() + " already exist."));
+            this->printer.printErr(LINGLONG_ERRV(fmt::format("repo {} already exist", alias)));
             return -1;
         }
         cfgRef.repos.push_back(api::types::v1::Repo{
@@ -1477,7 +1461,7 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
           .priority = 0,
           .url = url,
         });
-        return this->setRepoConfig(utils::serialize::toQVariantMap(cfgRef));
+        return this->setRepoConfig(common::serialize::toQVariantMap(cfgRef));
     }
 
     auto existingRepo =
@@ -1487,15 +1471,16 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
 
     if (existingRepo == cfgRef.repos.end()) {
         this->printer.printErr(
-          LINGLONG_ERRV(QString{ "the operated repo " } + name.c_str() + " doesn't exist"));
+          LINGLONG_ERRV(fmt::format("the operated repo {} doesn't exist", name)));
         return -1;
     }
 
     if (argsParsed("remove")) {
         if (cfgRef.repos.size() == 1) {
-            this->printer.printErr(LINGLONG_ERRV(QString{ "repo " } + alias.c_str()
-                                                 + " is the only repo, please add another repo "
-                                                   "before removing it or update it directly."));
+            this->printer.printErr(
+              LINGLONG_ERRV(fmt::format("repo {} is the only repo, please add another repo before "
+                                        "removing it or update it directly.",
+                                        alias)));
             return -1;
         }
         cfgRef.repos.erase(existingRepo);
@@ -1511,7 +1496,7 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
             }
         }
 
-        return this->setRepoConfig(utils::serialize::toQVariantMap(cfgRef));
+        return this->setRepoConfig(common::serialize::toQVariantMap(cfgRef));
     }
 
     if (argsParsed("update")) {
@@ -1521,17 +1506,17 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
         }
 
         existingRepo->url = url;
-        return this->setRepoConfig(utils::serialize::toQVariantMap(cfgRef));
+        return this->setRepoConfig(common::serialize::toQVariantMap(cfgRef));
     }
 
     if (argsParsed("enable-mirror")) {
         existingRepo->mirrorEnabled = true;
-        return this->setRepoConfig(utils::serialize::toQVariantMap(cfgRef));
+        return this->setRepoConfig(common::serialize::toQVariantMap(cfgRef));
     }
 
     if (argsParsed("disable-mirror")) {
         existingRepo->mirrorEnabled = false;
-        return this->setRepoConfig(utils::serialize::toQVariantMap(cfgRef));
+        return this->setRepoConfig(common::serialize::toQVariantMap(cfgRef));
     }
 
     if (argsParsed("set-default")) {
@@ -1545,7 +1530,7 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
                     break;
                 }
             }
-            return this->setRepoConfig(utils::serialize::toQVariantMap(cfgRef));
+            return this->setRepoConfig(common::serialize::toQVariantMap(cfgRef));
         }
 
         return 0;
@@ -1553,7 +1538,7 @@ int Cli::repo(CLI::App *app, const RepoOptions &options)
 
     if (argsParsed("set-priority")) {
         existingRepo->priority = options.repoPriority;
-        return this->setRepoConfig(utils::serialize::toQVariantMap(cfgRef));
+        return this->setRepoConfig(common::serialize::toQVariantMap(cfgRef));
     }
 
     this->printer.printErr(LINGLONG_ERRV("unknown operation"));
@@ -1572,7 +1557,7 @@ int Cli::setRepoConfig(const QVariantMap &config)
 
     this->pkgMan.setConfiguration(config);
     if (this->pkgMan.lastError().isValid()) {
-        auto err = LINGLONG_ERRV(this->pkgMan.lastError().message());
+        auto err = LINGLONG_ERRV(this->pkgMan.lastError().message().toStdString());
         this->printer.printErr(err);
         return -1;
     }
@@ -1606,7 +1591,7 @@ int Cli::info(const InfoOptions &options)
           this->repository.clearReference(*fuzzyRef,
                                           { .forceRemote = false, .fallbackToRemote = false });
         if (!ref) {
-            qDebug() << ref.error();
+            LogD("{}", ref.error());
             this->printer.printErr(LINGLONG_ERRV("Can not find such application."));
             return -1;
         }
@@ -1660,7 +1645,7 @@ int Cli::content(const ContentOptions &options)
     auto ref = this->repository.clearReference(*fuzzyRef,
                                                { .forceRemote = false, .fallbackToRemote = false });
     if (!ref) {
-        qDebug() << ref.error();
+        LogD("{}", ref.error());
         this->printer.printErr(LINGLONG_ERRV("Can not find such application."));
         return -1;
     }
@@ -1682,7 +1667,7 @@ int Cli::content(const ContentOptions &options)
         return -1;
     }
 
-    QDir entriesDir(layer->absoluteFilePath("entries/share"));
+    QDir entriesDir((layer->path() / "entries/share").c_str());
     if (!entriesDir.exists()) {
         this->printer.printErr(LINGLONG_ERR("no entries found").value());
         return -1;
@@ -1710,16 +1695,13 @@ int Cli::content(const ContentOptions &options)
     return 0;
 }
 
-[[nodiscard]] std::string Cli::mappingFile(const std::filesystem::path &file,
-                                           bool allowHostRoot,
-                                           bool allowHostOs,
-                                           bool allowHostEtc) noexcept
+[[nodiscard]] std::string Cli::mappingFile(const std::filesystem::path &file) noexcept
 {
     std::error_code ec;
     auto target = file;
 
     if (!target.is_absolute()) {
-        return target.string();
+        return target;
     }
 
     if (std::filesystem::is_symlink(file, ec)) {
@@ -1734,43 +1716,22 @@ int Cli::content(const ContentOptions &options)
     }
 
     if (ec) {
-        qCritical() << "failed to check symlink " << file.c_str() << ":" << ec.message().c_str();
+        LogE("failed to check symlink {}: {}", file.c_str(), ec.message());
     }
 
     // Dont't mapping the file under /home
     if (auto tmp = target.string(); tmp.rfind("/home/", 0) == 0) {
-        return target.string();
+        return target;
     }
 
-    auto targetStr = target.string();
-    auto relative = std::filesystem::path{ target }.lexically_relative("/");
-
-    if (allowHostRoot) {
-        return (std::filesystem::path{ "/run/host/rootfs" } / relative).string();
-    }
-
-    auto startsWith = [&targetStr](const std::string &prefix) {
-        return targetStr == prefix || targetStr.rfind(prefix + "/", 0) == 0;
-    };
-
-    if (allowHostOs && (startsWith("/usr") || startsWith("/lib") || startsWith("/lib64"))) {
-        return (std::filesystem::path{ "/run/host-os" } / relative).string();
-    }
-
-    if (allowHostEtc && startsWith("/etc")) {
-        return (std::filesystem::path{ "/run/host-etc" } / relative).string();
-    }
-
-    return targetStr;
+    return std::filesystem::path{ "/run/host/rootfs" }
+    / std::filesystem::path{ target }.lexically_relative("/");
 }
 
-[[nodiscard]] std::string Cli::mappingUrl(std::string_view url,
-                                          bool allowHostRoot,
-                                          bool allowHostOs,
-                                          bool allowHostEtc) noexcept
+[[nodiscard]] std::string Cli::mappingUrl(std::string_view url) noexcept
 {
     if (url.rfind('/', 0) == 0) {
-        return mappingFile(url, allowHostRoot, allowHostOs, allowHostEtc);
+        return mappingFile(url);
     }
 
     // if the scheme of url is "file", we need to map the native file path to the corresponding
@@ -1778,10 +1739,7 @@ int Cli::content(const ContentOptions &options)
     constexpr std::string_view filePrefix = "file://";
     if (url.rfind(filePrefix, 0) == 0) {
         std::filesystem::path nativePath = url.substr(filePrefix.size());
-        std::filesystem::path target = mappingFile(nativePath,
-                                                   allowHostRoot,
-                                                   allowHostOs,
-                                                   allowHostEtc);
+        std::filesystem::path target = mappingFile(nativePath);
         return std::string{ filePrefix } + target.string();
     }
 
@@ -1789,10 +1747,7 @@ int Cli::content(const ContentOptions &options)
 }
 
 std::vector<std::string> Cli::filePathMapping(const std::vector<std::string> &command,
-                                              const RunOptions &options,
-                                              bool allowHostRoot,
-                                              bool allowHostOs,
-                                              bool allowHostEtc) const noexcept
+                                              const RunOptions &options) const noexcept
 {
     // FIXME: couldn't handel command like 'll-cli run org.xxx.yyy --file f1 f2 f3 org.xxx.yyy %%F'
     // can't distinguish the boundary of command , need validate the command arguments in the future
@@ -1810,7 +1765,7 @@ std::vector<std::string> Cli::filePathMapping(const std::vector<std::string> &co
             if (arg == "%f" && options.filePaths.size() > 1) {
                 // refer:
                 // https://specifications.freedesktop.org/desktop-entry-spec/latest/exec-variables.html
-                qWarning() << "more than one file path specified, all file paths will be passed.";
+                LogW("more than one file path specified, all file paths will be passed.");
             }
 
             for (const auto &file : options.filePaths) {
@@ -1818,7 +1773,7 @@ std::vector<std::string> Cli::filePathMapping(const std::vector<std::string> &co
                     continue;
                 }
 
-                execArgs.emplace_back(mappingFile(file, allowHostRoot, allowHostOs, allowHostEtc));
+                execArgs.emplace_back(mappingFile(file));
             }
 
             continue;
@@ -1826,7 +1781,7 @@ std::vector<std::string> Cli::filePathMapping(const std::vector<std::string> &co
 
         if (arg == "%u" || arg == "%U") {
             if (arg == "%u" && options.fileUrls.size() > 1) {
-                qWarning() << "more than one url specified, all file paths will be passed.";
+                LogW("more than one url specified, all file paths will be passed.");
             }
 
             for (const auto &url : options.fileUrls) {
@@ -1834,13 +1789,13 @@ std::vector<std::string> Cli::filePathMapping(const std::vector<std::string> &co
                     continue;
                 }
 
-                execArgs.emplace_back(mappingUrl(url, allowHostRoot, allowHostOs, allowHostEtc));
+                execArgs.emplace_back(mappingUrl(url));
             }
 
             continue;
         }
 
-        qWarning() << "unkown command argument" << QString::fromStdString(arg);
+        LogW("unkown command argument {}", arg);
     }
 
     return execArgs;
@@ -1908,13 +1863,13 @@ void Cli::filterPackageInfosByVersion(
 
             auto oldVersion = package::Version::parse(it->second.version);
             if (!oldVersion) {
-                qWarning() << "failed to parse old version:" << oldVersion.error().message();
+                LogW("failed to parse old version: {}", oldVersion.error());
                 continue;
             }
 
             auto newVersion = package::Version::parse(pkgInfo.version);
             if (!newVersion) {
-                qWarning() << "failed to parse new version:" << newVersion.error().message();
+                LogW("failed to parse new version: {}", newVersion.error());
                 continue;
             }
 
@@ -1958,8 +1913,9 @@ utils::error::Result<void> Cli::ensureAuthorized()
             return LINGLONG_ERR(message);
         }
 
-        return LINGLONG_ERR(authReply.error().message() + authReply.error().name(),
-                            static_cast<int>(authReply.error().type()));
+        return LINGLONG_ERR(
+          fmt::format("{} {}", authReply.error().message(), authReply.error().name()),
+          static_cast<int>(authReply.error().type()));
     }
 
     return LINGLONG_OK;
@@ -1977,12 +1933,12 @@ utils::error::Result<void> Cli::runningAsRoot(const QList<QString> &args)
     const char *pkexecBin = "pkexec";
     QStringList argv{ pkexecBin };
     argv.append(args);
-    qDebug() << "run with pkexec:" << argv;
     std::vector<char *> targetArgv;
     for (const auto &arg : argv) {
         QByteArray byteArray = arg.toUtf8();
         targetArgv.push_back(strdup(byteArray.constData()));
     }
+    LogD("run {}", fmt::join(targetArgv, " "));
     targetArgv.push_back(nullptr);
 
     auto ret = execvp(pkexecBin, const_cast<char **>(targetArgv.data()));
@@ -1998,197 +1954,6 @@ QDBusReply<void> Cli::authorization()
     // Note: we have marked the method Permissions of PM as rejected.
     // Use this method to determin that this client whether have permission to call PM.
     return this->pkgMan.Permissions();
-}
-
-utils::error::Result<void>
-Cli::RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept
-{
-    LINGLONG_TRACE("request directories");
-
-    // TODO: skip request directories for now
-    return LINGLONG_OK;
-
-    auto userHome = qgetenv("HOME").toStdString();
-    if (userHome.empty()) {
-        return LINGLONG_ERR("HOME is not set, skip request directories");
-    }
-
-    QDir dialogPath = QDir{ LINGLONG_LIBEXEC_DIR }.filePath("dialog");
-    if (auto runtimeDir = qgetenv("LINGLONG_PERMISSION_DIALOG_DIR"); !runtimeDir.isEmpty()) {
-        dialogPath.setPath(runtimeDir);
-    }
-
-    auto appDataDir = utils::xdg::appDataDir(info.id);
-    if (!appDataDir) {
-        return LINGLONG_ERR(appDataDir);
-    }
-
-    // make sure app data dir exists
-    auto dir = QDir{ appDataDir->c_str() };
-    if (!dir.mkpath(".")) {
-        return LINGLONG_ERR(QString("make app data directory failed %1").arg(appDataDir->c_str()));
-    }
-
-    auto permissions = QDir{ appDataDir->c_str() }.absoluteFilePath("permissions.json");
-    if (QFileInfo::exists(permissions)) {
-        return LINGLONG_OK;
-    }
-
-    auto fd = ::shm_open(info.id.c_str(), O_RDWR | O_CREAT, 0600);
-    if (fd < 0) {
-        return LINGLONG_ERR("shm_open error:" + common::error::errorString(errno));
-    }
-    auto closeFd = utils::finally::finally([fd] {
-        ::close(fd);
-    });
-
-    struct flock lock{
-        .l_type = F_WRLCK,
-        .l_whence = SEEK_SET,
-        .l_start = 0,
-        .l_len = 0,
-    };
-
-    // all later processes should be blocked
-    bool anotherRunning{ false };
-    while (true) {
-        using namespace std::chrono_literals;
-        auto ret = ::fcntl(fd, F_SETLK, &lock);
-        if (ret == -1) {
-            if (errno == EACCES || errno == EAGAIN || errno == EINTR) {
-                anotherRunning = true;
-                std::this_thread::sleep_for(1s);
-                continue;
-            }
-
-            return LINGLONG_ERR("fcntl lock error: " + common::error::errorString(errno));
-        }
-
-        if (!anotherRunning) {
-            break;
-        }
-
-        lock.l_type = F_UNLCK;
-        ret = ::fcntl(fd, F_SETLK, &lock);
-        if (ret == -1) {
-            return LINGLONG_ERR("fcntl unlock error: " + common::error::errorString(errno));
-        }
-
-        return LINGLONG_OK;
-    }
-
-    // unlink by creator
-    auto releaseResource = utils::finally::finally([&info, &lock, fd] {
-        lock.l_type = F_UNLCK;
-        if (::fcntl(fd, F_SETLK, &lock) == -1) {
-            LogD("failed to unlock mem file: {}", common::error::errorString(errno));
-        }
-
-        if (::shm_unlink(info.id.c_str()) == -1) {
-            LogD("shm_unlink error: {}", common::error::errorString(errno));
-        }
-    });
-
-    std::vector<api::types::v1::XdgDirectoryPermission> requiredDirs = {
-        { .allowed = true, .dirType = "Desktop" },   { .allowed = true, .dirType = "Documents" },
-        { .allowed = true, .dirType = "Downloads" }, { .allowed = true, .dirType = "Music" },
-        { .allowed = true, .dirType = "Pictures" },  { .allowed = true, .dirType = "Videos" }
-    };
-    if (info.permissions && info.permissions->xdgDirectories) {
-        requiredDirs = info.permissions->xdgDirectories.value();
-    }
-
-    if (requiredDirs.empty()) {
-        qDebug() << "no required directories.";
-        return LINGLONG_OK;
-    }
-
-    auto availableDialogs =
-      dialogPath.entryInfoList(QDir::Executable | QDir::Files | QDir::NoSymLinks, QDir::Name);
-    if (availableDialogs.empty()) {
-        return LINGLONG_ERR("no available dialog");
-    }
-
-    auto dialogBin = availableDialogs.first().absoluteFilePath();
-    QProcess dialogProc;
-    dialogProc.setProgram(dialogBin);
-    dialogProc.start();
-    if (!dialogProc.waitForReadyRead(1000)) {
-        dialogProc.kill();
-        return LINGLONG_ERR("wait for reading from dialog " + dialogBin
-                            + "failed:" + dialogProc.errorString());
-    }
-
-    auto rawData = dialogProc.read(4);
-    auto *len = reinterpret_cast<uint32_t *>(rawData.data());
-    rawData = dialogProc.read(*len);
-    auto version = utils::serialize::LoadJSON<api::types::v1::DialogMessage>(rawData.data());
-    if (!version) {
-        dialogProc.kill();
-        return LINGLONG_ERR("error reply from dialog:" + version.error().message());
-    }
-
-    if (version->type != "Handshake") {
-        dialogProc.kill();
-        return LINGLONG_ERR("dialog message type is not Handshake");
-    }
-
-    auto handshake =
-      utils::serialize::LoadJSON<api::types::v1::DialogHandShakePayload>(version->payload);
-    if (!handshake) {
-        dialogProc.kill();
-        return LINGLONG_ERR(" handshake message error:" + handshake.error().message());
-    }
-
-    if (handshake->version != "1.0") {
-        dialogProc.kill();
-        return LINGLONG_ERR(
-          QString{ "incompatible version of dialog message protocol : required 1.0, actual " }
-          + handshake->version.c_str());
-    }
-
-    auto request = api::types::v1::ApplicationPermissionsRequest{ .appID = info.id,
-                                                                  .xdgDirectories = requiredDirs };
-    api::types::v1::DialogMessage msg{ .payload = nlohmann::json(request).dump(),
-                                       .type = "Request" };
-    auto data = nlohmann::json(msg).dump();
-    uint32_t size = data.size();
-    rawData = QByteArray{ reinterpret_cast<char *>(&size), 4 };
-    rawData.append(data.c_str());
-
-    dialogProc.write(rawData);
-    dialogProc.closeWriteChannel();
-    if (!dialogProc.waitForFinished(16 * 1000)) {
-        qWarning() << dialogProc.readAllStandardError();
-        dialogProc.kill();
-        return LINGLONG_ERR("dialog timeout");
-    }
-
-    bool allowRequired{ true };
-    if (dialogProc.exitCode() != 0) {
-        qDebug() << "dialog exited with code" << dialogProc.exitCode() << ":"
-                 << dialogProc.readAllStandardError();
-        allowRequired = false;
-    }
-
-    std::for_each(requiredDirs.begin(),
-                  requiredDirs.end(),
-                  [allowRequired](api::types::v1::XdgDirectoryPermission &dir) {
-                      dir.allowed = allowRequired;
-                  });
-    api::types::v1::ApplicationConfigurationPermissions privs{ .xdgDirectories = requiredDirs };
-    auto content = QByteArray::fromStdString(nlohmann::json(privs).dump());
-
-    QFile permissionFile{ permissions };
-    if (!permissionFile.open(QIODevice::WriteOnly | QIODevice::NewOnly | QIODevice::Text)) {
-        return LINGLONG_ERR(permissionFile);
-    }
-
-    if (permissionFile.write(content) != content.size()) {
-        qWarning() << "incomplete write to" << permissions << ":" << permissionFile.errorString();
-    }
-
-    return LINGLONG_OK;
 }
 
 utils::error::Result<void> Cli::generateLDCache(runtime::RunContext &runContext,
@@ -2255,7 +2020,7 @@ utils::error::Result<void> Cli::generateLDCache(runtime::RunContext &runContext,
 
     if (!cfgBuilder.build()) {
         auto err = cfgBuilder.getError();
-        return LINGLONG_ERR("build cfg error: " + QString::fromStdString(err.reason));
+        return LINGLONG_ERR("build cfg error: " + err.reason);
     }
 
     auto container = this->containerBuilder.create(cfgBuilder);
@@ -2317,11 +2082,11 @@ utils::error::Result<std::filesystem::path> Cli::ensureCache(
             std::stringstream oldCache;
             std::ifstream ifs(ldSoConf, std::ios::binary | std::ios::in);
             if (!ifs.is_open()) {
-                return LINGLONG_ERR("failed to open " + QString::fromStdString(ldSoConf.string()));
+                return LINGLONG_ERR("failed to open " + ldSoConf.string());
             }
             oldCache << ifs.rdbuf();
-            qDebug() << "ld.so.conf:" << QString::fromStdString(ldConf);
-            qDebug() << "old ld.so.conf:" << QString::fromStdString(oldCache.str());
+            LogD("ld.so.conf: {}", ldConf);
+            LogD("old ld.so.conf: {}", oldCache.str());
             if (oldCache.str() != ldConf) {
                 break;
             }
@@ -2347,7 +2112,7 @@ void Cli::updateAM() noexcept
         && this->taskState.state == linglong::api::types::v1::State::Succeed) {
         QDBusConnection conn = QDBusConnection::systemBus();
         if (!conn.isConnected()) {
-            qWarning() << "Failed to connect to the system bus";
+            LogW("Failed to connect to the system bus");
         }
 
         auto peer = linglong::api::dbus::v1::DBusPeer("org.desktopspec.ApplicationUpdateNotifier1",
@@ -2356,8 +2121,8 @@ void Cli::updateAM() noexcept
         auto reply = peer.Ping();
         reply.waitForFinished();
         if (!reply.isValid()) {
-            qWarning() << "Failed to ping org.desktopspec.ApplicationUpdateNotifier1"
-                       << reply.error();
+            LogW("Failed to ping org.desktopspec.ApplicationUpdateNotifier1: {}",
+                 reply.error().message().toStdString());
         }
     }
 }
@@ -2376,9 +2141,8 @@ int Cli::inspect(CLI::App *app, const InspectOptions &options)
         } else if (options.dirType == "bundle") {
             return this->getBundleDir(options);
         } else {
-            this->printer.printErr(
-              LINGLONG_ERRV(QString("Invalid type: %1, type must be layer or bundle")
-                              .arg(QString::fromStdString(options.dirType))));
+            this->printer.printErr(LINGLONG_ERRV(
+              fmt::format("Invalid type: {}, type must be layer or bundle", options.dirType)));
             return -1;
         }
     }
@@ -2401,7 +2165,7 @@ int Cli::getLayerDir(const InspectOptions &options)
     auto ref = this->repository.clearReference(*fuzzyRef,
                                                { .forceRemote = false, .fallbackToRemote = false });
     if (!ref) {
-        qDebug() << ref.error();
+        LogD("{}", ref.error());
         this->printer.printErr(LINGLONG_ERRV("Can not find such application."));
         return -1;
     }
@@ -2417,7 +2181,7 @@ int Cli::getLayerDir(const InspectOptions &options)
         return -1;
     }
 
-    std::cout << layerDir->absolutePath().toStdString() << std::endl;
+    std::cout << layerDir->path() << std::endl;
 
     return 0;
 }
@@ -2486,7 +2250,7 @@ utils::error::Result<void> Cli::waitTaskCreated(QDBusPendingReply<QVariantMap> &
     this->taskState.state = linglong::api::types::v1::State::Queued;
     this->taskState.taskType = taskType;
 
-    LogD("task object path: {}", this->taskObjectPath);
+    LogD("task object path: {}", this->taskObjectPath.toStdString());
 
     if (!conn.connect(pkgMan.service(),
                       taskObjectPath,
@@ -2496,7 +2260,7 @@ utils::error::Result<void> Cli::waitTaskCreated(QDBusPendingReply<QVariantMap> &
                       SLOT(onTaskPropertiesChanged(QString, QVariantMap, QStringList)))) {
         Q_ASSERT(false);
         return LINGLONG_ERR(fmt::format("Failed to connect signal PropertiesChanged: {}",
-                                        conn.lastError().message()));
+                                        conn.lastError().message().toStdString()));
     }
 
     return LINGLONG_OK;

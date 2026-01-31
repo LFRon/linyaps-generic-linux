@@ -4,8 +4,6 @@ etc/profile.d/linglong.sh
 usr/bin/ll-cli
 usr/bin/llpkg
 usr/lib/linglong/*
-usr/lib/x86_64-linux-gnu/libll-icon-rewrite.so
-usr/lib/x86_64-linux-gnu/libll-icon-rewrite.so.1.11.1
 usr/lib/systemd/system-environment-generators/61-linglong
 usr/lib/systemd/user-generators/linglong-user-systemd-generator
 usr/lib/systemd/system/org.deepin.linglong.PackageManager.service lib/systemd/system/
