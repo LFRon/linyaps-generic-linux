@@ -25,6 +25,7 @@
 #include "linglong/api/types/v1/UpgradeListResult.hpp"
 #include "linglong/cli/printer.h"
 #include "linglong/common/dir.h"
+#include "linglong/common/error.h"
 #include "linglong/common/strings.h"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/package/layer_file.h"
@@ -53,7 +54,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -483,7 +483,7 @@ int Cli::run(const RunOptions &options)
     // placeholder file
     auto fd = ::open(pidFile.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
     if (fd == -1) {
-        LogE("create file {} error: {}", pidFile, errorString(errno));
+        LogE("create file {} error: {}", pidFile, common::error::errorString(errno));
         QCoreApplication::exit(-1);
         return -1;
     }
@@ -563,41 +563,10 @@ int Cli::run(const RunOptions &options)
     }
 
     auto commands = options.commands;
-    bool usingDefaultCommand = commands.empty();
-    if (usingDefaultCommand) {
+    if (options.commands.empty()) {
         commands = info.command.value_or(std::vector<std::string>{ "bash" });
     }
-
-    std::optional<std::string> workingDir;
-    if (auto settings = runContext.commandSettings()) {
-        if (settings->entrypoint && usingDefaultCommand) {
-            commands = { *settings->entrypoint };
-        }
-        if (!settings->argsPrefix.empty()) {
-            if (commands.empty()) {
-                commands = settings->argsPrefix;
-            } else {
-                commands.insert(commands.begin() + 1,
-                                settings->argsPrefix.begin(),
-                                settings->argsPrefix.end());
-            }
-        }
-        if (!settings->argsSuffix.empty()) {
-            commands.insert(commands.end(),
-                            settings->argsSuffix.begin(),
-                            settings->argsSuffix.end());
-        }
-        if (settings->cwd) {
-            workingDir = *settings->cwd;
-        }
-    }
-
-    auto hostAccess = runContext.hostAccessPolicy();
-    commands = filePathMapping(commands,
-                               options,
-                               hostAccess.allowHostRoot,
-                               hostAccess.allowHostOs,
-                               hostAccess.allowHostEtc);
+    commands = filePathMapping(commands, options);
 
     // this lambda will dump reference of containerID, app, base and runtime to
     // /run/linglong/getuid()/getpid() to store these needed infomation
@@ -646,6 +615,12 @@ int Cli::run(const RunOptions &options)
         break;
     }
 
+    auto *homeEnv = ::getenv("HOME");
+    if (homeEnv == nullptr) {
+        qCritical() << "Couldn't get HOME env.";
+        return -1;
+    }
+
     runContext.enableSecurityContext(runtime::getDefaultSecurityContexts());
 
     linglong::generator::ContainerCfgBuilder cfgBuilder;
@@ -659,6 +634,13 @@ int Cli::run(const RunOptions &options)
       .bindXDGRuntime()
       .bindUserGroup()
       .bindRemovableStorageMounts()
+      .bindHostRoot()
+      .bindHostStatics()
+      .bindHome(homeEnv)
+      .enablePrivateDir()
+      .mapPrivate(std::string{ homeEnv } + "/.ssh", true)
+      .mapPrivate(std::string{ homeEnv } + "/.gnupg", true)
+      .bindIPC()
       .forwardDefaultEnv()
       .enableSelfAdjustingMount();
 
@@ -703,6 +685,12 @@ int Cli::run(const RunOptions &options)
                                             .source = socketDir.string(),
                                             .type = "bind" });
 
+    if (runtimeConfig && runtimeConfig->env) {
+        for (const auto &[key, value] : *runtimeConfig->env) {
+            cfgBuilder.appendEnv(key, value, true);
+        }
+    }
+
     for (const auto &env : options.envs) {
         auto split = env.cbegin() + env.find('='); // already checked by CLI
         cfgBuilder.appendEnv(std::string(env.cbegin(), split),
@@ -734,11 +722,8 @@ int Cli::run(const RunOptions &options)
     }
 
     ocppi::runtime::RunOption opt{};
-    ocppi::runtime::config::types::Process process{ .args = std::move(commands) };
-    if (workingDir) {
-        process.cwd = *workingDir;
-    }
-    auto result = (*container)->run(process, opt);
+    auto result =
+      (*container)->run(ocppi::runtime::config::types::Process{ .args = std::move(commands) }, opt);
     if (!result) {
         this->printer.printErr(result.error());
         return -1;
@@ -1710,16 +1695,13 @@ int Cli::content(const ContentOptions &options)
     return 0;
 }
 
-[[nodiscard]] std::string Cli::mappingFile(const std::filesystem::path &file,
-                                           bool allowHostRoot,
-                                           bool allowHostOs,
-                                           bool allowHostEtc) noexcept
+[[nodiscard]] std::string Cli::mappingFile(const std::filesystem::path &file) noexcept
 {
     std::error_code ec;
     auto target = file;
 
     if (!target.is_absolute()) {
-        return target.string();
+        return target;
     }
 
     if (std::filesystem::is_symlink(file, ec)) {
@@ -1729,7 +1711,7 @@ int Cli::content(const ContentOptions &options)
         if (real != nullptr) {
             target = real;
         } else {
-            LogE("resolve symlink {} error: {}", file, errorString(errno));
+            LogE("resolve symlink {} error: {}", file, common::error::errorString(errno));
         }
     }
 
@@ -1739,38 +1721,17 @@ int Cli::content(const ContentOptions &options)
 
     // Dont't mapping the file under /home
     if (auto tmp = target.string(); tmp.rfind("/home/", 0) == 0) {
-        return target.string();
+        return target;
     }
 
-    auto targetStr = target.string();
-    auto relative = std::filesystem::path{ target }.lexically_relative("/");
-
-    if (allowHostRoot) {
-        return (std::filesystem::path{ "/run/host/rootfs" } / relative).string();
-    }
-
-    auto startsWith = [&targetStr](const std::string &prefix) {
-        return targetStr == prefix || targetStr.rfind(prefix + "/", 0) == 0;
-    };
-
-    if (allowHostOs && (startsWith("/usr") || startsWith("/lib") || startsWith("/lib64"))) {
-        return (std::filesystem::path{ "/run/host-os" } / relative).string();
-    }
-
-    if (allowHostEtc && startsWith("/etc")) {
-        return (std::filesystem::path{ "/run/host-etc" } / relative).string();
-    }
-
-    return targetStr;
+    return std::filesystem::path{ "/run/host/rootfs" }
+    / std::filesystem::path{ target }.lexically_relative("/");
 }
 
-[[nodiscard]] std::string Cli::mappingUrl(std::string_view url,
-                                          bool allowHostRoot,
-                                          bool allowHostOs,
-                                          bool allowHostEtc) noexcept
+[[nodiscard]] std::string Cli::mappingUrl(std::string_view url) noexcept
 {
     if (url.rfind('/', 0) == 0) {
-        return mappingFile(url, allowHostRoot, allowHostOs, allowHostEtc);
+        return mappingFile(url);
     }
 
     // if the scheme of url is "file", we need to map the native file path to the corresponding
@@ -1778,10 +1739,7 @@ int Cli::content(const ContentOptions &options)
     constexpr std::string_view filePrefix = "file://";
     if (url.rfind(filePrefix, 0) == 0) {
         std::filesystem::path nativePath = url.substr(filePrefix.size());
-        std::filesystem::path target = mappingFile(nativePath,
-                                                   allowHostRoot,
-                                                   allowHostOs,
-                                                   allowHostEtc);
+        std::filesystem::path target = mappingFile(nativePath);
         return std::string{ filePrefix } + target.string();
     }
 
@@ -1789,10 +1747,7 @@ int Cli::content(const ContentOptions &options)
 }
 
 std::vector<std::string> Cli::filePathMapping(const std::vector<std::string> &command,
-                                              const RunOptions &options,
-                                              bool allowHostRoot,
-                                              bool allowHostOs,
-                                              bool allowHostEtc) const noexcept
+                                              const RunOptions &options) const noexcept
 {
     // FIXME: couldn't handel command like 'll-cli run org.xxx.yyy --file f1 f2 f3 org.xxx.yyy %%F'
     // can't distinguish the boundary of command , need validate the command arguments in the future
@@ -1818,7 +1773,7 @@ std::vector<std::string> Cli::filePathMapping(const std::vector<std::string> &co
                     continue;
                 }
 
-                execArgs.emplace_back(mappingFile(file, allowHostRoot, allowHostOs, allowHostEtc));
+                execArgs.emplace_back(mappingFile(file));
             }
 
             continue;
@@ -1834,7 +1789,7 @@ std::vector<std::string> Cli::filePathMapping(const std::vector<std::string> &co
                     continue;
                 }
 
-                execArgs.emplace_back(mappingUrl(url, allowHostRoot, allowHostOs, allowHostEtc));
+                execArgs.emplace_back(mappingUrl(url));
             }
 
             continue;
@@ -2036,7 +1991,7 @@ Cli::RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept
 
     auto fd = ::shm_open(info.id.c_str(), O_RDWR | O_CREAT, 0600);
     if (fd < 0) {
-        return LINGLONG_ERR("shm_open error:" + errorString(errno));
+        return LINGLONG_ERR("shm_open error:" + common::error::errorString(errno));
     }
     auto closeFd = utils::finally::finally([fd] {
         ::close(fd);
@@ -2061,7 +2016,7 @@ Cli::RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept
                 continue;
             }
 
-            return LINGLONG_ERR("fcntl lock error: " + errorString(errno));
+            return LINGLONG_ERR("fcntl lock error: " + common::error::errorString(errno));
         }
 
         if (!anotherRunning) {
@@ -2071,7 +2026,7 @@ Cli::RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept
         lock.l_type = F_UNLCK;
         ret = ::fcntl(fd, F_SETLK, &lock);
         if (ret == -1) {
-            return LINGLONG_ERR("fcntl unlock error: " + errorString(errno));
+            return LINGLONG_ERR("fcntl unlock error: " + common::error::errorString(errno));
         }
 
         return LINGLONG_OK;
@@ -2081,11 +2036,11 @@ Cli::RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept
     auto releaseResource = utils::finally::finally([&info, &lock, fd] {
         lock.l_type = F_UNLCK;
         if (::fcntl(fd, F_SETLK, &lock) == -1) {
-            LogD("failed to unlock mem file: {}", errorString(errno));
+            LogD("failed to unlock mem file: {}", common::error::errorString(errno));
         }
 
         if (::shm_unlink(info.id.c_str()) == -1) {
-            LogD("shm_unlink error: {}", errorString(errno));
+            LogD("shm_unlink error: {}", common::error::errorString(errno));
         }
     });
 

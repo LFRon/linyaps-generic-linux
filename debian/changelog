@@ -1,3 +1,9 @@
+linglong (1.11.2-0) unstable; urgency=medium
+
+  * Follow OpenAtom-Linyaps upstream
+
+ -- LFRon <ronforever@qq.com>  Tue, 3 Feb 2026 11:03:20 +0800
+
 linglong (1.11.1-2) unstable; urgency=medium
 
   * revert: Fix tray-icon issue.

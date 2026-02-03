@@ -129,7 +129,7 @@ utils::error::Result<std::optional<RuntimeConfigure>> loadRuntimeConfig(const st
     }
 
     auto merged = MergeRuntimeConfig(configs);
-    return merged;
+    return std::move(merged);
 }
 
 } // namespace linglong::utils
