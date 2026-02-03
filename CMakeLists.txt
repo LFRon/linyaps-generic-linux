@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.11.4)
 
 project(
   linglong
-  VERSION 1.11.2
+  VERSION 1.10.0
   DESCRIPTION "a container based application package manager for Linux desktop"
   HOMEPAGE_URL "https://github.com/OpenAtom-Linyaps/linyaps"
   LANGUAGES CXX C)
@@ -33,7 +33,7 @@ set(ENABLE_LINGLONG_INSTALLER
     CACHE BOOL "enable linglong installer")
 
 set(ENABLE_TESTING
-    OFF
+    ON
     CACHE BOOL "enable testing")
 
 set(LINGLONG_USERNAME

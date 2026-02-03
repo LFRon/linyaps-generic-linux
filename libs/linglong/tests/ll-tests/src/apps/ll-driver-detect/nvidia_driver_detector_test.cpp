@@ -5,7 +5,6 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "common/tempdir.h"
 #include "nvidia_driver_detector.h"
 
 #include <filesystem>
@@ -14,6 +13,13 @@
 using namespace linglong::driver::detect;
 using ::testing::_;
 using ::testing::Return;
+
+namespace {
+std::filesystem::path GetTempVersionFilePath()
+{
+    return std::filesystem::temp_directory_path() / "nvidia_test_version_file.txt";
+}
+} // namespace
 
 // A mock class that only mocks checkPackageInstalled, as getDriverVersion is no longer virtual
 class TestableNVIDIADriverDetector : public NVIDIADriverDetector
@@ -37,21 +43,29 @@ public:
 class NvidiaDriverDetectorTest : public ::testing::Test
 {
 protected:
-    // Helper to create a mock version file
-    void createMockVersionFile(std::filesystem::path path, const std::string &content)
+    void SetUp() override
     {
-        std::ofstream file(path);
-        ASSERT_TRUE(file.is_open()) << "Failed to create mock version file: " << path;
+        versionFilePath = GetTempVersionFilePath();
+        std::filesystem::remove(versionFilePath); // Ensure clean slate
+    }
+
+    void TearDown() override { std::filesystem::remove(versionFilePath); }
+
+    // Helper to create a mock version file
+    void createMockVersionFile(const std::string &content)
+    {
+        std::ofstream file(versionFilePath);
+        ASSERT_TRUE(file.is_open()) << "Failed to create mock version file: " << versionFilePath;
         file << content;
         file.close();
     }
+
+    std::filesystem::path versionFilePath;
 };
 
 TEST_F(NvidiaDriverDetectorTest, Detect_Success_PackageNotInstalled)
 {
-    TempDir temp_dir;
-    auto versionFilePath = temp_dir.path() / "nvidia_test_version_file.txt";
-    createMockVersionFile(versionFilePath, "510.85.02"); // Simplified version format now
+    createMockVersionFile("510.85.02"); // Simplified version format now
     TestableNVIDIADriverDetector detector(versionFilePath.string());
     const std::string expectedVersion = "510-85-02"; // With dots replaced by dashes
     const std::string expectedPackageName =
@@ -72,9 +86,7 @@ TEST_F(NvidiaDriverDetectorTest, Detect_Success_PackageNotInstalled)
 
 TEST_F(NvidiaDriverDetectorTest, Detect_Success_PackageAlreadyInstalled)
 {
-    TempDir temp_dir;
-    auto versionFilePath = temp_dir.path() / "nvidia_test_version_file.txt";
-    createMockVersionFile(versionFilePath, "510.85.02");
+    createMockVersionFile("510.85.02");
     TestableNVIDIADriverDetector detector(versionFilePath.string());
     const std::string expectedVersion = "510-85-02";
     const std::string expectedPackageName =
@@ -95,8 +107,6 @@ TEST_F(NvidiaDriverDetectorTest, Detect_Success_PackageAlreadyInstalled)
 
 TEST_F(NvidiaDriverDetectorTest, Detect_Fails_When_VersionFileDoesNotExist)
 {
-    TempDir temp_dir;
-    auto versionFilePath = temp_dir.path() / "nvidia_test_version_file.txt";
     std::filesystem::remove(versionFilePath); // Ensure file does not exist
     TestableNVIDIADriverDetector detector(versionFilePath.string());
 
@@ -110,9 +120,7 @@ TEST_F(NvidiaDriverDetectorTest, Detect_Fails_When_VersionFileDoesNotExist)
 
 TEST_F(NvidiaDriverDetectorTest, Detect_Fails_When_VersionFileIsEmpty)
 {
-    TempDir temp_dir;
-    auto versionFilePath = temp_dir.path() / "nvidia_test_version_file.txt";
-    createMockVersionFile(versionFilePath, ""); // Empty file
+    createMockVersionFile(""); // Empty file
     TestableNVIDIADriverDetector detector(versionFilePath.string());
 
     EXPECT_CALL(detector, checkPackageInstalled(_)).Times(0); // Should not be called
