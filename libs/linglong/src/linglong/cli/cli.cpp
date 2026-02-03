@@ -558,9 +558,35 @@ int Cli::run(const RunOptions &options)
     const auto &info = appLayerItem->info;
 
     auto commands = options.commands;
-    if (options.commands.empty()) {
+    bool usingDefaultCommand = commands.empty();
+    if (usingDefaultCommand) {
         commands = info.command.value_or(std::vector<std::string>{ "bash" });
     }
+
+    std::optional<std::string> workingDir;
+    if (auto settings = runContext.commandSettings()) {
+        if (settings->entrypoint && usingDefaultCommand) {
+            commands = { *settings->entrypoint };
+        }
+        if (!settings->argsPrefix.empty()) {
+            if (commands.empty()) {
+                commands = settings->argsPrefix;
+            } else {
+                commands.insert(commands.begin() + 1,
+                                settings->argsPrefix.begin(),
+                                settings->argsPrefix.end());
+            }
+        }
+        if (!settings->argsSuffix.empty()) {
+            commands.insert(commands.end(),
+                            settings->argsSuffix.begin(),
+                            settings->argsSuffix.end());
+        }
+        if (settings->cwd) {
+            workingDir = *settings->cwd;
+        }
+    }
+
     commands = filePathMapping(commands, options);
 
     // this lambda will dump reference of containerID, app, base and runtime to
@@ -609,12 +635,10 @@ int Cli::run(const RunOptions &options)
         break;
     }
 
-    auto *homeEnv = ::getenv("HOME");
-    if (homeEnv == nullptr) {
+    if (::getenv("HOME") == nullptr) {
         LogE("Couldn't get HOME env.");
         return -1;
     }
-
     runContext.enableSecurityContext(runtime::getDefaultSecurityContexts());
 
     linglong::generator::ContainerCfgBuilder cfgBuilder;
@@ -628,13 +652,6 @@ int Cli::run(const RunOptions &options)
       .bindXDGRuntime()
       .bindUserGroup()
       .bindRemovableStorageMounts()
-      .bindHostRoot()
-      .bindHostStatics()
-      .bindHome(homeEnv)
-      .enablePrivateDir()
-      .mapPrivate(std::string{ homeEnv } + "/.ssh", true)
-      .mapPrivate(std::string{ homeEnv } + "/.gnupg", true)
-      .bindIPC()
       .forwardDefaultEnv()
       .enableSelfAdjustingMount();
 
@@ -679,12 +696,6 @@ int Cli::run(const RunOptions &options)
                                             .source = socketDir.string(),
                                             .type = "bind" });
 
-    if (runtimeConfig && runtimeConfig->env) {
-        for (const auto &[key, value] : *runtimeConfig->env) {
-            cfgBuilder.appendEnv(key, value, true);
-        }
-    }
-
     for (const auto &env : options.envs) {
         auto split = env.cbegin() + env.find('='); // already checked by CLI
         cfgBuilder.appendEnv(std::string(env.cbegin(), split),
@@ -716,8 +727,11 @@ int Cli::run(const RunOptions &options)
     }
 
     ocppi::runtime::RunOption opt{};
-    auto result =
-      (*container)->run(ocppi::runtime::config::types::Process{ .args = std::move(commands) }, opt);
+    ocppi::runtime::config::types::Process process{ .args = std::move(commands) };
+    if (workingDir) {
+        process.cwd = *workingDir;
+    }
+    auto result = (*container)->run(process, opt);
     if (!result) {
         this->printer.printErr(result.error());
         return -1;
