@@ -9,7 +9,6 @@
 #include "linglong/api/types/v1/Generators.hpp" // IWYU pragma: keep
 #include "linglong/api/types/v1/LayerInfo.hpp"
 #include "linglong/common/error.h"
-#include "linglong/common/formatter.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/log/formatter.h" // IWYU pragma: keep
 #include "linglong/utils/serialize/json.h"
@@ -131,7 +130,7 @@ utils::error::Result<void> LayerFile::saveTo(const QString &destination) noexcep
     LINGLONG_TRACE(fmt::format("save layer file to {}", destination.toStdString()));
 
     if (!this->copy(destination)) {
-        return LINGLONG_ERR(this->errorString().toStdString());
+        return LINGLONG_ERR(*this);
     }
 
     return LINGLONG_OK;

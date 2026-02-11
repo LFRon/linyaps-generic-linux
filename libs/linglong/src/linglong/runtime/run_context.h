@@ -16,12 +16,6 @@
 
 #include <filesystem>
 #include <list>
-#include <map>
-#include <memory>
-#include <optional>
-#include <string>
-#include <unordered_map>
-#include <vector>
 
 namespace linglong::runtime {
 
@@ -75,16 +69,6 @@ struct ResolveOptions
 class RunContext
 {
 public:
-    struct CommandSettings
-    {
-        std::vector<std::string> envKVs;
-        std::vector<ocppi::runtime::config::types::Mount> mounts;
-        std::vector<std::string> argsPrefix;
-        std::vector<std::string> argsSuffix;
-        std::optional<std::string> entrypoint;
-        std::optional<std::string> cwd;
-    };
-
     RunContext(repo::OSTreeRepo &r)
         : repo(r)
     {
@@ -103,9 +87,6 @@ public:
     api::types::v1::ContainerProcessStateInfo stateInfo();
 
     repo::OSTreeRepo &getRepo() const { return repo; }
-
-    std::optional<CommandSettings> commandSettings() const;
-    void setRuntimeConfigEnabled(bool enabled) { runtimeConfigEnabled = enabled; }
 
     const std::string &getContainerId() const { return containerID; }
 
@@ -142,7 +123,6 @@ private:
       const package::Reference &ref,
       const std::optional<std::map<std::string, std::vector<api::types::v1::ExtensionDefine>>>
         &externalExtensionDefs);
-    std::string currentAppId() const;
 
     repo::OSTreeRepo &repo;
     std::unordered_map<SecurityContextType, std::unique_ptr<SecurityContext>> securityContexts;
@@ -150,14 +130,11 @@ private:
     std::optional<RuntimeLayer> runtimeLayer;
     std::optional<RuntimeLayer> appLayer;
     std::list<RuntimeLayer> extensionLayers;
-    std::optional<std::string> hostNvidiaExtensionName;
 
     std::string targetId;
     std::optional<std::filesystem::path> appOutput;
     std::optional<std::filesystem::path> runtimeOutput;
     std::optional<std::filesystem::path> extensionOutput;
-
-    bool runtimeConfigEnabled{ false };
 
     std::string containerID;
     std::filesystem::path bundle;

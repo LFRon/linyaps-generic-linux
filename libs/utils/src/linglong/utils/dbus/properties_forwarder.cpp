@@ -4,17 +4,14 @@
 
 #include "properties_forwarder.h"
 
-#include "linglong/common/formatter.h"
-#include "linglong/utils/log/log.h"
-
 #include <QCoreApplication>
 #include <QDBusMessage>
+#include <QDebug>
 #include <QMetaProperty>
 
-#include <cstdlib>
 #include <utility>
 
-namespace linglong::common::dbus {
+namespace linglong::utils::dbus {
 
 PropertiesForwarder::PropertiesForwarder(QDBusConnection connection,
                                          QString path,
@@ -26,14 +23,12 @@ PropertiesForwarder::PropertiesForwarder(QDBusConnection connection,
     , connection(std::move(connection))
 {
     if (parent == nullptr) {
-        LogE("parent is nullptr");
-        std::abort();
+        qFatal("parent is nullptr");
     }
 
     const auto *mo = parent->metaObject();
     if (mo == nullptr) {
-        LogE("couldn't find metaObject of parent.");
-        std::abort();
+        qFatal("couldn't find metaObject of parent.");
     }
 
     for (auto i = mo->propertyOffset(); i < mo->propertyCount(); ++i) {
@@ -48,7 +43,7 @@ PropertiesForwarder::PropertiesForwarder(QDBusConnection connection,
     }
 }
 
-utils::error::Result<void> PropertiesForwarder::forward() noexcept
+error::Result<void> PropertiesForwarder::forward() noexcept
 {
     LINGLONG_TRACE("forward propertiesChanged")
     auto msg = QDBusMessage::createSignal(this->path,
@@ -58,7 +53,7 @@ utils::error::Result<void> PropertiesForwarder::forward() noexcept
 
     if (!connection.send(msg)) {
         return LINGLONG_ERR(
-          fmt::format("send dbus message failed: {}", connection.lastError().message()));
+          QString{ "send dbus message failed: %1" }.arg(connection.lastError().message()));
     }
 
     return LINGLONG_OK;
@@ -71,7 +66,7 @@ void PropertiesForwarder::PropertyChanged()
 
     const auto *mo = sender->metaObject();
     if (mo == nullptr) {
-        LogE("relay propertiesChanged failed.");
+        qCritical() << __PRETTY_FUNCTION__ << "relay propertiesChanged failed.";
         return;
     }
 
@@ -92,7 +87,7 @@ void PropertiesForwarder::PropertyChanged()
     }
 
     if (propName.isEmpty()) {
-        LogE("can't find corresponding property: {}", signature.toStdString());
+        qCritical() << "can't find corresponding property:" << signature;
         return;
     }
 
@@ -105,4 +100,4 @@ void PropertiesForwarder::PropertyChanged()
     propCache.insert(propName, prop.read(sender));
 }
 
-} // namespace linglong::common::dbus
+} // namespace linglong::utils::dbus

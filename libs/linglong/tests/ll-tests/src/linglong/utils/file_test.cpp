@@ -6,7 +6,7 @@
 
 #include "linglong/utils/file.h"
 
-#include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -351,7 +351,7 @@ TEST_F(FileTest, WriteFile)
 
     // Test writing empty content
     fs::path empty_file = dest_dir / "empty.txt";
-    result = linglong::utils::writeFile(empty_file.string(), "");
+    result = linglong::utils::writeFile(empty_file.string(), "\0");
     ASSERT_TRUE(result.has_value()) << result.error().message();
     EXPECT_TRUE(fs::exists(empty_file));
 

@@ -17,7 +17,6 @@ pfl_add_executable(
   src/linglong/builder/linglong_builder_test.cpp
   src/linglong/builder/source_fetcher_test.cpp
   src/linglong/cli/cli_test.cpp
-  src/linglong/common/gkeyfile_wrapper_test.cpp
   src/linglong/common/strings_test.cpp
   src/linglong/common/socket_test.cpp
   src/linglong/common/xdg_test.cpp
@@ -27,7 +26,6 @@ pfl_add_executable(
   src/linglong/mocks/uab_file_mock.h
   src/linglong/package/architecture_test.cpp
   src/linglong/package/fallback_version_test.cpp
-  src/linglong/package/layer_dir_test.cpp
   src/linglong/package/layer_packager_test.cpp
   src/linglong/package_manager/action_test.cpp
   src/linglong/package_manager/task_test.cpp
@@ -53,6 +51,7 @@ pfl_add_executable(
   src/linglong/utils/error/error_test.cpp
   src/linglong/utils/file_test.cpp
   src/linglong/utils/filelock_test.cpp
+  src/linglong/utils/gkeyfile_wrapper_test.cpp
   src/linglong/utils/log.cpp
   src/linglong/utils/namespce.cpp
   src/linglong/utils/packageinfo_handler_test.cpp
@@ -69,7 +68,6 @@ pfl_add_executable(
   ${PROJECT_SOURCE_DIR}/apps/ll-driver-detect/src/dbus_notifier.cpp
   ${PROJECT_SOURCE_DIR}/apps/ll-driver-detect/src/application_singleton.cpp
   ${PROJECT_SOURCE_DIR}/apps/ll-driver-detect/src/driver_detection_manager.cpp
-  src/apps/ll-driver-detect/driver_detector_test.cpp
   src/apps/ll-driver-detect/nvidia_driver_detector_test.cpp
   src/apps/ll-driver-detect/driver_detection_config_test.cpp
   src/apps/ll-driver-detect/application_singleton_test.cpp

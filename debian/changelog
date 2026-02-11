@@ -1,54 +1,14 @@
-linglong (1.11.2-1) unstable; urgency=medium
+linglong (1.11.3-1) unstable; urgency=medium
 
-  * Follow OpenAtom-Linyaps upstream
+  * release 1.11.3-1.
 
- -- LFRon <ronforever@qq.com>  Tue, 3 Feb 2026 11:03:20 +0800
-
-linglong (1.11.1-2) unstable; urgency=medium
-
-  * revert: Fix tray-icon issue.
-  * feat: introduce host filesystem control.
-  * fix: Do not umount host-root default.
-
- -- LFRon <ronforever@qq.com>  Sat, 31 Jan 2026 19:18:20 +0800
-
-linglong (1.11.1-1) unstable; urgency=medium
-
-  * Improve Tray icon load.
-  * Follow 1.11.1 update upstream.
-
- -- LFRon <ronforever@qq.com>  Tue, 27 Jan 2026 21:52:20 +0800
-
-linglong (1.11.0-3) unstable; urgency=medium
-
-  * Improve NVIDIA Driver fallback.
-  * Mainline config from upstream.
-  * Fix known issues.
-
- -- LFRon <ronforever@qq.com>  Sun, 18 Jan 2026 09:54:20 +0800
-
-linglong (1.11.0-2) unstable; urgency=medium
-
-  * Improve NVIDIA Driver fallback.
-  * Fix serious IPC issue.
-
- -- LFRon <ronforever@qq.com>  Sat, 17 Jan 2026 09:09:20 +0800
+ -- dengbo <dengbo@deepin.org>  Mon, 09 Feb 2026 10:44:39 +0800
 
 linglong (1.11.0-1) unstable; urgency=medium
 
   * release 1.11.0-1.
-  * Improve NVIDIA Driver fallback.
-  * Add extension force-loading function upstream.
 
- -- LFRon <ronforever@qq.com>  Fri, 16 Jan 2026 21:00:20 +0800
-
-linglong (1.10.4-0) unstable; urgency=medium
-
-  * release 1.10.4-0.
-  * Add NVIDIA Driver fallback.
-  * Add experimental extension force-loading.
-
- -- LFRon <ronforever@qq.com>  Thu, 15 Jan 2026 12:04:20 +0800
+ -- dengbo <dengbo@deepin.org>  Fri, 23 Jan 2026 15:33:00 +0800
 
 linglong (1.9.0-1) unstable; urgency=medium
 

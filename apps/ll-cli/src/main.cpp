@@ -12,12 +12,12 @@
 #include "linglong/cli/json_printer.h"
 #include "linglong/cli/terminal_notifier.h"
 #include "linglong/common/error.h"
-#include "linglong/common/global/initialize.h"
 #include "linglong/repo/config.h"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/utils/finally/finally.h"
 #include "linglong/utils/gettext.h"
+#include "linglong/utils/global/initialize.h"
 #include "linglong/utils/log/log.h"
 #include "ocppi/cli/crun/Crun.hpp"
 
@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <string_view>
 #include <thread>
 
 #include <fcntl.h>
@@ -56,10 +57,10 @@ void startProcess(const QString &program, const QStringList &args = {})
     qint64 pid = 0;
     process.startDetached(&pid);
 
-    LogD("start {} {} as {}", program.toStdString(), args.join(" ").toStdString(), pid);
+    qDebug() << "Start" << program << args << "as" << pid;
 
     QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, [pid]() {
-        LogD("kill {}", pid);
+        qDebug() << "Kill" << pid;
         kill(pid, SIGTERM);
     });
 }
@@ -67,36 +68,13 @@ void startProcess(const QString &program, const QStringList &args = {})
 std::vector<std::string> transformOldExec(int argc, char **argv) noexcept
 {
     std::vector<std::string> res;
-    std::reverse_copy(argv + 1, argv + argc, std::back_inserter(res));
-    if (std::find(res.rbegin(), res.rend(), "run") == res.rend()) {
-        return res;
-    }
 
-    auto exec = std::find(res.rbegin(), res.rend(), "--exec");
-    if (exec == res.rend()) {
-        return res;
-    }
-
-    if ((exec + 1) == res.rend() || (exec + 2) != res.rend()) {
-        *exec = "--";
-        LogD("replace `--exec` with `--`");
-        return res;
-    }
-
-    wordexp_t words;
-    auto _ = linglong::utils::finally::finally([&]() {
-        wordfree(&words);
-    });
-
-    if (auto ret = wordexp((exec + 1)->c_str(), &words, 0); ret != 0) {
-        LogE("wordexp on {} failed with {} transform old exec arguments failed.", *(exec + 1), ret);
-        return res;
-    }
-
-    auto it = res.erase(res.rend().base(), exec.base());
-    res.emplace(it, "--");
-    for (decltype(words.we_wordc) i = 0; i < words.we_wordc; ++i) {
-        res.emplace(res.begin(), words.we_wordv[i]);
+    for (int i = argc - 1; i > 0; --i) {
+        if (std::string_view(argv[i]) == "--exec") {
+            res.emplace_back("--");
+        } else {
+            res.emplace_back(argv[i]);
+        }
     }
 
     return res;
@@ -127,7 +105,7 @@ int lockCheck() noexcept
                             .l_pid = 0 };
 
     if (::fcntl(fd, F_GETLK, &lock_info) == -1) {
-        LogE("failed to get lock {}", lock);
+        qCritical() << "failed to get lock" << lock;
         return -1;
     }
 
@@ -609,6 +587,8 @@ void addInspectCommand(CLI::App &commandParser,
 
 } // namespace
 
+using namespace linglong::utils::global;
+
 // 初始化仓库
 linglong::utils::error::Result<linglong::repo::OSTreeRepo *> initOSTreeRepo()
 {
@@ -623,7 +603,7 @@ linglong::utils::error::Result<linglong::repo::OSTreeRepo *> initOSTreeRepo()
     // check repo root
     auto repoRoot = QDir(LINGLONG_ROOT);
     if (!repoRoot.exists()) {
-        return LINGLONG_ERR("repo root doesn't exist" + repoRoot.absolutePath().toStdString());
+        return LINGLONG_ERR("repo root doesn't exist" + repoRoot.absolutePath());
     }
 
     // create repo
@@ -732,15 +712,15 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     while (true) {
         auto lockOwner = lockCheck();
         if (lockOwner == -1) {
-            LogE("lock check failed");
+            qCritical() << "lock check failed";
             return -1;
         }
 
         if (lockOwner > 0) {
-            std::cerr << "\r\33[K"
-                      << "\033[?25l"
-                      << "repository is being operated by another process, waiting for" << lockOwner
-                      << "\033[?25h" << std::endl;
+            qInfo() << "\r\33[K"
+                    << "\033[?25l"
+                    << "repository is being operated by another process, waiting for" << lockOwner
+                    << "\033[?25h";
             using namespace std::chrono_literals;
             std::this_thread::sleep_for(1s);
             continue;
@@ -759,11 +739,11 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     // if --no-dbus flag is set, start package manager in sudo mode
     if (*noDBusFlag) {
         if (getuid() != 0) {
-            LogE("--no-dbus should only be used by root user.");
+            qCritical() << "--no-dbus should only be used by root user.";
             return -1;
         }
 
-        LogW("some subcommands will failed in --no-dbus mode.");
+        qInfo() << "some subcommands will failed in --no-dbus mode.";
         const auto pkgManAddress = QString("unix:path=/tmp/linglong-package-manager.socket");
         startProcess("sudo",
                      { "--user",
@@ -776,8 +756,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
 
         pkgManConn = QDBusConnection::connectToPeer(pkgManAddress, "ll-package-manager");
         if (!pkgManConn.isConnected()) {
-            LogE("Failed to connect to ll-package-manager: {}",
-                 pkgManConn.lastError().message().toStdString());
+            qCritical() << "Failed to connect to ll-package-manager:" << pkgManConn.lastError();
             return -1;
         }
 
@@ -793,8 +772,8 @@ You can report bugs to the linyaps team under this project: https://github.com/O
         auto reply = peer.Ping();
         reply.waitForFinished();
         if (!reply.isValid()) {
-            LogE("Failed to activate org.deepin.linglong.PackageManager1: {}",
-                 reply.error().message().toStdString());
+            qCritical() << "Failed to activate org.deepin.linglong.PackageManager1"
+                        << reply.error();
             return -1;
         }
     }
@@ -816,7 +795,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     // check oci runtime
     auto path = QStandardPaths::findExecutable(ociRuntimeCLI, { BINDIR });
     if (path.isEmpty()) {
-        LogE("{} not found", ociRuntimeCLI.toStdString());
+        qCritical() << ociRuntimeCLI << "not found";
         return -1;
     }
 
@@ -840,18 +819,19 @@ You can report bugs to the linyaps team under this project: https://github.com/O
         try {
             notifier = std::make_unique<DBusNotifier>();
         } catch (std::runtime_error &err) {
-            LogW("initialize DBus notifier failed: {} try to fallback to terminal notifier.",
-                 err.what());
+            qInfo() << "initialize DBus notifier failed:" << err.what()
+                    << "try to fallback to terminal notifier.";
         }
     }
 
     if (!notifier) {
-        LogW("Using DummyNotifier, expected interactions and prompts will not be displayed.");
+        qInfo() << "Using DummyNotifier, expected interactions and prompts will not be "
+                   "displayed.";
         notifier = std::make_unique<linglong::cli::DummyNotifier>();
     }
     auto repo = initOSTreeRepo();
     if (!repo.has_value()) {
-        LogE("initOSTreeRepo failed: {}", repo.error());
+        qCritical() << "initOSTreeRepo failed" << repo.error();
         return -1;
     }
     // create cli
@@ -870,7 +850,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
                          cli,
                          &Cli::cancelCurrentTask)
         == nullptr) {
-        LogE("failed to connect signal: aboutToQuit");
+        qCritical() << "failed to connect signal: aboutToQuit";
         return -1;
     }
 
@@ -936,8 +916,8 @@ int main(int argc, char **argv)
 
     QCoreApplication app(argc, argv);
     // application initialize
-    linglong::common::global::applicationInitialize();
-    linglong::common::global::initLinyapsLogSystem(linglong::utils::log::LogBackend::Journal);
+    applicationInitialize();
+    initLinyapsLogSystem(linglong::utils::log::LogBackend::Journal);
 
     // invoke method
     auto ret = QMetaObject::invokeMethod(

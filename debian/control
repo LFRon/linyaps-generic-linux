@@ -31,7 +31,8 @@ Build-Depends: cmake,
                zlib1g-dev,
                gettext,
                erofs-utils,
-               libcap-dev
+               libcap-dev,
+               uuid-dev
 Standards-Version: 4.1.3
 Homepage: http://www.deepin.org
 
@@ -45,8 +46,6 @@ Depends: desktop-file-utils,
          erofs-utils,
          ${misc:Depends},
          ${shlibs:Depends}
-Replaces: linglong-dbus-proxy
-Conflicts: linglong-dbus-proxy
 Recommends: erofsfuse
 Description: Linglong package manager.
  Linglong package management command line tool.
@@ -61,7 +60,6 @@ Depends: erofs-utils,
          uidmap
          ${misc:Depends},
          ${shlibs:Depends}
-Recommends: linglong-loader
 Suggests: devscripts
 Description: Linglong application building tools.
  ll-builder is a tool that makes it easy to build applications and dependencies.
