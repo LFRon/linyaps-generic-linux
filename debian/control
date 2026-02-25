@@ -2,7 +2,7 @@ Source: linglong
 Section: admin
 Priority: optional
 Maintainer: Deepin Packages Builder <packages@deepin.com>
-Build-Depends: cmake,clang,llvm,lld,
+Build-Depends: cmake,
                debhelper-compat (= 12),
                intltool,
                libcli11-dev (>= 2.4.1) | hello,
@@ -25,14 +25,15 @@ Build-Depends: cmake,clang,llvm,lld,
                libzstd-dev,
                nlohmann-json3-dev (>= 3.5.0),
                pkg-config,
-               qt6-base-dev | qtbase5-dev,
-               qt6-base-private-dev | qtbase5-private-dev,
+               qtbase5-dev | qt6-base-dev,
+               qtbase5-private-dev | qt6-base-private-dev,
                systemd,
                zlib1g-dev,
                gettext,
                erofs-utils,
                libcap-dev,
                uuid-dev,
+               clang, llvm, lld
 Standards-Version: 4.1.3
 Homepage: http://www.deepin.org
 
