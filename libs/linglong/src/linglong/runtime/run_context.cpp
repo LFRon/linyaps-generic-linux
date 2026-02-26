@@ -6,14 +6,106 @@
 
 #include "linglong/common/display.h"
 #include "linglong/extension/extension.h"
+#include "linglong/runtime/host_nvidia_extension.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/utils/log/log.h"
 
 #include <fmt/ranges.h>
 
+#include <QDebug>
+
+#include <string_view>
 #include <utility>
+#include <unordered_set>
 
 namespace linglong::runtime {
+
+namespace {
+
+constexpr std::string_view kNvidiaExtensionPrefix =
+  extension::ExtensionImplNVIDIADisplayDriver::Identify;
+
+bool isNvidiaDriverExtensionName(std::string_view name)
+{
+    return name.rfind(kNvidiaExtensionPrefix, 0) == 0;
+}
+
+std::vector<std::string> splitEnvPaths(const std::string &value)
+{
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= value.size()) {
+        size_t end = value.find(':', start);
+        auto part = (end == std::string::npos) ? value.substr(start) : value.substr(start, end - start);
+        if (!part.empty()) {
+            parts.push_back(part);
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return parts;
+}
+
+std::string mergePathValues(const std::string &preferred, const std::string &existing)
+{
+    std::vector<std::string> ordered;
+    std::unordered_set<std::string> seen;
+    for (const auto &part : splitEnvPaths(preferred)) {
+        if (seen.insert(part).second) {
+            ordered.push_back(part);
+        }
+    }
+    for (const auto &part : splitEnvPaths(existing)) {
+        if (seen.insert(part).second) {
+            ordered.push_back(part);
+        }
+    }
+    std::string merged;
+    for (size_t i = 0; i < ordered.size(); ++i) {
+        if (i) {
+            merged.push_back(':');
+        }
+        merged.append(ordered[i]);
+    }
+    return merged;
+}
+
+void mergeEnv(std::map<std::string, std::string> &base,
+              const std::map<std::string, std::string> &extra)
+{
+    static const std::unordered_set<std::string> pathKeys = {
+        "LD_LIBRARY_PATH",
+        "EGL_EXTERNAL_PLATFORM_CONFIG_DIRS",
+        "__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS",
+        "__EGL_VENDOR_LIBRARY_DIRS",
+        "VK_ICD_FILENAMES",
+        "VK_ADD_DRIVER_FILES",
+    };
+
+    for (const auto &pair : extra) {
+        const auto &key = pair.first;
+        const auto &value = pair.second;
+        if (value.empty()) {
+            continue;
+        }
+        if (pathKeys.find(key) != pathKeys.end()) {
+            auto it = base.find(key);
+            std::string merged = mergePathValues(value, it != base.end() ? it->second : "");
+            if (!merged.empty()) {
+                base[key] = merged;
+            }
+            continue;
+        }
+        auto it = base.find(key);
+        if (it == base.end() || it->second.empty()) {
+            base[key] = value;
+        }
+    }
+}
+
+} // namespace
 
 utils::error::Result<RuntimeLayer> RuntimeLayer::create(package::Reference ref, RunContext &context)
 {
@@ -42,7 +134,8 @@ RuntimeLayer::RuntimeLayer(package::Reference ref, RunContext &context)
 RuntimeLayer::~RuntimeLayer()
 {
     if (temporary && layerDir) {
-        layerDir->removeRecursively();
+        std::error_code ec;
+        std::filesystem::remove_all(layerDir->path(), ec);
     }
 }
 
@@ -87,6 +180,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
                                                const ResolveOptions &options)
 {
     LINGLONG_TRACE("resolve RunContext from runnable " + runnable.toString());
+    hostNvidiaExtensionName.reset();
 
     auto layer = RuntimeLayer::create(runnable, *this);
     if (!layer) {
@@ -125,7 +219,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
     } else if (info.kind == "runtime") {
         runtimeLayer = std::move(layer).value();
     } else {
-        return LINGLONG_ERR("kind " + QString::fromStdString(info.kind) + " is not runnable");
+        return LINGLONG_ERR(fmt::format("kind {} is not runnable", info.kind));
     }
 
     // base layer must be resolved for all kinds
@@ -202,6 +296,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
                                                const std::filesystem::path &buildOutput)
 {
     LINGLONG_TRACE("resolve RunContext from builder project " + target.package.id);
+    hostNvidiaExtensionName.reset();
 
     auto targetRef = package::Reference::fromBuilderProject(target);
     if (!targetRef) {
@@ -217,8 +312,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
     } else if (target.package.kind == "runtime") {
         runtimeOutput = buildOutput;
     } else {
-        return LINGLONG_ERR("can't resolve run context from package kind "
-                            + QString::fromStdString(target.package.kind));
+        return LINGLONG_ERR("can't resolve run context from package kind " + target.package.kind);
     }
 
     auto baseFuzzyRef = package::FuzzyReference::parse(target.base);
@@ -324,7 +418,7 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
 
     for (auto &ext : extensionLayers) {
         if (!ext.resolveLayer()) {
-            qWarning() << "ignore failed extension layer";
+            LogW("ignore failed extension layer");
             continue;
         }
 
@@ -430,6 +524,13 @@ RunContext::resolveExtension(const std::vector<api::types::v1::ExtensionDefine> 
           repo.clearReference(*fuzzyRef, { .fallbackToRemote = false, .semanticMatching = true });
         if (!ref) {
             LogD("extension is not installed: {}", fuzzyRef->toString());
+            if (isNvidiaDriverExtensionName(name)) {
+                if (!hostNvidiaExtensionName) {
+                    hostNvidiaExtensionName = name;
+                    LogI("use host NVIDIA driver fallback for {}", name);
+                }
+                continue;
+            }
             if (skipOnNotFound) {
                 continue;
             }
@@ -574,18 +675,18 @@ utils::error::Result<void> RunContext::fillContextCfg(
 
     auto bundleDir = runtime::makeBundleDir(containerID, bundleSuffix);
     if (!bundleDir) {
-        return LINGLONG_ERR("failed to get bundle dir of " + QString::fromStdString(containerID));
+        return LINGLONG_ERR("failed to get bundle dir of " + containerID);
     }
     bundle = *bundleDir;
     builder.setBundlePath(bundle);
 
-    builder.setBasePath(baseLayer->getLayerDir()->absoluteFilePath("files").toStdString());
+    builder.setBasePath(baseLayer->getLayerDir()->filesDirPath());
 
     if (appOutput) {
         builder.setAppPath(*appOutput, false);
     } else {
         if (appLayer) {
-            builder.setAppPath(appLayer->getLayerDir()->absoluteFilePath("files").toStdString());
+            builder.setAppPath(appLayer->getLayerDir()->filesDirPath());
         }
     }
 
@@ -593,12 +694,12 @@ utils::error::Result<void> RunContext::fillContextCfg(
         builder.setRuntimePath(*runtimeOutput, false);
     } else {
         if (runtimeLayer) {
-            builder.setRuntimePath(
-              runtimeLayer->getLayerDir()->absoluteFilePath("files").toStdString());
+            builder.setRuntimePath(runtimeLayer->getLayerDir()->filesDirPath());
         }
     }
 
     std::vector<ocppi::runtime::config::types::Mount> extensionMounts{};
+    std::optional<HostNvidiaExtension> hostNvidiaExtension;
     if (extensionOutput) {
         extensionMounts.push_back(ocppi::runtime::config::types::Mount{
           .destination = "/opt/extensions/" + targetId,
@@ -632,10 +733,45 @@ utils::error::Result<void> RunContext::fillContextCfg(
           .destination = "/opt/extensions/" + name,
           .gidMappings = {},
           .options = { { "rbind", "ro" } },
-          .source = ext.getLayerDir()->absoluteFilePath("files").toStdString(),
+          .source = ext.getLayerDir()->filesDirPath(),
           .type = "bind",
           .uidMappings = {},
         });
+    }
+
+    if (hostNvidiaExtensionName) {
+        auto hostExt = prepareHostNvidiaExtension(bundle, *hostNvidiaExtensionName);
+        if (!hostExt) {
+            return LINGLONG_ERR(hostExt);
+        }
+        if (hostExt->has_value()) {
+            hostNvidiaExtension = std::move(*hostExt);
+            bool mountHostExtension =
+              !(extensionOutput && hostNvidiaExtension->name == targetId);
+            if (mountHostExtension) {
+                extensionMounts.push_back(ocppi::runtime::config::types::Mount{
+                  .destination = "/opt/extensions/" + hostNvidiaExtension->name,
+                  .gidMappings = {},
+                  .options = { { "rbind", "ro" } },
+                  .source = hostNvidiaExtension->root.string(),
+                  .type = "bind",
+                  .uidMappings = {},
+                });
+                for (const auto &node : hostNvidiaExtension->deviceNodes) {
+                    ocppi::runtime::config::types::Mount mount = {
+                        .destination = node.path,
+                        .options = { { "bind" } },
+                        .source = node.hostPath.value_or(node.path),
+                        .type = "bind",
+                    };
+                    builder.addExtraMount(mount);
+                }
+                if (!hostNvidiaExtension->extraMounts.empty()) {
+                    builder.addExtraMounts(hostNvidiaExtension->extraMounts);
+                }
+                mergeEnv(environment, hostNvidiaExtension->env);
+            }
+        }
     }
     if (!extensionMounts.empty()) {
         builder.setExtensionMounts(extensionMounts);
@@ -792,8 +928,7 @@ utils::error::Result<std::filesystem::path> RunContext::getBaseLayerPath() const
         return LINGLONG_ERR("run context doesn't resolved");
     }
 
-    const auto &layerDir = baseLayer->getLayerDir();
-    return std::filesystem::path{ layerDir->absolutePath().toStdString() };
+    return baseLayer->getLayerDir()->path();
 }
 
 utils::error::Result<std::filesystem::path> RunContext::getRuntimeLayerPath() const
@@ -804,8 +939,7 @@ utils::error::Result<std::filesystem::path> RunContext::getRuntimeLayerPath() co
         return LINGLONG_ERR("no runtime layer exist");
     }
 
-    const auto &layerDir = runtimeLayer->getLayerDir();
-    return std::filesystem::path{ layerDir->absolutePath().toStdString() };
+    return runtimeLayer->getLayerDir()->path();
 }
 
 utils::error::Result<api::types::v1::RepositoryCacheLayersItem> RunContext::getCachedAppItem()
