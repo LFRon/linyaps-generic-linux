@@ -1798,7 +1798,6 @@ utils::error::Result<void> Builder::run(std::vector<std::string> modules,
     if (!res) {
         return LINGLONG_ERR(res);
     }
-    runContext.setRuntimeConfigEnabled(false);
 
     auto *homeEnv = ::getenv("HOME");
     if (homeEnv == nullptr) {
@@ -1976,7 +1975,6 @@ utils::error::Result<void> Builder::runFromRepo(const package::Reference &ref,
     if (!res) {
         return LINGLONG_ERR(res);
     }
-    runContext.setRuntimeConfigEnabled(false);
 
     uid = getuid();
     gid = getgid();
