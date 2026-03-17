@@ -8,46 +8,9 @@
 #include "linglong/utils/log/log.h"
 
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <system_error>
 
 namespace linglong::utils {
-
-namespace {
-
-bool isMountPoint(const std::filesystem::path &path)
-{
-    std::error_code ec;
-    auto normalized = std::filesystem::weakly_canonical(path, ec);
-    if (ec) {
-        return false;
-    }
-
-    std::ifstream mountInfo("/proc/self/mountinfo");
-    if (!mountInfo.is_open()) {
-        return false;
-    }
-
-    const std::string target = normalized.string();
-    std::string line;
-    while (std::getline(mountInfo, line)) {
-        std::istringstream iss(line);
-        std::string token;
-        for (int field = 0; field < 5; ++field) {
-            if (!(iss >> token)) {
-                break;
-            }
-        }
-        if (token == target) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-} // namespace
 
 OverlayFS::OverlayFS(std::filesystem::path lowerdir,
                      std::filesystem::path upperdir,
@@ -62,11 +25,9 @@ OverlayFS::OverlayFS(std::filesystem::path lowerdir,
 
 OverlayFS::~OverlayFS()
 {
-    if (isMountPoint(merged_)) {
-        auto res = utils::Cmd("fusermount").exec({ "-z", "-u", merged_.string() });
-        if (!res) {
-            LogW("failed to umount {}: {}", merged_.string(), res.error());
-        }
+    auto res = utils::Cmd("fusermount").exec({ "-z", "-u", merged_.string() });
+    if (!res) {
+        LogW("failed to umount {}: {}", merged_.string(), res.error());
     }
 }
 
@@ -89,14 +50,12 @@ bool OverlayFS::mount()
     }
 
     // TODO: check mountpoint whether already mounted
-    if (isMountPoint(merged_)) {
-        auto ret = utils::Cmd("fusermount").exec({ "-z", "-u", merged_.string() });
-        if (!ret) {
-            LogD("failed to set lazy umount {}", ret.error());
-        }
+    auto ret = utils::Cmd("fusermount").exec({ "-z", "-u", merged_.string() });
+    if (!ret) {
+        LogD("failed to set lazy umount {}", ret.error());
     }
 
-    auto ret =
+    ret =
       utils::Cmd("fuse-overlayfs")
         .exec({ "-o",
                 fmt::format("lowerdir={},upperdir={},workdir={}", lowerdir_, upperdir_, workdir_),
@@ -110,11 +69,9 @@ bool OverlayFS::mount()
 
 void OverlayFS::unmount(bool clean)
 {
-    if (isMountPoint(merged_)) {
-        auto res = utils::Cmd("fusermount").exec({ "-z", "-u", merged_.string() });
-        if (!res) {
-            LogW("failed to umount {}: {}", merged_.string(), res.error());
-        }
+    auto res = utils::Cmd("fusermount").exec({ "-z", "-u", merged_.string() });
+    if (!res) {
+        LogW("failed to umount {}: {}", merged_.string(), res.error());
     }
 
     if (clean) {

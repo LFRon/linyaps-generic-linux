@@ -6,6 +6,8 @@
 
 #include "linglong/runtime/host_nvidia_extension.h"
 
+#include "linglong/common/strings.h"
+#include "linglong/utils/file.h"
 #include "linglong/utils/log/log.h"
 
 #include <glob.h>
@@ -48,22 +50,6 @@ const std::vector<std::string> kIpcMountOptions = {
     "noexec",
 };
 
-std::string trim(std::string_view input)
-{
-    size_t start = 0;
-    while (start < input.size() && std::isspace(static_cast<unsigned char>(input[start]))) {
-        ++start;
-    }
-    if (start == input.size()) {
-        return {};
-    }
-    size_t end = input.size() - 1;
-    while (end > start && std::isspace(static_cast<unsigned char>(input[end]))) {
-        --end;
-    }
-    return std::string(input.substr(start, end - start + 1));
-}
-
 bool isRegularOrSymlink(const std::filesystem::path &path)
 {
     std::error_code ec;
@@ -94,22 +80,14 @@ bool isCharOrBlockDevice(const std::filesystem::path &path)
 
 std::vector<std::filesystem::path> splitPathList(const std::string &value)
 {
-    std::vector<std::filesystem::path> parts;
-    size_t start = 0;
-    while (start <= value.size()) {
-        size_t end = value.find(':', start);
-        std::string item = (end == std::string::npos)
-          ? value.substr(start)
-          : value.substr(start, end - start);
-        if (!item.empty()) {
-            parts.emplace_back(item);
-        }
-        if (end == std::string::npos) {
-            break;
-        }
-        start = end + 1;
+    auto parts = linglong::common::strings::split(
+      value, ':', linglong::common::strings::splitOption::SkipEmpty);
+    std::vector<std::filesystem::path> paths;
+    paths.reserve(parts.size());
+    for (auto &part : parts) {
+        paths.emplace_back(std::move(part));
     }
-    return parts;
+    return paths;
 }
 
 std::vector<std::filesystem::path> dedupPaths(const std::vector<std::filesystem::path> &paths)
@@ -202,13 +180,11 @@ std::filesystem::path hostTargetPath(const std::filesystem::path &source, const 
 
 std::optional<std::string> readFileToString(const std::filesystem::path &path)
 {
-    std::ifstream in(path);
-    if (!in.is_open()) {
+    auto result = linglong::utils::readFile(path);
+    if (!result) {
         return std::nullopt;
     }
-    std::stringstream buffer;
-    buffer << in.rdbuf();
-    return buffer.str();
+    return std::move(*result);
 }
 
 std::optional<std::string> extractVersionToken(std::string_view text)
@@ -239,7 +215,7 @@ std::optional<std::string> extractVersionToken(std::string_view text)
 std::optional<std::string> readDriverVersion()
 {
     if (auto sys = readFileToString("/sys/module/nvidia/version")) {
-        auto version = trim(*sys);
+        auto version = linglong::common::strings::trim(*sys, " \t\r\n\f\v");
         if (!version.empty()) {
             return version;
         }
@@ -420,7 +396,7 @@ std::vector<std::filesystem::path> firmwareSearchPaths()
     std::vector<std::filesystem::path> paths;
 
     if (auto custom = readFileToString("/sys/module/firmware_class/parameters/path")) {
-        auto trimmed = trim(*custom);
+        auto trimmed = linglong::common::strings::trim(*custom, " \t\r\n\f\v");
         if (!trimmed.empty()) {
             paths.emplace_back(trimmed);
         }
@@ -714,18 +690,6 @@ bool isElf32(const std::filesystem::path &path)
     return header[4] == 1;
 }
 
-std::string joinWithColon(const std::vector<std::string> &paths)
-{
-    std::string merged;
-    for (size_t i = 0; i < paths.size(); ++i) {
-        if (i) {
-            merged.push_back(':');
-        }
-        merged.append(paths[i]);
-    }
-    return merged;
-}
-
 void appendUnique(std::unordered_set<std::string> &seen,
                   std::vector<std::string> &ordered,
                   const std::string &value)
@@ -752,27 +716,18 @@ void appendEnvPath(std::map<std::string, std::string> &envMap,
 
     auto it = envMap.find(key);
     if (it != envMap.end() && !it->second.empty()) {
-        const auto &current = it->second;
-        size_t start = 0;
-        while (start <= current.size()) {
-            size_t end = current.find(':', start);
-            std::string segment = (end == std::string::npos)
-              ? current.substr(start)
-              : current.substr(start, end - start);
+        for (auto &segment : linglong::common::strings::split(
+               it->second, ':', linglong::common::strings::splitOption::SkipEmpty)) {
             if (!segment.empty() && seen.insert(segment).second) {
-                ordered.push_back(segment);
+                ordered.push_back(std::move(segment));
             }
-            if (end == std::string::npos) {
-                break;
-            }
-            start = end + 1;
         }
     }
 
     if (ordered.empty()) {
         return;
     }
-    envMap[key] = joinWithColon(ordered);
+    envMap[key] = linglong::common::strings::join(ordered, ':');
 }
 
 void setEnvIfEmpty(std::map<std::string, std::string> &envMap,
@@ -791,34 +746,21 @@ void setEnvIfEmpty(std::map<std::string, std::string> &envMap,
 
 bool ensureSymlink(const std::filesystem::path &target, const std::filesystem::path &linkPath)
 {
-    std::error_code ec;
-    if (std::filesystem::exists(linkPath, ec)) {
-        ec.clear();
-        if (std::filesystem::is_symlink(linkPath, ec)) {
-            auto existing = std::filesystem::read_symlink(linkPath, ec);
-            if (!ec && existing == target) {
-                return true;
-            }
-        }
-        ec.clear();
-        std::filesystem::remove(linkPath, ec);
-        if (ec) {
-            LogW("failed to remove existing path {}: {}", linkPath.string(), ec.message());
-            return false;
-        }
+    auto ret = linglong::utils::ensureDirectory(linkPath.parent_path());
+    if (!ret) {
+        LogW("failed to create dir {}: {}", linkPath.parent_path().string(), ret.error().message());
+        return false;
     }
 
-    std::filesystem::create_directories(linkPath.parent_path(), ec);
-    if (ec) {
-        LogW("failed to create dir {}: {}", linkPath.parent_path().string(), ec.message());
+    ret = linglong::utils::relinkFileTo(linkPath, target);
+    if (!ret) {
+        LogW("failed to create symlink {} -> {}: {}",
+             linkPath.string(),
+             target.string(),
+             ret.error().message());
         return false;
     }
-    ec.clear();
-    std::filesystem::create_symlink(target, linkPath, ec);
-    if (ec) {
-        LogW("failed to create symlink {} -> {}: {}", linkPath.string(), target.string(), ec.message());
-        return false;
-    }
+
     return true;
 }
 
@@ -839,10 +781,6 @@ prepareHostNvidiaExtension(const std::filesystem::path &bundle,
     ext.root = bundle / "host-extensions" / extensionName;
 
     std::error_code ec;
-    std::filesystem::create_directories(ext.root, ec);
-    if (ec) {
-        return LINGLONG_ERR("failed to create host extension root: " + ec.message());
-    }
 
     std::string prefix = "/opt/extensions/" + extensionName;
     DriverInfo driver = detectDriverInfo();
@@ -1248,10 +1186,12 @@ prepareHostNvidiaExtension(const std::filesystem::path &bundle,
         });
     }
 
-    ext.has32Bit = has32;
-
     if (libFiles.empty() && otherFiles.empty() && ext.deviceNodes.empty()) {
         return std::optional<HostNvidiaExtension>{};
+    }
+
+    if (!linglong::utils::ensureDirectory(ext.root)) {
+        return LINGLONG_ERR("failed to create host extension root: " + ext.root.string());
     }
 
     return ext;

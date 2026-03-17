@@ -180,6 +180,11 @@ ll-cli run org.deepin.demo -- bash -x /path/to/bash/script)"));
       ->type_name("REF")
       ->check(validatorString);
     cliRun
+      ->add_option("--workdir",
+                   runOptions.workdir,
+                   _("Specify the working directory where the application runs"))
+      ->type_name("PATH");
+    cliRun
       ->add_option("--extensions",
                    runOptions.extensions,
                    _("Specify extension(s) used by the application to run"))
@@ -333,9 +338,11 @@ void addUpgradeCommand(CLI::App &commandParser,
                    _("Specify the application ID. If it not be specified, all "
                      "applications will be upgraded"))
       ->check(validatorString);
-    cliUpgrade->add_flag("--deps-only",
-                         upgradeOptions.depsOnly,
-                         _("Only upgrade dependencies of application"));
+    auto depsOnly = cliUpgrade->add_flag("--deps-only",
+                                         upgradeOptions.depsOnly,
+                                         _("Only upgrade dependencies of application"));
+    cliUpgrade->add_flag("--app-only", upgradeOptions.appOnly, _("Only upgrade application"))
+      ->excludes(depsOnly);
 }
 
 // Function to add the search subcommand

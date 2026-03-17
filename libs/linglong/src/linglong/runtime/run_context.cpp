@@ -5,6 +5,7 @@
 #include "run_context.h"
 
 #include "linglong/common/display.h"
+#include "linglong/common/strings.h"
 #include "linglong/extension/extension.h"
 #include "linglong/runtime/host_nvidia_extension.h"
 #include "linglong/runtime/container_builder.h"
@@ -30,46 +31,23 @@ bool isNvidiaDriverExtensionName(std::string_view name)
     return name.rfind(kNvidiaExtensionPrefix, 0) == 0;
 }
 
-std::vector<std::string> splitEnvPaths(const std::string &value)
-{
-    std::vector<std::string> parts;
-    size_t start = 0;
-    while (start <= value.size()) {
-        size_t end = value.find(':', start);
-        auto part = (end == std::string::npos) ? value.substr(start) : value.substr(start, end - start);
-        if (!part.empty()) {
-            parts.push_back(part);
-        }
-        if (end == std::string::npos) {
-            break;
-        }
-        start = end + 1;
-    }
-    return parts;
-}
-
 std::string mergePathValues(const std::string &preferred, const std::string &existing)
 {
     std::vector<std::string> ordered;
     std::unordered_set<std::string> seen;
-    for (const auto &part : splitEnvPaths(preferred)) {
+    for (const auto &part : common::strings::split(
+           preferred, ':', common::strings::splitOption::SkipEmpty)) {
         if (seen.insert(part).second) {
             ordered.push_back(part);
         }
     }
-    for (const auto &part : splitEnvPaths(existing)) {
+    for (const auto &part : common::strings::split(
+           existing, ':', common::strings::splitOption::SkipEmpty)) {
         if (seen.insert(part).second) {
             ordered.push_back(part);
         }
     }
-    std::string merged;
-    for (size_t i = 0; i < ordered.size(); ++i) {
-        if (i) {
-            merged.push_back(':');
-        }
-        merged.append(ordered[i]);
-    }
-    return merged;
+    return common::strings::join(ordered, ':');
 }
 
 void mergeEnv(std::map<std::string, std::string> &base,

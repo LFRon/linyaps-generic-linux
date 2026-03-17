@@ -48,8 +48,6 @@ try {
 #ifdef WAYLAND_SEC_CTX_SUPPORT
     case SecurityContextType::WAYLAND:
         return std::make_unique<WaylandSecurityContextManagerV1>();
-#else
-        [[fallthrough]];
 #endif
     default:
         return nullptr;

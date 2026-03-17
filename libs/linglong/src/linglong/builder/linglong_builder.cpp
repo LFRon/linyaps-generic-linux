@@ -139,7 +139,10 @@ utils::error::Result<void> pullDependency(const package::Reference &ref,
                      [&tmpTask]() {
                          tmpTask.Cancel();
                      });
-    auto res = repo.pull(tmpTask, ref, module, repo.getDefaultRepo());
+    auto res =
+      repo.pull(tmpTask,
+                package::ReferenceWithRepo{ .repo = repo.getDefaultRepo(), .reference = ref },
+                module);
     if (!res) {
         return LINGLONG_ERR(res);
     }
@@ -1525,17 +1528,18 @@ utils::error::Result<void> Builder::exportUAB(const ExportOption &option,
 
     // export single ref
     if (distributedOnly) {
-        auto layerDir = this->repo.getLayerDir(*curRef);
-        if (!layerDir) {
-            return LINGLONG_ERR(layerDir);
-        }
+        for (const auto &module : exportOpts.modules) {
+            auto layerDir = this->repo.getLayerDir(*curRef, module);
+            if (!layerDir) {
+                return LINGLONG_ERR(layerDir);
+            }
 
-        auto ret = packager.appendLayer(*layerDir);
-        if (!ret) {
-            return LINGLONG_ERR(ret);
+            auto ret = packager.appendLayer(*layerDir);
+            if (!ret) {
+                return LINGLONG_ERR(ret);
+            }
         }
-
-        ret = packager.pack(uabFile, true);
+        auto ret = packager.pack(uabFile, true);
         if (!ret) {
             return LINGLONG_ERR(ret);
         }
@@ -1773,6 +1777,7 @@ utils::error::Result<void> Builder::importLayer(repo::OSTreeRepo &ostree,
 utils::error::Result<void> Builder::run(std::vector<std::string> modules,
                                         std::vector<std::string> args,
                                         bool debug,
+                                        const std::string &workdir,
                                         std::vector<std::string> extensions)
 {
     LINGLONG_TRACE("run application");
@@ -1946,7 +1951,12 @@ utils::error::Result<void> Builder::run(std::vector<std::string> modules,
     }
 
     ocppi::runtime::config::types::Process process;
-
+    if (!workdir.empty()) {
+        if (!std::filesystem::path(workdir).is_absolute()) {
+            return LINGLONG_ERR(fmt::format("Workdir must be an absolute path: {}", workdir));
+        }
+        process.cwd = workdir;
+    }
     if (!args.empty()) {
         process.args = std::move(args);
     } else {

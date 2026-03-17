@@ -25,7 +25,6 @@ struct HostNvidiaExtension
     std::map<std::string, std::string> env;
     std::vector<api::types::v1::DeviceNode> deviceNodes;
     std::vector<ocppi::runtime::config::types::Mount> extraMounts;
-    bool has32Bit{ false };
 };
 
 utils::error::Result<std::optional<HostNvidiaExtension>>
