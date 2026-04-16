@@ -217,7 +217,7 @@ std::optional<std::string> readDriverVersion()
     if (auto sys = readFileToString("/sys/module/nvidia/version")) {
         auto version = linglong::common::strings::trim(*sys, " \t\r\n\f\v");
         if (!version.empty()) {
-            return version;
+            return std::string(version);
         }
     }
 
@@ -718,8 +718,9 @@ void appendEnvPath(std::map<std::string, std::string> &envMap,
     if (it != envMap.end() && !it->second.empty()) {
         for (auto &segment : linglong::common::strings::split(
                it->second, ':', linglong::common::strings::splitOption::SkipEmpty)) {
-            if (!segment.empty() && seen.insert(segment).second) {
-                ordered.push_back(std::move(segment));
+            auto value = std::string(segment);
+            if (!value.empty() && seen.insert(value).second) {
+                ordered.push_back(std::move(value));
             }
         }
     }

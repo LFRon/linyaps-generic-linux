@@ -1,3 +1,10 @@
+linglong (1.12.2-1) unstable; urgency=medium
+
+  * follow OpenAtom-Linyaps mainline.
+  * update NVIDIA driver fallback func.
+
+ -- LFRon <ronforever@qq.com>  Thu, 16 Apr 2026 20:51:39 +0800
+
 linglong (1.12.0-1) unstable; urgency=medium
 
   * follow OpenAtom-Linyaps mainline.

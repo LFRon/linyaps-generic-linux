@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+ * SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
  *
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
@@ -72,6 +72,8 @@
 using namespace linglong::utils::error;
 
 namespace {
+
+constexpr std::size_t ContainerIDDisplayLength = 12;
 
 std::vector<std::string> getAutoModuleList() noexcept
 {
@@ -739,19 +741,17 @@ int Cli::enter(const EnterOptions &options)
 {
     LINGLONG_TRACE("ll-cli exec");
     auto containerIDList = this->getRunningAppContainers(options.instance);
+    if (!containerIDList) {
+        this->printer.printErr(containerIDList.error());
+        return -1;
+    }
 
-    if (containerIDList.empty()) {
+    if (containerIDList->empty()) {
         this->printer.printErr(LINGLONG_ERRV("no container found"));
         return -1;
     }
 
-    if (containerIDList.size() > 1) {
-        this->printer.printErr(
-          LINGLONG_ERRV("multiple running containers found, please specify which one to enter"));
-        return -1;
-    }
-
-    auto containerID = containerIDList.front();
+    auto containerID = containerIDList->front();
     LogI("select container id: {}", containerID);
     auto commands = options.commands;
     if (commands.empty()) {
@@ -851,7 +851,7 @@ int Cli::ps()
     std::for_each(myContainers->begin(),
                   myContainers->end(),
                   [](api::types::v1::CliContainer &container) {
-                      container.id = container.id.substr(0, 12);
+                      container.id = container.id.substr(0, ContainerIDDisplayLength);
                   });
 
     this->printer.printContainers(*myContainers);
@@ -859,27 +859,55 @@ int Cli::ps()
     return 0;
 }
 
-std::vector<std::string> Cli::getRunningAppContainers(const std::string &appid)
+bool Cli::isContainerIDMatch(const std::string &containerID, const std::string &shortID)
+{
+    if (containerID == shortID) {
+        return true;
+    }
+
+    if (shortID.size() < ContainerIDDisplayLength) {
+        return false;
+    }
+
+    return common::strings::starts_with(containerID, shortID);
+}
+
+utils::error::Result<std::vector<std::string>> Cli::getRunningAppContainers(const std::string &id)
 {
     LINGLONG_TRACE("get app running containers");
 
     std::vector<std::string> containerIDList{};
     auto containers = getCurrentContainers();
     if (!containers) {
-        this->printer.printErr(containers.error());
-        return containerIDList;
+        return LINGLONG_ERR(containers);
     }
 
     for (const auto &container : *containers) {
-        auto fuzzyRef = package::FuzzyReference::parse(container.package);
-        if (!fuzzyRef) {
-            LogW("{}", fuzzyRef.error());
+        // first check if the id matches container id, then check if the id matches package appid or
+        // reference
+        if (isContainerIDMatch(container.id, id)) {
+            containerIDList.emplace_back(container.id);
             continue;
         }
 
-        if (fuzzyRef->id == appid || fuzzyRef->toString() == appid) {
+        auto ref = package::Reference::parse(container.package);
+        if (!ref) {
+            LogW("{}", ref.error());
+            continue;
+        }
+
+        if (ref->id == id || ref->toString() == id) {
             containerIDList.emplace_back(container.id);
         }
+    }
+
+    if (containerIDList.size() > 1) {
+        auto msg =
+          fmt::format("multiple running containers match the specified identifier '{}': {}. "
+                      "Please specify a more specific identifier.",
+                      id,
+                      containerIDList);
+        return LINGLONG_ERR(msg);
     }
 
     return containerIDList;
@@ -890,9 +918,18 @@ int Cli::kill(const KillOptions &options)
     LINGLONG_TRACE("command kill");
 
     auto containerIDList = this->getRunningAppContainers(options.appid);
+    if (!containerIDList) {
+        this->printer.printErr(containerIDList.error());
+        return -1;
+    }
+
+    if (containerIDList->empty()) {
+        this->printer.printErr(LINGLONG_ERRV("no container found"));
+        return -1;
+    }
 
     auto ret = 0;
-    for (const auto &containerID : containerIDList) {
+    for (const auto &containerID : *containerIDList) {
         LogI("select container id {}", containerID);
         auto result = this->ociCLI.kill(ocppi::runtime::ContainerID(containerID),
                                         ocppi::runtime::Signal(options.signal));
@@ -1668,31 +1705,40 @@ int Cli::content(const ContentOptions &options)
         return -1;
     }
 
-    QDir entriesDir((layer->path() / "entries/share").c_str());
+    QDir entriesDir((layer->path() / "entries").c_str());
     if (!entriesDir.exists()) {
         this->printer.printErr(LINGLONG_ERR("no entries found").value());
         return -1;
     }
+
+    const auto preferLibSystemdUser = QFileInfo(entriesDir.filePath("lib/systemd/user")).exists();
 
     QDirIterator it(entriesDir.absolutePath(),
                     QDir::AllEntries | QDir::NoDot | QDir::NoDotDot | QDir::System,
                     QDirIterator::Subdirectories);
     while (it.hasNext()) {
         it.next();
-        contents.append(it.fileInfo().absoluteFilePath());
-    }
-    // replace $LINGLONG_ROOT/layers/appid/verison/arch/module/entries to ${LINGLONG_ROOT}/entires
-    contents.replaceInStrings(entriesDir.absolutePath(), QString(LINGLONG_ROOT) + "/entries/share");
-
-    // only show the contents which are exported
-    for (int pos = 0; pos < contents.size(); ++pos) {
-        QFileInfo info(contents.at(pos));
-        if (!info.exists()) {
-            contents.removeAt(pos);
+        const auto entryPath = it.fileInfo().absoluteFilePath();
+        const auto relativePath =
+          std::filesystem::path(entriesDir.relativeFilePath(entryPath).toStdString());
+        const auto exportPath =
+          this->repository.resolveEntryExportPath(relativePath, preferLibSystemdUser);
+        if (!exportPath.empty()) {
+            contents.append(QString::fromStdString(exportPath.string()));
         }
     }
 
-    this->printer.printContent(contents);
+    // only show the contents which are exported
+    QStringList exportedContents{};
+    for (const auto &content : std::as_const(contents)) {
+        QFileInfo info(content);
+        if (!info.exists() || info.isDir()) {
+            continue;
+        }
+        exportedContents.append(content);
+    }
+
+    this->printer.printContent(exportedContents);
     return 0;
 }
 
@@ -2182,7 +2228,7 @@ int Cli::getLayerDir(const InspectOptions &options)
         return -1;
     }
 
-    std::cout << layerDir->path() << std::endl;
+    std::cout << layerDir->path().string() << std::endl;
 
     return 0;
 }
@@ -2192,20 +2238,17 @@ int Cli::getBundleDir(const InspectOptions &options)
     LINGLONG_TRACE("Get Bundle dir");
 
     auto containerIDList = getRunningAppContainers(options.appid);
+    if (!containerIDList) {
+        this->printer.printErr(containerIDList.error());
+        return -1;
+    }
 
-    if (containerIDList.empty()) {
+    if (containerIDList->empty()) {
         this->printer.printErr(LINGLONG_ERRV("Can not find the running application."));
         return -1;
     }
 
-    if (containerIDList.size() > 1) {
-        this->printer.printErr(
-          LINGLONG_ERRV("Found multiple running containers for the application, please specify "
-                        "the container ID to inspect."));
-        return -1;
-    }
-
-    auto bundleDir = linglong::common::dir::getBundleDir(containerIDList.front());
+    auto bundleDir = linglong::common::dir::getBundleDir(containerIDList->front());
 
     std::cout << bundleDir.string() << std::endl;
 
