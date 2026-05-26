@@ -59,6 +59,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -76,6 +77,12 @@ struct ostreeUserData
     service::Task *taskContext{ nullptr };
 
     ~ostreeUserData() { g_clear_pointer(&ostree_status, g_free); }
+};
+
+struct OstreeRefEntry
+{
+    std::string refspec;
+    std::string commit;
 };
 
 void progress_changed(OstreeAsyncProgress *progress, gpointer user_data)
@@ -392,7 +399,6 @@ utils::error::Result<package::Reference> clearReferenceLocal(const RepoCache &ca
             return LINGLONG_ERR(pkgVer);
         }
 
-        LogD("available layer {} found: {}", fuzzy.toString(), ref.info.version);
         if (version) {
             if (semanticMatching && pkgVer->semanticMatch(version->toString())) {
                 foundRef = ref;
@@ -413,7 +419,13 @@ utils::error::Result<package::Reference> clearReferenceLocal(const RepoCache &ca
         return LINGLONG_ERR(foundRef);
     }
 
-    return package::Reference::fromPackageInfo(foundRef->info);
+    auto ref = package::Reference::fromPackageInfo(foundRef->info);
+    if (!ref) {
+        return LINGLONG_ERR(ref);
+    }
+
+    LogD("clear fuzzy ref {} to {}", fuzzy.toString(), ref->toString());
+    return ref;
 }
 
 utils::error::Result<bool> semanticMatch(const package::FuzzyReference &fuzzy,
@@ -502,13 +514,13 @@ utils::error::Result<api::types::v1::PackageInfoV2> RefMetaData::getPackageInfo(
     return utils::serialize::parsePackageInfo(packageInfoContent);
 }
 
-utils::error::Result<void>
-OSTreeRepo::removeOstreeRef(const api::types::v1::RepositoryCacheLayersItem &layer) noexcept
+utils::error::Result<void> OSTreeRepo::removeOstreeRef(const std::string &remote,
+                                                       const std::string &ref,
+                                                       const std::string &commit) noexcept
 {
     LINGLONG_TRACE("remove ostree refspec from repository");
 
-    std::string refspec = ostreeRefSpecFromLayerItem(layer);
-    std::string ref = ostreeRefFromLayerItem(layer);
+    auto refspec = remote.empty() ? ref : remote + ":" + ref;
 
     g_autoptr(GError) gErr = nullptr;
     g_autofree char *rev{ nullptr };
@@ -519,13 +531,13 @@ OSTreeRepo::removeOstreeRef(const api::types::v1::RepositoryCacheLayersItem &lay
                                     OstreeRepoResolveRevExtFlags::OSTREE_REPO_RESOLVE_REV_EXT_NONE,
                                     &rev,
                                     &gErr)) {
-        if (layer.commit != rev) {
+        if (commit != rev) {
             LogD("skip unset ref on mismatched commit");
             return LINGLONG_OK;
         }
 
         if (ostree_repo_set_ref_immediate(this->ostreeRepo.get(),
-                                          layer.repo.c_str(),
+                                          remote.c_str(),
                                           ref.c_str(),
                                           nullptr,
                                           nullptr,
@@ -536,6 +548,12 @@ OSTreeRepo::removeOstreeRef(const api::types::v1::RepositoryCacheLayersItem &lay
     }
 
     return LINGLONG_OK;
+}
+
+utils::error::Result<void>
+OSTreeRepo::removeOstreeRef(const api::types::v1::RepositoryCacheLayersItem &layer) noexcept
+{
+    return this->removeOstreeRef(layer.repo, ostreeRefFromLayerItem(layer), layer.commit);
 }
 
 utils::error::Result<void> OSTreeRepo::handleRepositoryUpdate(
@@ -1090,13 +1108,11 @@ OSTreeRepo::remove(const api::types::v1::RepositoryCacheLayersItem &item) noexce
     return LINGLONG_OK;
 }
 
-utils::error::Result<void>
-OSTreeRepo::undeployedLayer(const api::types::v1::RepositoryCacheLayersItem &layer) noexcept
+utils::error::Result<void> OSTreeRepo::undeployedLayer(const std::string &commit) noexcept
 {
-    LINGLONG_TRACE(fmt::format("undeployed layer {}", layer.commit));
+    LINGLONG_TRACE(fmt::format("undeployed layer {}", commit));
 
-    // It is crucial to remove the layer directory by commit
-    auto layerDir = getLayerDir(layer);
+    auto layerDir = getLayerDir(commit);
     if (!layerDir) {
         LogW("layer dir not found, skip remove: {}", layerDir.error());
         return LINGLONG_OK;
@@ -1135,6 +1151,67 @@ OSTreeRepo::undeployedLayer(const api::types::v1::RepositoryCacheLayersItem &lay
     return LINGLONG_OK;
 }
 
+utils::error::Result<void>
+OSTreeRepo::undeployedLayer(const api::types::v1::RepositoryCacheLayersItem &layer) noexcept
+{
+    return this->undeployedLayer(layer.commit);
+}
+
+// clean all checkout files and refs/objects from ostree repo but reserved items
+utils::error::Result<void>
+OSTreeRepo::clean(const std::vector<api::types::v1::RepositoryCacheLayersItem> &reserved) noexcept
+{
+    LINGLONG_TRACE(fmt::format("clean refs: {}", reserved.size()));
+
+    std::unordered_set<std::string> keepCommits;
+    keepCommits.reserve(reserved.size());
+    for (const auto &item : reserved) {
+        keepCommits.insert(item.commit);
+    }
+
+    g_autoptr(GHashTable) refsTable = nullptr;
+    g_autoptr(GError) gErr = nullptr;
+    std::vector<OstreeRefEntry> existingRefs;
+    if (ostree_repo_list_refs(this->ostreeRepo.get(), nullptr, &refsTable, nullptr, &gErr)
+        == FALSE) {
+        return LINGLONG_ERR(fmt::format("ostree_repo_list_refs {}", ptr_view(gErr)));
+    }
+
+    g_hash_table_foreach(
+      refsTable,
+      [](gpointer key, gpointer value, gpointer data) {
+          auto *entries = static_cast<std::vector<OstreeRefEntry> *>(data);
+          entries->push_back(
+            OstreeRefEntry{ static_cast<const char *>(key), static_cast<const char *>(value) });
+      },
+      &existingRefs);
+
+    for (const auto &entry : existingRefs) {
+        if (keepCommits.find(entry.commit) != keepCommits.end()) {
+            continue;
+        }
+
+        auto removedLayer = this->undeployedLayer(entry.commit);
+        if (!removedLayer) {
+            LogW("failed to remove layer dir for {}: {}", entry.commit, removedLayer.error());
+        }
+
+        g_autoptr(GError) parseErr = nullptr;
+        g_autofree char *remote = nullptr;
+        g_autofree char *ref = nullptr;
+        if (ostree_parse_refspec(entry.refspec.c_str(), &remote, &ref, &parseErr) == FALSE) {
+            return LINGLONG_ERR(fmt::format("ostree_parse_refspec {}", ptr_view(parseErr)));
+        }
+
+        auto removedRef = this->removeOstreeRef(remote ? remote : "", ref ? ref : "", entry.commit);
+        if (!removedRef) {
+            return LINGLONG_ERR(removedRef);
+        }
+    }
+
+    return this->prune();
+}
+
 utils::error::Result<void> OSTreeRepo::prune()
 {
     LINGLONG_TRACE("prune ostree repo");
@@ -1162,36 +1239,49 @@ OSTreeRepo::fetchRefMetaData(const package::ReferenceWithRepo &refRepo,
                              const std::string &module,
                              bool fetchPackageInfo) noexcept
 {
-    auto refString = ostreeSpecFromReferenceV2(refRepo.reference, std::nullopt, module);
     auto repoName = refRepo.repo.alias.value_or(refRepo.repo.name);
-    LINGLONG_TRACE(fmt::format("fetch info.json from {}:{}", repoName, refString));
 
     g_autoptr(GError) gErr = nullptr;
+    auto refCandidates = buildPullRefCandidates(refRepo.reference, module);
+    auto refString = refCandidates.front();
+    LINGLONG_TRACE(fmt::format("fetch info.json from {}:{}", repoName, refString));
 
-    GVariantBuilder builder = this->initOStreePullOptions(refString);
-    if (fetchPackageInfo) {
-        std::vector<const char *> subdirs{ "/info.json", nullptr };
-        g_variant_builder_add(&builder,
-                              "{s@v}",
-                              "subdirs",
-                              g_variant_new_variant(g_variant_new_strv(subdirs.data(), -1)));
-    } else {
-        g_variant_builder_add(
-          &builder,
-          "{s@v}",
-          "flags",
-          g_variant_new_variant(g_variant_new_int32(OSTREE_REPO_PULL_FLAGS_COMMIT_ONLY)));
-    }
+    for (size_t idx = 0; idx < refCandidates.size(); ++idx) {
+        refString = refCandidates[idx];
 
-    g_autoptr(GVariant) pull_options = g_variant_ref_sink(g_variant_builder_end(&builder));
-    auto status = ostree_repo_pull_with_options(this->ostreeRepo.get(),
-                                                repoName.c_str(),
-                                                pull_options,
-                                                nullptr,
-                                                nullptr,
-                                                &gErr);
-    if (status == FALSE) {
-        return LINGLONG_ERR(fmt::format("ostree_repo_pull_with_options {}", ptr_view(gErr)));
+        GVariantBuilder builder = this->initOStreePullOptions(refString);
+        if (fetchPackageInfo) {
+            std::vector<const char *> subdirs{ "/info.json", nullptr };
+            g_variant_builder_add(&builder,
+                                  "{s@v}",
+                                  "subdirs",
+                                  g_variant_new_variant(g_variant_new_strv(subdirs.data(), -1)));
+        } else {
+            g_variant_builder_add(
+              &builder,
+              "{s@v}",
+              "flags",
+              g_variant_new_variant(g_variant_new_int32(OSTREE_REPO_PULL_FLAGS_COMMIT_ONLY)));
+        }
+
+        g_autoptr(GVariant) pull_options = g_variant_ref_sink(g_variant_builder_end(&builder));
+        auto status = ostree_repo_pull_with_options(this->ostreeRepo.get(),
+                                                    repoName.c_str(),
+                                                    pull_options,
+                                                    nullptr,
+                                                    nullptr,
+                                                    &gErr);
+        if (status != FALSE) {
+            break;
+        }
+
+        if (idx + 1 == refCandidates.size() || !shouldFallbackToRuntimeBranch(module, gErr)) {
+            return LINGLONG_ERR(fmt::format("ostree_repo_pull_with_options {}", ptr_view(gErr)));
+        }
+
+        LogW("ostree_repo_pull_with_options failed with [{}]: {}", gErr->code, gErr->message);
+        LogW("fallback to module runtime, fetch {}", refCandidates[idx + 1]);
+        g_clear_error(&gErr);
     }
     g_clear_error(&gErr);
 
@@ -1262,7 +1352,7 @@ OSTreeRepo::getRefStatistics(const RefMetaData &meta) const noexcept
     }
     g_clear_error(&gErr);
 
-    RefStatistics stat = { 0 };
+    RefStatistics stat{};
 
 #if OSTREE_CHECK_VERSION(2020, 1)
     g_autoptr(GPtrArray) sizes = NULL;
@@ -1327,12 +1417,31 @@ GVariantBuilder OSTreeRepo::initOStreePullOptions(const std::string &ref) noexce
     return builder;
 }
 
+std::vector<std::string> OSTreeRepo::buildPullRefCandidates(const package::Reference &ref,
+                                                            const std::string &module) noexcept
+{
+    std::vector<std::string> candidates;
+    candidates.emplace_back(ostreeSpecFromReferenceV2(ref, std::nullopt, module));
+    if (module == "binary") {
+        candidates.emplace_back(ostreeSpecFromReference(ref, std::nullopt, module));
+    }
+    return candidates;
+}
+
+bool OSTreeRepo::shouldFallbackToRuntimeBranch(const std::string &module,
+                                               const GError *gErr) noexcept
+{
+    return module == "binary" && gErr != nullptr && gErr->message != nullptr
+      && strstr(gErr->message, "No such branch") != nullptr;
+}
+
 utils::error::Result<void> OSTreeRepo::pull(service::Task &taskContext,
                                             const package::ReferenceWithRepo &refRepo,
                                             const std::string &module) noexcept
 {
-    auto refString = ostreeSpecFromReferenceV2(refRepo.reference, std::nullopt, module);
     auto repoName = refRepo.repo.alias.value_or(refRepo.repo.name);
+    auto refCandidates = buildPullRefCandidates(refRepo.reference, module);
+    auto refString = refCandidates.front();
     LINGLONG_TRACE(fmt::format("pull {} from {}", refString, repoName));
 
     auto *cancellable = taskContext.cancellable();
@@ -1346,51 +1455,35 @@ utils::error::Result<void> OSTreeRepo::pull(service::Task &taskContext,
 
     g_autoptr(GError) gErr = nullptr;
 
-    auto builder = this->initOStreePullOptions(refString);
-    g_autoptr(GVariant) pull_options = g_variant_ref_sink(g_variant_builder_end(&builder));
-    // 这里不能使用g_main_context_push_thread_default，因为会阻塞Qt的事件循环
+    for (size_t idx = 0; idx < refCandidates.size(); ++idx) {
+        refString = refCandidates[idx];
 
-    auto status = ostree_repo_pull_with_options(this->ostreeRepo.get(),
-                                                repoName.c_str(),
-                                                pull_options,
-                                                progress,
-                                                cancellable,
-                                                &gErr);
-    ostree_async_progress_finish(progress);
-    auto shouldFallback = false;
-    if (status == FALSE) {
-        // gErr->code is 0, so we compare string here.
-        if (!strstr(gErr->message, "No such branch")) {
+        auto builder = this->initOStreePullOptions(refString);
+        g_autoptr(GVariant) pull_options = g_variant_ref_sink(g_variant_builder_end(&builder));
+        // 这里不能使用g_main_context_push_thread_default，因为会阻塞Qt的事件循环
+
+        auto status = ostree_repo_pull_with_options(this->ostreeRepo.get(),
+                                                    repoName.c_str(),
+                                                    pull_options,
+                                                    progress,
+                                                    cancellable,
+                                                    &gErr);
+        ostree_async_progress_finish(progress);
+        if (status != FALSE) {
+            break;
+        }
+
+        if (idx + 1 == refCandidates.size() || !shouldFallbackToRuntimeBranch(module, gErr)) {
             return LINGLONG_ERR(fmt::format("ostree_repo_pull_with_options {}", ptr_view(gErr)));
         }
-        LogW("ostree_repo_pull_with_options failed with [{}]: {}", gErr->code, gErr->message);
-        shouldFallback = true;
-    }
-    // Note: this fallback is only for binary to runtime
-    if (shouldFallback && (module == "binary" || module == "runtime")) {
-        g_autoptr(OstreeAsyncProgress) progress =
-          ostree_async_progress_new_and_connect(progress_changed, (void *)&data);
-        Q_ASSERT(progress != nullptr);
-        // fallback to old ref
-        refString = ostreeSpecFromReference(refRepo.reference, std::nullopt, module);
-        LogW("fallback to module runtime, pull {}", refString);
 
+        LogW("ostree_repo_pull_with_options failed with [{}]: {}", gErr->code, gErr->message);
+        LogW("fallback to module runtime, pull {}", refCandidates[idx + 1]);
         g_clear_error(&gErr);
 
-        GVariantBuilder builder = this->initOStreePullOptions(refString);
-
-        g_autoptr(GVariant) pull_options = g_variant_ref_sink(g_variant_builder_end(&builder));
-
-        status = ostree_repo_pull_with_options(this->ostreeRepo.get(),
-                                               repoName.c_str(),
-                                               pull_options,
-                                               progress,
-                                               cancellable,
-                                               &gErr);
-        ostree_async_progress_finish(progress);
-        if (status == FALSE) {
-            return LINGLONG_ERR(fmt::format("ostree_repo_pull_with_options {}", ptr_view(gErr)));
-        }
+        g_clear_object(&progress);
+        progress = ostree_async_progress_new_and_connect(progress_changed, (void *)&data);
+        Q_ASSERT(progress != nullptr);
     }
 
     g_autofree char *commit = nullptr;
@@ -1737,7 +1830,7 @@ OSTreeRepo::searchRemote(const package::FuzzyReference &fuzzyRef,
         pkgInfos.emplace_back(std::move(packageInfo));
     }
 
-    return std::move(pkgInfos);
+    return pkgInfos;
 }
 
 utils::error::Result<repo::RemotePackages>
@@ -2007,12 +2100,12 @@ utils::error::Result<void> OSTreeRepo::exportDir(const std::string &appID,
                 && common::strings::ends_with(target_path.string(), ".desktop")) {
                 auto desktopExists = false;
                 // 如果要导出的desktop已存在，则覆盖导出（无论是在default还是overlay中），避免桌面和任务栏的快捷方式失效
-                const std::string appDirs[] = { oldAppDir, newAppDir };
+                const std::array<std::string, 2> appDirs{ oldAppDir, newAppDir };
                 for (const auto &appDir : appDirs) {
                     // 如果目标文件存在，删除再导出
-                    std::filesystem::path linkpath =
+                    const std::filesystem::path linkpath =
                       target_path.string().replace(0, oldAppDir.string().length(), appDir);
-                    auto status = std::filesystem::symlink_status(linkpath, ec);
+                    std::ignore = std::filesystem::symlink_status(linkpath, ec);
                     if (!ec) {
                         desktopExists = true;
                         auto target = source_path.lexically_relative(linkpath.parent_path());
@@ -2371,18 +2464,30 @@ OSTreeRepo::getLayerItem(const package::Reference &ref,
     return *item;
 }
 
-auto OSTreeRepo::getLayerDir(const api::types::v1::RepositoryCacheLayersItem &layer) const noexcept
+std::filesystem::path OSTreeRepo::layerPath(const std::string &commit) const noexcept
+{
+    return this->repoDir / "layers" / commit;
+}
+
+auto OSTreeRepo::getLayerDir(const std::string &commit) const noexcept
   -> utils::error::Result<package::LayerDir>
 {
-    LINGLONG_TRACE(fmt::format("get dir from layer {}", layer.commit));
+    LINGLONG_TRACE(fmt::format("get dir from commit {}", commit));
 
-    auto dir = this->repoDir / "layers" / layer.commit;
+    auto dir = this->layerPath(commit);
     std::error_code ec;
     if (!std::filesystem::exists(dir, ec)) {
         return LINGLONG_ERR(fmt::format("{} doesn't exist", dir));
     }
 
     return dir;
+}
+
+auto OSTreeRepo::getLayerDir(const api::types::v1::RepositoryCacheLayersItem &layer) const noexcept
+  -> utils::error::Result<package::LayerDir>
+{
+    LINGLONG_TRACE(fmt::format("get dir from layer {}", layer.commit));
+    return getLayerDir(layer.commit);
 }
 
 auto OSTreeRepo::getLayerDir(const package::Reference &ref,

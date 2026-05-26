@@ -217,14 +217,6 @@ file_descriptor_wrapper create_fs_uds() noexcept
         return socket_fd;
     }
 
-    std::error_code ec;
-    std::filesystem::path socket_path{ addr.sun_path };
-    std::filesystem::create_directories(socket_path.parent_path(), ec);
-    if (ec) {
-        print_sys_error("Failed to create unix domain socket directory", ec);
-        return socket_fd;
-    }
-
     // just in case the socket file exists
     ::unlink(addr.sun_path);
 

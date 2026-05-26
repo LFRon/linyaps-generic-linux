@@ -25,6 +25,7 @@
 #include "linglong/api/types/v1/UabLayer.hpp"
 #include "linglong/api/types/v1/State.hpp"
 #include "linglong/api/types/v1/RuntimeConfigure.hpp"
+#include "linglong/api/types/v1/RunContextConfig.hpp"
 #include "linglong/api/types/v1/RepositoryCache.hpp"
 #include "linglong/api/types/v1/RepositoryCacheMergedItem.hpp"
 #include "linglong/api/types/v1/RepositoryCacheLayersItem.hpp"
@@ -59,10 +60,13 @@
 #include "linglong/api/types/v1/ExportDirs.hpp"
 #include "linglong/api/types/v1/DialogMessage.hpp"
 #include "linglong/api/types/v1/DialogHandShakePayload.hpp"
+#include "linglong/api/types/v1/DeviceOption.hpp"
 #include "linglong/api/types/v1/ContainerProcessStateInfo.hpp"
 #include "linglong/api/types/v1/CommonResult.hpp"
 #include "linglong/api/types/v1/CommonOptions.hpp"
 #include "linglong/api/types/v1/CliContainer.hpp"
+#include "linglong/api/types/v1/CdiDeviceEntry.hpp"
+#include "linglong/api/types/v1/CdiSpec.hpp"
 #include "linglong/api/types/v1/BuilderProject.hpp"
 #include "linglong/api/types/v1/BuilderProjectSource.hpp"
 #include "linglong/api/types/v1/BuilderProjectPackage.hpp"
@@ -123,6 +127,12 @@ void to_json(json & j, const BuilderProjectSource & x);
 
 void from_json(const json & j, BuilderProject & x);
 void to_json(json & j, const BuilderProject & x);
+
+void from_json(const json & j, CdiSpec & x);
+void to_json(json & j, const CdiSpec & x);
+
+void from_json(const json & j, CdiDeviceEntry & x);
+void to_json(json & j, const CdiDeviceEntry & x);
 
 void from_json(const json & j, CliContainer & x);
 void to_json(json & j, const CliContainer & x);
@@ -235,6 +245,9 @@ void to_json(json & j, const RepositoryCacheMergedItem & x);
 void from_json(const json & j, RepositoryCache & x);
 void to_json(json & j, const RepositoryCache & x);
 
+void from_json(const json & j, RunContextConfig & x);
+void to_json(json & j, const RunContextConfig & x);
+
 void from_json(const json & j, RuntimeConfigure & x);
 void to_json(json & j, const RuntimeConfigure & x);
 
@@ -252,6 +265,9 @@ void to_json(json & j, const UpgradeListResult & x);
 
 void from_json(const json & j, LinglongAPIV1 & x);
 void to_json(json & j, const LinglongAPIV1 & x);
+
+void from_json(const json & j, DeviceOption & x);
+void to_json(json & j, const DeviceOption & x);
 
 void from_json(const json & j, InteractionMessageType & x);
 void to_json(json & j, const InteractionMessageType & x);
@@ -534,6 +550,30 @@ if (x.strip) {
 j["strip"] = x.strip;
 }
 j["version"] = x.version;
+}
+
+inline void from_json(const json & j, CdiSpec& x) {
+x.checksum = j.at("checksum").get<std::string>();
+x.path = j.at("path").get<std::string>();
+}
+
+inline void to_json(json & j, const CdiSpec & x) {
+j = json::object();
+j["checksum"] = x.checksum;
+j["path"] = x.path;
+}
+
+inline void from_json(const json & j, CdiDeviceEntry& x) {
+x.kind = j.at("kind").get<std::string>();
+x.name = j.at("name").get<std::string>();
+x.spec = j.at("spec").get<CdiSpec>();
+}
+
+inline void to_json(json & j, const CdiDeviceEntry & x) {
+j = json::object();
+j["kind"] = x.kind;
+j["name"] = x.name;
+j["spec"] = x.spec;
 }
 
 inline void from_json(const json & j, CliContainer& x) {
@@ -1199,13 +1239,58 @@ j["merged"] = x.merged;
 j["version"] = x.version;
 }
 
+inline void from_json(const json & j, RunContextConfig& x) {
+x.app = get_stack_optional<std::string>(j, "app");
+x.base = get_stack_optional<std::string>(j, "base");
+x.cdiDevices = get_stack_optional<std::vector<CdiDeviceEntry>>(j, "cdiDevices");
+x.extensions = get_stack_optional<std::map<std::string, std::vector<std::string>>>(j, "extensions");
+x.overlayfs = get_stack_optional<std::string>(j, "overlayfs");
+x.runtime = get_stack_optional<std::string>(j, "runtime");
+x.timezone = get_stack_optional<std::string>(j, "timezone");
+x.version = j.at("version").get<std::string>();
+}
+
+inline void to_json(json & j, const RunContextConfig & x) {
+j = json::object();
+if (x.app) {
+j["app"] = x.app;
+}
+if (x.base) {
+j["base"] = x.base;
+}
+if (x.cdiDevices) {
+j["cdiDevices"] = x.cdiDevices;
+}
+if (x.extensions) {
+j["extensions"] = x.extensions;
+}
+if (x.overlayfs) {
+j["overlayfs"] = x.overlayfs;
+}
+if (x.runtime) {
+j["runtime"] = x.runtime;
+}
+if (x.timezone) {
+j["timezone"] = x.timezone;
+}
+j["version"] = x.version;
+}
+
 inline void from_json(const json & j, RuntimeConfigure& x) {
+x.deviceMode = get_stack_optional<std::vector<DeviceOption>>(j, "device_mode");
+x.disableXdp = get_stack_optional<bool>(j, "disable_xdp");
 x.env = get_stack_optional<std::map<std::string, std::string>>(j, "env");
 x.extDefs = get_stack_optional<std::map<std::string, std::vector<ExtensionDefine>>>(j, "ext_defs");
 }
 
 inline void to_json(json & j, const RuntimeConfigure & x) {
 j = json::object();
+if (x.deviceMode) {
+j["device_mode"] = x.deviceMode;
+}
+if (x.disableXdp) {
+j["disable_xdp"] = x.disableXdp;
+}
 if (x.env) {
 j["env"] = x.env;
 }
@@ -1278,11 +1363,13 @@ x.applicationConfigurationPermissions = get_stack_optional<ApplicationConfigurat
 x.applicationPermissionsRequest = get_stack_optional<ApplicationPermissionsRequest>(j, "ApplicationPermissionsRequest");
 x.builderConfig = get_stack_optional<BuilderConfig>(j, "BuilderConfig");
 x.builderProject = get_stack_optional<BuilderProject>(j, "BuilderProject");
+x.cdiDeviceEntry = get_stack_optional<CdiDeviceEntry>(j, "CDIDeviceEntry");
 x.cliContainer = get_stack_optional<CliContainer>(j, "CLIContainer");
 x.commonOptions = get_stack_optional<CommonOptions>(j, "CommonOptions");
 x.commonResult = get_stack_optional<CommonResult>(j, "CommonResult");
 x.containerProcessStateInfo = get_stack_optional<ContainerProcessStateInfo>(j, "ContainerProcessStateInfo");
 x.deviceNode = get_stack_optional<DeviceNode>(j, "DeviceNode");
+x.deviceOption = get_stack_optional<DeviceOption>(j, "DeviceOption");
 x.dialogHandShakePayload = get_stack_optional<DialogHandShakePayload>(j, "DialogHandShakePayload");
 x.dialogMessage = get_stack_optional<DialogMessage>(j, "DialogMessage");
 x.exportDirs = get_stack_optional<ExportDirs>(j, "ExportDirs");
@@ -1315,6 +1402,7 @@ x.repo = get_stack_optional<Repo>(j, "Repo");
 x.repoConfig = get_stack_optional<RepoConfig>(j, "RepoConfig");
 x.repoConfigV2 = get_stack_optional<RepoConfigV2>(j, "RepoConfigV2");
 x.repositoryCache = get_stack_optional<RepositoryCache>(j, "RepositoryCache");
+x.runContextConfig = get_stack_optional<RunContextConfig>(j, "RunContextConfig");
 x.runtimeConfigure = get_stack_optional<RuntimeConfigure>(j, "RuntimeConfigure");
 x.state = get_stack_optional<State>(j, "State");
 x.uabMetaInfo = get_stack_optional<UabMetaInfo>(j, "UABMetaInfo");
@@ -1339,6 +1427,9 @@ j["BuilderConfig"] = x.builderConfig;
 if (x.builderProject) {
 j["BuilderProject"] = x.builderProject;
 }
+if (x.cdiDeviceEntry) {
+j["CDIDeviceEntry"] = x.cdiDeviceEntry;
+}
 if (x.cliContainer) {
 j["CLIContainer"] = x.cliContainer;
 }
@@ -1353,6 +1444,9 @@ j["ContainerProcessStateInfo"] = x.containerProcessStateInfo;
 }
 if (x.deviceNode) {
 j["DeviceNode"] = x.deviceNode;
+}
+if (x.deviceOption) {
+j["DeviceOption"] = x.deviceOption;
 }
 if (x.dialogHandShakePayload) {
 j["DialogHandShakePayload"] = x.dialogHandShakePayload;
@@ -1450,6 +1544,9 @@ j["RepoConfigV2"] = x.repoConfigV2;
 if (x.repositoryCache) {
 j["RepositoryCache"] = x.repositoryCache;
 }
+if (x.runContextConfig) {
+j["RunContextConfig"] = x.runContextConfig;
+}
 if (x.runtimeConfigure) {
 j["RuntimeConfigure"] = x.runtimeConfigure;
 }
@@ -1464,6 +1561,18 @@ j["UpgradeListResult"] = x.upgradeListResult;
 }
 if (x.xdgDirectoryPermissions) {
 j["XDGDirectoryPermissions"] = x.xdgDirectoryPermissions;
+}
+}
+
+inline void from_json(const json & j, DeviceOption & x) {
+if (j == "passthru") x = DeviceOption::Passthru;
+else { throw std::runtime_error("Input JSON does not conform to schema!"); }
+}
+
+inline void to_json(json & j, const DeviceOption & x) {
+switch (x) {
+case DeviceOption::Passthru: j = "passthru"; break;
+default: throw std::runtime_error("Unexpected value in enumeration \"DeviceOption\": " + std::to_string(static_cast<int>(x)));
 }
 }
 

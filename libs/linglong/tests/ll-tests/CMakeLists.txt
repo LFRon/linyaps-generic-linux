@@ -49,6 +49,7 @@ pfl_add_executable(
   src/linglong/repo/config_test.cpp
   src/linglong/repo/ostree_repo_test.cpp
   src/linglong/repo/repo_cache_test.cpp
+  src/linglong/runtime/container_builder_test.cpp
   src/linglong/runtime/run_context_test.cpp
   src/linglong/utils/bash_command_helper_test.cpp
   src/linglong/utils/cmd_test.cpp
@@ -57,11 +58,13 @@ pfl_add_executable(
   src/linglong/utils/filelock_test.cpp
   src/linglong/utils/log.cpp
   src/linglong/utils/namespce.cpp
+  src/linglong/utils/overlayfs_test.cpp
   src/linglong/utils/packageinfo_handler_test.cpp
   src/linglong/utils/runtime_config_test.cpp
   src/linglong/utils/sha256_test.cpp
   src/linglong/utils/transaction_test.cpp
   src/linglong/utils/xdg/directory_test.cpp
+  src/linglong/utils/xdp_test.cpp
   src/main.cpp
 
 
@@ -84,6 +87,7 @@ pfl_add_executable(
   GTest::gtest
   GTest::gmock
   linglong::linglong
+  linglong::oci-cfg-generators
   PkgConfig::CRYPTO)
 
 include(GoogleTest)

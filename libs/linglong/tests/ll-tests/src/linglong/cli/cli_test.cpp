@@ -80,17 +80,12 @@ protected:
         tempDir = std::make_unique<TempDir>();
         ociCLI = ocppi::cli::crun::Crun::New(tempDir->path()).value();
         containerBuilder = std::make_unique<runtime::ContainerBuilder>(*ociCLI);
-        pkgMan =
-          std::make_unique<api::dbus::v1::PackageManager>("",
-                                                          "/org/deepin/linglong/PackageManager1",
-                                                          QDBusConnection::sessionBus(),
-                                                          nullptr);
         repo = std::make_unique<MockRepo>(tempDir->path());
         auto notifier = std::make_unique<cli::DummyNotifier>();
         cli = std::make_unique<cli::Cli>(*printer,
                                          *ociCLI,
                                          *containerBuilder,
-                                         *pkgMan,
+                                         false,
                                          *repo,
                                          std::move(notifier),
                                          nullptr);
@@ -102,7 +97,6 @@ protected:
         tempDir.reset();
         ociCLI.reset();
         containerBuilder.reset();
-        pkgMan.reset();
         repo.reset();
         cli.reset();
     }
@@ -111,7 +105,6 @@ protected:
     std::unique_ptr<TempDir> tempDir;
     std::unique_ptr<ocppi::cli::crun::Crun> ociCLI;
     std::unique_ptr<runtime::ContainerBuilder> containerBuilder;
-    std::unique_ptr<api::dbus::v1::PackageManager> pkgMan;
     std::unique_ptr<MockRepo> repo;
     std::unique_ptr<cli::Cli> cli;
 };
@@ -286,6 +279,90 @@ TEST_F(CliTest, contentPreferDesktopFromDefaultSharedDir)
         });
     EXPECT_CALL(*printer,
                 printContent(ElementsAre(QString::fromStdString(defaultDesktopPath.string()))))
+      .WillOnce(Return());
+
+    EXPECT_EQ(cli->content(cli::ContentOptions{ .appid = "org.example.app" }), 0);
+}
+
+TEST_F(CliTest, contentResolvesDesktopFromSymlinkedEntriesShareDir)
+{
+    auto ref = package::Reference::parse("main:org.example.app/1.0.0/x86_64");
+    ASSERT_TRUE(ref.has_value());
+
+    const std::string commit = "test-commit-symlinked-share";
+    const auto layerFilesDir =
+      tempDir->path() / "layers" / commit / "files" / "share" / "applications";
+    const auto layerEntriesShareLink = tempDir->path() / "layers" / commit / "entries" / "share";
+    const auto defaultDesktopPath =
+      repo->defaultSharedDir() / "applications" / "org.example.app.desktop";
+
+    std::filesystem::create_directories(layerFilesDir);
+    std::filesystem::create_directories(layerEntriesShareLink.parent_path());
+    std::filesystem::create_directories(defaultDesktopPath.parent_path());
+    std::ofstream(layerFilesDir / "org.example.app.desktop") << "Test desktop content";
+    std::ofstream(defaultDesktopPath) << "Test desktop content in default";
+
+    std::error_code ec;
+    std::filesystem::create_directory_symlink("../files/share", layerEntriesShareLink, ec);
+    if (ec) {
+        GTEST_SKIP() << "directory symlink support is required: " << ec.message();
+    }
+
+    api::types::v1::RepositoryCacheLayersItem layerItem;
+    layerItem.commit = commit;
+    layerItem.info.kind = "app";
+
+    EXPECT_CALL(*repo, clearReference(_, _, _, _)).WillOnce(Return(*ref));
+    EXPECT_CALL(*repo, getLayerItem(_, _, _))
+      .WillRepeatedly(
+        [layerItem](const package::Reference &, std::string, const std::optional<std::string> &)
+          -> utils::error::Result<api::types::v1::RepositoryCacheLayersItem> {
+            return layerItem;
+        });
+    EXPECT_CALL(*printer,
+                printContent(ElementsAre(QString::fromStdString(defaultDesktopPath.string()))))
+      .WillOnce(Return());
+
+    EXPECT_EQ(cli->content(cli::ContentOptions{ .appid = "org.example.app" }), 0);
+}
+
+TEST_F(CliTest, contentResolvesOverlayDesktopFromSymlinkedEntriesShareDir)
+{
+    auto ref = package::Reference::parse("main:org.example.app/1.0.0/x86_64");
+    ASSERT_TRUE(ref.has_value());
+
+    const std::string commit = "test-commit-symlinked-share-overlay";
+    const auto layerFilesDir =
+      tempDir->path() / "layers" / commit / "files" / "share" / "applications";
+    const auto layerEntriesShareLink = tempDir->path() / "layers" / commit / "entries" / "share";
+    const auto overlayDesktopPath =
+      repo->overlaySharedDir() / "applications" / "org.example.app.desktop";
+
+    std::filesystem::create_directories(layerFilesDir);
+    std::filesystem::create_directories(layerEntriesShareLink.parent_path());
+    std::filesystem::create_directories(overlayDesktopPath.parent_path());
+    std::ofstream(layerFilesDir / "org.example.app.desktop") << "Test desktop content";
+    std::ofstream(overlayDesktopPath) << "Test desktop content in overlay";
+
+    std::error_code ec;
+    std::filesystem::create_directory_symlink("../files/share", layerEntriesShareLink, ec);
+    if (ec) {
+        GTEST_SKIP() << "directory symlink support is required: " << ec.message();
+    }
+
+    api::types::v1::RepositoryCacheLayersItem layerItem;
+    layerItem.commit = commit;
+    layerItem.info.kind = "app";
+
+    EXPECT_CALL(*repo, clearReference(_, _, _, _)).WillOnce(Return(*ref));
+    EXPECT_CALL(*repo, getLayerItem(_, _, _))
+      .WillRepeatedly(
+        [layerItem](const package::Reference &, std::string, const std::optional<std::string> &)
+          -> utils::error::Result<api::types::v1::RepositoryCacheLayersItem> {
+            return layerItem;
+        });
+    EXPECT_CALL(*printer,
+                printContent(ElementsAre(QString::fromStdString(overlayDesktopPath.string()))))
       .WillOnce(Return());
 
     EXPECT_EQ(cli->content(cli::ContentOptions{ .appid = "org.example.app" }), 0);

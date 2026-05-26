@@ -1448,8 +1448,103 @@
               "$ref": "#/$defs/ExtensionDefine"
             }
           }
+        },
+        "device_mode": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeviceOption"
+          }
+        },
+        "disable_xdp": {
+          "type": "boolean"
         }
       }
+    },
+    "RunContextConfig": {
+      "title": "RunContextConfig",
+      "type": "object",
+      "required": [
+        "version"
+      ],
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "base": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "app": {
+          "type": "string"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "overlayfs": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "cdiDevices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CDIDeviceEntry"
+          }
+        }
+      }
+    },
+    "CDIDeviceEntry": {
+      "title": "CDIDeviceEntry",
+      "type": "object",
+      "required": [
+        "kind",
+        "name",
+        "spec"
+      ],
+      "properties": {
+        "kind": {
+          "description": "CDI device kind which uniquely identifies the device vendor",
+          "type": "string"
+        },
+        "name": {
+          "description": "CDI device name",
+          "type": "string"
+        },
+        "spec": {
+          "title": "CDISpec",
+          "type": "object",
+          "description": "CDI device spec",
+          "required": [
+            "path",
+            "checksum"
+          ],
+          "properties": {
+            "path": {
+              "description": "CDI device spec path",
+              "type": "string"
+            },
+            "checksum": {
+              "description": "CDI device spec checksum",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "DeviceOption": {
+      "description": "device option",
+      "enum": [
+        "passthru"
+      ]
     }
   },
   "type": "object",
@@ -1594,6 +1689,15 @@
     },
     "RuntimeConfigure": {
       "$ref": "#/$defs/RuntimeConfigure"
+    },
+    "RunContextConfig": {
+      "$ref": "#/$defs/RunContextConfig"
+    },
+    "CDIDeviceEntry": {
+      "$ref": "#/$defs/CDIDeviceEntry"
+    },
+    "DeviceOption": {
+      "$ref": "#/$defs/DeviceOption"
     }
   }
 }

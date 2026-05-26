@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "linglong/cdi/types/ContainerEdits.hpp"
+#include "linglong/utils/error/error.h"
 #include "ocppi/runtime/config/types/Config.hpp"
 #include "ocppi/runtime/config/types/IdMapping.hpp"
 #include "ocppi/runtime/config/types/Mount.hpp"
@@ -15,6 +17,11 @@
 #include <unordered_set>
 
 namespace linglong::generator {
+
+struct XdpOption
+{
+    std::filesystem::path docMountPoint;
+};
 
 enum class ANNOTATION {
     APPID,
@@ -26,38 +33,6 @@ enum class ANNOTATION {
 class ContainerCfgBuilder
 {
 public:
-    enum ERROR_CODE {
-        BUILD_SUCCESS,
-        BUILD_PARAM_ERROR,
-        BUILD_PREPARE_ERROR,
-        BUILD_MOUNT_RUNTIME_ERROR,
-        BUILD_MOUNT_APP_ERROR,
-        BUILD_MOUNT_HOME_ERROR,
-        BUILD_MOUNT_TMP_ERROR,
-        BUILD_PRIVATEDIR_ERROR,
-        BUILD_PRIVATEMAP_ERROR,
-        BUILD_MOUNT_IPC_ERROR,
-        BUILD_MOUNT_CACHE_ERROR,
-        BUILD_MOUNT_VOLATILE_ERROR,
-        BUILD_MOUNT_ERROR,
-        BUILD_LDCONF_ERROR,
-        BUILD_LDCACHE_ERROR,
-        BUILD_ENV_ERROR,
-        BUILD_NETWORK_CONF_ERROR,
-        BUILD_XDGRUNTIME_ERROR,
-        BUILD_INTERNAL_ERROR,
-        BUILD_CONTAINER_INFO_ERROR,
-    };
-
-    class Error
-    {
-    public:
-        explicit operator bool() const { return code != BUILD_SUCCESS; }
-
-        ERROR_CODE code;
-        std::string reason;
-    };
-
     struct MountNode
     {
         std::string name;
@@ -67,13 +42,14 @@ public:
         int parent_idx;
     };
 
+    inline static const std::filesystem::path runtimeMountPoint{ "/runtime" };
+    inline static const std::filesystem::path zoneinfoMountPoint{ "/usr/share/zoneinfo" };
+
     ContainerCfgBuilder &setAppId(const std::string &id) noexcept
     {
         appId = id;
         return *this;
     }
-
-    std::string getAppId() const { return appId; }
 
     ContainerCfgBuilder &setAppPath(std::filesystem::path path, bool isRo = true) noexcept
     {
@@ -89,8 +65,6 @@ public:
         return *this;
     }
 
-    std::optional<std::filesystem::path> getRuntimePath() { return runtimePath; }
-
     ContainerCfgBuilder &setBasePath(const std::filesystem::path &path, bool isRo = true) noexcept
     {
         basePath = path;
@@ -98,20 +72,22 @@ public:
         return *this;
     }
 
-    std::optional<std::filesystem::path> getBasePath() { return basePath; }
-
     ContainerCfgBuilder &setBundlePath(const std::filesystem::path &path) noexcept
     {
         bundlePath = path;
         return *this;
     }
 
-    const std::filesystem::path &getBundlePath() const noexcept { return bundlePath; }
-
     ContainerCfgBuilder &setAppCache(std::filesystem::path path, bool isRo = true) noexcept
     {
         appCache = path;
         appCacheRo = isRo;
+        return *this;
+    }
+
+    ContainerCfgBuilder &setTimezone(std::string value) noexcept
+    {
+        timezone = std::move(value);
         return *this;
     }
 
@@ -123,14 +99,14 @@ public:
     ContainerCfgBuilder &bindDefault() noexcept;
     ContainerCfgBuilder &bindSys() noexcept;
     ContainerCfgBuilder &bindProc() noexcept;
-    ContainerCfgBuilder &bindDev() noexcept;
+    ContainerCfgBuilder &bindDev(bool passthru = false) noexcept;
     ContainerCfgBuilder &
     bindDevNode(std::function<bool(const std::string &)> ifBind = nullptr) noexcept;
     ContainerCfgBuilder &bindCgroup() noexcept;
     ContainerCfgBuilder &bindXDGRuntime() noexcept;
     ContainerCfgBuilder &bindRun() noexcept;
     ContainerCfgBuilder &bindTmp() noexcept;
-    ContainerCfgBuilder &bindUserGroup() noexcept;
+    ContainerCfgBuilder &bindUserGroup(bool minimal = false) noexcept;
     ContainerCfgBuilder &bindRemovableStorageMounts() noexcept;
 
     ContainerCfgBuilder &forwardDefaultEnv() noexcept;
@@ -150,18 +126,19 @@ public:
     ContainerCfgBuilder &enablePrivateDir() noexcept;
     ContainerCfgBuilder &mapPrivate(std::string containerPath, bool isDir) noexcept;
     ContainerCfgBuilder &bindIPC() noexcept;
+    ContainerCfgBuilder &enableLDConf() noexcept;
     ContainerCfgBuilder &enableLDCache() noexcept;
 
-    std::string getContainerId() const { return containerId; }
-
     ContainerCfgBuilder &setContainerId(std::string containerId) noexcept;
+
+    const std::string &getContainerId() const noexcept { return containerId; }
 
     // TODO
     ContainerCfgBuilder &enableFontCache() noexcept { return *this; }
 
     ContainerCfgBuilder &enableQuirkVolatile() noexcept;
 
-    ContainerCfgBuilder &disableContainerInfo() noexcept;
+    ContainerCfgBuilder &enableXDP(XdpOption option) noexcept;
 
     ContainerCfgBuilder &
       setExtensionMounts(std::vector<ocppi::runtime::config::types::Mount>) noexcept;
@@ -171,9 +148,18 @@ public:
     ContainerCfgBuilder &
       setStartContainerHooks(std::vector<ocppi::runtime::config::types::Hook>) noexcept;
 
+    ContainerCfgBuilder &addExtraHook(const std::string &type,
+                                      ocppi::runtime::config::types::Hook hook) noexcept;
+
     ContainerCfgBuilder &enableSelfAdjustingMount() noexcept
     {
         selfAdjustingMountEnabled = true;
+        return *this;
+    }
+
+    ContainerCfgBuilder &enableOverlayMode(std::filesystem::path merged, bool readOnly) noexcept
+    {
+        overlayMerged = std::make_pair(std::move(merged), readOnly);
         return *this;
     }
 
@@ -203,39 +189,47 @@ public:
         return *this;
     }
 
+    utils::error::Result<void>
+    applyCDIPatch(const linglong::cdi::types::ContainerEdits &edits) noexcept;
+
     std::string ldConf(const std::string &triplet) const;
 
-    bool build() noexcept;
+    utils::error::Result<void> build() noexcept;
 
     const ocppi::runtime::config::types::Config &getConfig() const { return config; }
 
-    Error getError() { return error_; }
-
 private:
-    bool checkValid() noexcept;
-    bool prepare() noexcept;
-    bool buildIdMappings() noexcept;
-    bool buildMountRuntime() noexcept;
-    bool buildMountApp() noexcept;
-    bool buildMountHome() noexcept;
-    bool buildPrivateDir() noexcept;
-    bool buildPrivateMapped() noexcept;
-    bool buildMountIPC() noexcept;
-    bool buildDisplaySystem() noexcept;
-    bool buildMountCache() noexcept;
-    bool buildLDCache() noexcept;
-    bool buildMountLocalTime() noexcept;
-    bool buildMountNetworkConf() noexcept;
-    bool buildQuirkVolatile() noexcept;
-    bool buildXDGRuntime() noexcept;
-    bool buildEnv() noexcept;
-    bool buildContainerInfo() noexcept;
-    bool applyPatch() noexcept;
-    bool applyPatchFile(const std::filesystem::path &patchFile) noexcept;
-    bool applyJsonPatchFile(const std::filesystem::path &patchFile) noexcept;
-    bool applyExecutablePatch(const std::filesystem::path &patchFile) noexcept;
-    bool mergeMount() noexcept;
-    bool finalize() noexcept;
+    utils::error::Result<void> checkValid() noexcept;
+    utils::error::Result<void> prepare() noexcept;
+    utils::error::Result<void> buildIdMappings() noexcept;
+    utils::error::Result<void> buildMountRuntime() noexcept;
+    utils::error::Result<void> buildMountApp() noexcept;
+    utils::error::Result<void> buildMountHome() noexcept;
+    utils::error::Result<void> buildPrivateDir() noexcept;
+    utils::error::Result<void> buildPrivateMapped() noexcept;
+    utils::error::Result<void> buildMountIPC() noexcept;
+    utils::error::Result<void> buildDisplaySystem() noexcept;
+    utils::error::Result<void> buildMountCache() noexcept;
+    utils::error::Result<void> buildLDCache() noexcept;
+    utils::error::Result<void> buildMountTimeZone() noexcept;
+    utils::error::Result<void> buildMountNetworkConf() noexcept;
+    utils::error::Result<void> buildUserGroup() noexcept;
+    utils::error::Result<void> buildQuirkVolatile() noexcept;
+    utils::error::Result<void> buildXDGRuntime() noexcept;
+    utils::error::Result<void> buildEnv() noexcept;
+    utils::error::Result<void> buildContainerInfo() noexcept;
+    utils::error::Result<void> buildHooks() noexcept;
+    utils::error::Result<void> applyPatch() noexcept;
+    utils::error::Result<void> applyPatchFile(const std::filesystem::path &patchFile) noexcept;
+    utils::error::Result<void> applyJsonPatchFile(const std::filesystem::path &patchFile) noexcept;
+    utils::error::Result<void>
+    applyExecutablePatch(const std::filesystem::path &patchFile) noexcept;
+    utils::error::Result<void> mergeMount() noexcept;
+    utils::error::Result<void> finalize() noexcept;
+
+    // utility functions
+    static utils::error::Result<void>
+    mountBind(const ocppi::runtime::config::types::Mount &mount) noexcept;
 
     // adjust mount
     int findChild(int parent, const std::string &name) noexcept;
@@ -244,13 +238,13 @@ private:
     int findNearestMountNode(int child) noexcept;
     bool shouldFix(int node, std::filesystem::path &fixPath) noexcept;
     std::string getRelativePath(int parent, int node) noexcept;
-    bool adjustNode(int node,
+    void adjustNode(int node,
                     const std::filesystem::path &path,
                     const std::filesystem::path fixPath) noexcept;
-    bool constructMountpointsTree() noexcept;
+    utils::error::Result<void> constructMountpointsTree() noexcept;
     void tryFixMountpointsTree() noexcept;
     void generateMounts() noexcept;
-    bool selfAdjustingMount() noexcept;
+    utils::error::Result<void> selfAdjustingMount() noexcept;
 
     // path settings
     std::string appId;
@@ -260,6 +254,7 @@ private:
     std::filesystem::path bundlePath;
     std::optional<std::filesystem::path> appCache;
     std::optional<std::filesystem::path> containerXDGRuntimeDir;
+    std::optional<std::string> timezone;
 
     bool runtimePathRo = true;
     bool appPathRo = true;
@@ -282,17 +277,19 @@ private:
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> runMount;
     std::optional<ocppi::runtime::config::types::Mount> tmpMount;
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> UGMount;
+    std::optional<bool> UGBind{ std::nullopt };
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> removableStorageMounts;
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> hostRootMount;
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> hostStaticsMount;
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> ipcMount;
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> displayMount;
-    std::optional<std::vector<ocppi::runtime::config::types::Mount>> localtimeMount;
+    std::optional<std::vector<ocppi::runtime::config::types::Mount>> timeZoneMount;
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> networkConfMount;
 
     // cache
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> cacheMount;
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> ldCacheMount;
+    std::optional<std::vector<ocppi::runtime::config::types::Mount>> ldConfMount;
 
     // environment
     std::unordered_set<std::string> envForward;
@@ -318,6 +315,10 @@ private:
     // extra mounts
     std::optional<std::vector<ocppi::runtime::config::types::Mount>> extraMount;
 
+    std::optional<std::vector<ocppi::runtime::config::types::Hook>> startContainerHooks;
+    std::optional<std::vector<std::pair<std::string, ocppi::runtime::config::types::Hook>>>
+      extraHooks;
+
     // self-adjusting mount
     bool selfAdjustingMountEnabled = false;
     // mountpoints is a prefix tree of all mounts path
@@ -327,11 +328,14 @@ private:
     // this 'mounts' is used internally, distinct from config.mounts
     std::vector<ocppi::runtime::config::types::Mount> mounts;
 
+    std::optional<std::pair<std::filesystem::path, bool>> overlayMerged;
+
     bool isolateNetWorkEnabled = false;
     bool disableUserNamespaceEnabled = false;
-    bool disableGenerateContainerInfo{ true };
+    std::optional<XdpOption> xdpOption;
     bool applyPatchEnabled = true;
     bool isolateTmp{ false };
+    bool devPassthru{ false };
 
     // display system
     std::optional<std::filesystem::path> waylandSocket;
@@ -341,10 +345,6 @@ private:
     std::optional<std::vector<std::string>> capabilities;
     ocppi::runtime::config::types::Config config;
     std::string containerId;
-
-    Error error_;
-
-    const std::string runtimeMountPoint = "/runtime";
 };
 
 }; // namespace linglong::generator

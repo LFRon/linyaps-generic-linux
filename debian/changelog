@@ -1,43 +1,22 @@
-linglong (1.12.2-1) unstable; urgency=medium
+linglong (1.12.5-0) unstable; urgency=medium
 
-  * follow OpenAtom-Linyaps mainline.
-  * update NVIDIA driver fallback func.
+  * update from OpenAtom/Linyaps upstream.
 
- -- LFRon <ronforever@qq.com>  Thu, 16 Apr 2026 20:51:39 +0800
+ -- LFRon <ronforever@qq.com>  Tue, 26 May 2026 15:25:30 +0800
+
+linglong (1.12.1-1) unstable; urgency=medium
+
+  * release 1.12.1-1.
+
+ -- dengbo <dengbo@deepin.org>  Wed, 18 Mar 2026 14:24:47 +0800
 
 linglong (1.12.0-1) unstable; urgency=medium
 
-  * follow OpenAtom-Linyaps mainline.
-  * update NVIDIA driver fallback func.
+  * release 1.12.0-1.
 
- -- LFRon <ronforever@qq.com>  Tue, 17 Mar 2026 11:44:39 +0800
+ -- dengbo <dengbo@deepin.org>  Fri, 13 Mar 2026 17:18:48 +0800
 
-linglong (1.11.4-0) unstable; urgency=medium
-
-  * follow OpenAtom-Linyaps mainline.
-  * update NVIDIA driver fallback func.
-
- -- LFRon <ronforever@qq.com>  Wed, 25 Feb 2026 11:44:39 +0800
-
-linglong (1.11.3-3) unstable; urgency=medium
-
-  * disable xdg-desktop-portal func.
-
- -- LFRon <ronforever@qq.com>  Wed, 25 Feb 2026 11:44:39 +0800
-
-linglong (1.11.3-1) unstable; urgency=medium
-
-  * release 1.11.3-1.
-
- -- dengbo <dengbo@deepin.org>  Mon, 09 Feb 2026 10:44:39 +0800
-
-linglong (1.11.0-1) unstable; urgency=medium
-
-  * release 1.11.0-1.
-
- -- dengbo <dengbo@deepin.org>  Fri, 23 Jan 2026 15:33:00 +0800
-
-linglong (1.9.0-1) unstable; urgency=medium
+linglong (1.9.0-1) unstable; urgency=medium,
 
   * release 1.9.0-1.
 
@@ -73,7 +52,7 @@ linglong (1.7.10-1) unstable; urgency=medium
 
 linglong (1.7.9-1) unstable; urgency=medium
 
-  * fix: app cannot be started immediately after exiting. 
+  * fix: app cannot be started immediately after exiting.
   * fix: builder push crash.
   * fix: fix mapping file.
   * fix: correct mount option for distribution.info.
@@ -467,7 +446,7 @@ linglong (1.0.4-1) unstable; urgency=medium
 
 linglong (1.0.3-1) unstable; urgency=medium
 
-  *fix: add ostree commit timeout 
+  *fix: add ostree commit timeout
 
  -- liujianqiang <liujianqiang@uniontech.com>  Tue, 19 Oct 2021 14:19:04 +0800
 

@@ -10,7 +10,6 @@
 #include "linglong/api/dbus/v1/task.h"
 #include "linglong/api/types/v1/CommonOptions.hpp"
 #include "linglong/api/types/v1/PackageInfoDisplay.hpp"
-#include "linglong/api/types/v1/RepositoryCacheLayersItem.hpp"
 #include "linglong/cli/interactive_notifier.h"
 #include "linglong/cli/printer.h"
 #include "linglong/common/serialize/json.h"
@@ -48,6 +47,7 @@ struct GlobalOptions
 struct RunOptions
 {
     std::string appid;
+    std::optional<std::string> runContext;
     std::vector<std::string> filePaths;
     std::vector<std::string> fileUrls;
     std::vector<std::string> envs;
@@ -56,8 +56,12 @@ struct RunOptions
     std::optional<std::string> runtime;
     std::optional<std::string> workdir;
     std::vector<std::string> extensions;
+    std::optional<bool> disableXdp;
     bool privileged{ false };
     std::vector<std::string> capsAdd;
+    std::vector<std::string> cdiSpecDir = { "/etc/cdi", "/var/run/cdi" };
+    std::vector<std::string> cdiDevices;
+    std::vector<api::types::v1::DeviceOption> deviceOptions;
 };
 
 struct EnterOptions
@@ -169,12 +173,13 @@ public:
     Cli(Printer &printer,
         ocppi::cli::CLI &ociCLI,
         runtime::ContainerBuilder &containerBuilder,
-        api::dbus::v1::PackageManager &pkgMan,
+        bool peerMode,
         repo::OSTreeRepo &repo,
         std::unique_ptr<InteractiveNotifier> &&notifier,
         QObject *parent = nullptr);
 
     int run(const RunOptions &options);
+    int runWithContext(const RunOptions &options);
     int enter(const EnterOptions &options);
     int ps();
     int kill(const KillOptions &options);
@@ -218,10 +223,7 @@ private:
     utils::error::Result<void> runningAsRoot();
     utils::error::Result<void> runningAsRoot(const QList<QString> &args);
     utils::error::Result<std::vector<api::types::v1::UpgradeListResult>> listUpgradable();
-    utils::error::Result<void> generateLDCache(runtime::RunContext &runContext,
-                                               const std::string &ldConf) noexcept;
-    utils::error::Result<std::filesystem::path> ensureCache(
-      runtime::RunContext &runContext, const generator::ContainerCfgBuilder &cfgBuilder) noexcept;
+    utils::error::Result<std::filesystem::path> ensureCache(runtime::RunContext &context) noexcept;
     QDBusReply<void> authorization();
     void updateAM() noexcept;
     utils::error::Result<std::vector<std::string>> getRunningAppContainers(const std::string &id);
@@ -230,6 +232,11 @@ private:
     int getBundleDir(const InspectOptions &options);
     utils::error::Result<void> initInteraction();
     void detectDrivers();
+    utils::error::Result<api::dbus::v1::PackageManager *> getPkgMan();
+    utils::error::Result<void> initPkgManSignals();
+    int runResolvedContext(runtime::RunContext &runContext,
+                           const RunOptions &options,
+                           std::optional<api::types::v1::RuntimeConfigure> runtimeConfig);
 
     template <typename T>
     utils::error::Result<T> waitDBusReply(QDBusPendingReply<QVariantMap> &reply)
@@ -283,7 +290,9 @@ private:
     runtime::ContainerBuilder &containerBuilder;
     repo::OSTreeRepo &repository;
     std::unique_ptr<InteractiveNotifier> notifier;
-    api::dbus::v1::PackageManager &pkgMan;
+    bool peerMode{ false };
+    std::unique_ptr<api::dbus::v1::PackageManager> pkgMan;
+    bool pkgManSignalsInitialized{ false };
     QString taskObjectPath;
     api::dbus::v1::Task1 *task{ nullptr };
     PMTaskState taskState;

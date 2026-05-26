@@ -104,7 +104,8 @@ utils::error::Result<void> RepoCache::rebuild(const api::types::v1::RepoConfigV2
         g_clear_error(&gErr);
         g_autofree gchar *content = nullptr;
         if (!g_file_load_contents(infoFile, nullptr, &content, nullptr, nullptr, &gErr)) {
-            return LINGLONG_ERR(fmt::format("g_file_load_contents: {}", ptr_view(gErr)));
+            LogE("skip broken ref {}, failed to load info.json: {}", ref, ptr_view(gErr));
+            continue;
         }
         auto info = utils::serialize::parsePackageInfo(content);
         if (!info) {
@@ -114,12 +115,6 @@ utils::error::Result<void> RepoCache::rebuild(const api::types::v1::RepoConfigV2
 
         item.info = std::move(info).value();
         this->cache.layers.emplace_back(std::move(item));
-    }
-
-    // FIXME: ll-cli may initialize repo, it can make states.json own by root
-    if (getuid() == 0) {
-        LogE("Rebuild the cache by root, skip to write data to states.json");
-        return LINGLONG_OK;
     }
 
     auto ret = writeToDisk();
