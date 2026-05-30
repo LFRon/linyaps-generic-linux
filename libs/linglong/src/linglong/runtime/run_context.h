@@ -118,6 +118,7 @@ private:
     std::optional<RuntimeLayer> runtimeLayer;
     std::optional<RuntimeLayer> appLayer;
     std::list<RuntimeLayer> extensionLayers;
+    std::optional<std::string> hostNvidiaExtensionName;
 
     std::string targetId;
     std::optional<std::filesystem::path> appOutput;

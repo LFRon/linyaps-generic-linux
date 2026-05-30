@@ -1,3 +1,9 @@
+linglong (1.12.5-1) unstable; urgency=medium
+
+  * update NVIDIA fallback func.
+
+ -- LFRon <ronforever@qq.com>  Sat, 30 May 2026 15:25:30 +0800
+
 linglong (1.12.5-0) unstable; urgency=medium
 
   * update from OpenAtom/Linyaps upstream.

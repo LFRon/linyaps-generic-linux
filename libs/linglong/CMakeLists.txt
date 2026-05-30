@@ -72,6 +72,8 @@ pfl_add_library(
   src/linglong/package_manager/package_task.h
   src/linglong/package_manager/package_update.cpp
   src/linglong/package_manager/package_update.h
+  src/linglong/package_manager/polkit_authority.cpp
+  src/linglong/package_manager/polkit_authority.h
   src/linglong/package_manager/ref_installation.cpp
   src/linglong/package_manager/ref_installation.h
   src/linglong/package_manager/task.cpp
@@ -107,6 +109,8 @@ pfl_add_library(
   src/linglong/runtime/container_builder.h
   src/linglong/runtime/container.cpp
   src/linglong/runtime/container.h
+  src/linglong/runtime/host_nvidia_extension.cpp
+  src/linglong/runtime/host_nvidia_extension.h
   src/linglong/runtime/layer.cpp
   src/linglong/runtime/layer.h
   src/linglong/runtime/overlayfs_driver.cpp
