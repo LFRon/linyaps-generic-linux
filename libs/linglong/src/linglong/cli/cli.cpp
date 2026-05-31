@@ -564,7 +564,7 @@ int Cli::run(const RunOptions &options)
       });
     std::optional<std::vector<api::types::v1::CdiDeviceEntry>> autoDetectedCdiDevices;
 
-    if (!nvidiaCdiFound) {
+    if (!nvidiaCdiFound && options.cdiDevices.empty()) {
         auto allCdiDevices = cdi::getCDIDevices(options.cdiSpecDir, std::nullopt);
         if (allCdiDevices) {
             for (const auto &device : *allCdiDevices) {
@@ -645,11 +645,6 @@ int Cli::run(const RunOptions &options)
         if (!cdiDevices) {
             handleCommonError(cdiDevices.error());
             return -1;
-        }
-        if (autoDetectedCdiDevices) {
-            cdiDevices->insert(cdiDevices->end(),
-                               autoDetectedCdiDevices->begin(),
-                               autoDetectedCdiDevices->end());
         }
         opts.cdiDevices = std::move(*cdiDevices);
     } else if (autoDetectedCdiDevices) {

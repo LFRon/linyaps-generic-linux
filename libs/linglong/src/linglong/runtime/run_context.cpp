@@ -113,6 +113,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
 {
     LINGLONG_TRACE("resolve RunContext from runnable " + runnable.toString());
     hostNvidiaExtensionName.reset();
+    contextCfg.hostNvidiaExtension.reset();
 
     auto layer = RuntimeLayer::create(runnable, *this);
     if (!layer) {
@@ -250,6 +251,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
 {
     LINGLONG_TRACE("resolve RunContext from builder project " + target.package.id);
     hostNvidiaExtensionName.reset();
+    contextCfg.hostNvidiaExtension.reset();
 
     auto targetRef = package::Reference::fromBuilderProject(target);
     if (!targetRef) {
@@ -341,6 +343,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::RunContextC
 {
     LINGLONG_TRACE("resolve RunContext from config");
     hostNvidiaExtensionName.reset();
+    contextCfg.hostNvidiaExtension.reset();
 
     if (config.version != runContextConfigVersion) {
         return LINGLONG_ERR(fmt::format("run context config version mismatch: config version {}, "
@@ -348,6 +351,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::RunContextC
                                         config.version,
                                         runContextConfigVersion));
     }
+    hostNvidiaExtensionName = config.hostNvidiaExtension;
 
     auto createLayer = [this](const std::string &refStr) -> utils::error::Result<RuntimeLayer> {
         LINGLONG_TRACE("create runtime layer");
@@ -478,6 +482,7 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::RunContextC
     if (config.cdiDevices) {
         contextCfg.cdiDevices = config.cdiDevices.value();
     }
+    contextCfg.hostNvidiaExtension = config.hostNvidiaExtension;
 
     contextCfg.overlayfs = config.overlayfs;
     contextCfg.timezone = config.timezone;
@@ -764,6 +769,7 @@ RunContext::resolveExtension(RuntimeLayer &targetLayer,
             if (isNvidiaDriverExtensionName(name)) {
                 if (!hostNvidiaExtensionName) {
                     hostNvidiaExtensionName = name;
+                    contextCfg.hostNvidiaExtension = name;
                     LogI("use host NVIDIA driver fallback for {}", name);
                 }
                 continue;

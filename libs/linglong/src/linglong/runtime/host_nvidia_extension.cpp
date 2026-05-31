@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -731,18 +732,17 @@ void appendEnvPath(std::map<std::string, std::string> &envMap,
     envMap[key] = linglong::common::strings::join(ordered, ':');
 }
 
-void setEnvIfEmpty(std::map<std::string, std::string> &envMap,
-                   const std::string &key,
-                   const std::string &value)
+std::vector<std::string> withDefaultPaths(std::vector<std::string> paths,
+                                          std::initializer_list<std::string_view> defaults)
 {
-    if (value.empty()) {
-        return;
+    std::unordered_set<std::string> seen(paths.begin(), paths.end());
+    for (auto path : defaults) {
+        auto value = std::string(path);
+        if (!value.empty() && seen.insert(value).second) {
+            paths.push_back(std::move(value));
+        }
     }
-    auto it = envMap.find(key);
-    if (it != envMap.end() && !it->second.empty()) {
-        return;
-    }
-    envMap[key] = value;
+    return paths;
 }
 
 bool ensureSymlink(const std::filesystem::path &target, const std::filesystem::path &linkPath)
@@ -937,7 +937,6 @@ prepareHostNvidiaExtension(const std::filesystem::path &bundle,
 
     bool has32 = false;
     bool has64 = false;
-    bool hasGlxLib = false;
     std::unordered_set<std::string> destSeen;
     std::unordered_set<std::string> eglExternalDirSet;
     std::unordered_set<std::string> eglVendorDirSet;
@@ -1005,9 +1004,6 @@ prepareHostNvidiaExtension(const std::filesystem::path &bundle,
                 } else {
                     has64 = true;
                 }
-                if (name.rfind("libGLX_nvidia", 0) == 0) {
-                    hasGlxLib = true;
-                }
             }
         }
     };
@@ -1027,10 +1023,6 @@ prepareHostNvidiaExtension(const std::filesystem::path &bundle,
         }
         if (ensureSymlink(targetPath, destPath)) {
             recordEnvPath(destPath);
-            auto filename = destPath.filename().string();
-            if (filename.rfind("libglxserver_nvidia", 0) == 0) {
-                hasGlxLib = true;
-            }
         }
     };
 
@@ -1087,18 +1079,21 @@ prepareHostNvidiaExtension(const std::filesystem::path &bundle,
                       }
                       return dirs;
                   }());
-    appendEnvPath(ext.env, "EGL_EXTERNAL_PLATFORM_CONFIG_DIRS", eglExternalDirs);
-    appendEnvPath(ext.env, "__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS", eglExternalDirs);
-    appendEnvPath(ext.env, "__EGL_VENDOR_LIBRARY_DIRS", eglVendorDirs);
-    appendEnvPath(ext.env, "VK_ICD_FILENAMES", vkIcdFiles);
+    auto eglExternalSearchDirs =
+      withDefaultPaths(eglExternalDirs,
+                       { "/usr/share/egl/egl_external_platform.d",
+                         "/etc/egl/egl_external_platform.d" });
+    auto eglVendorSearchDirs =
+      withDefaultPaths(eglVendorDirs,
+                       { "/usr/share/glvnd/egl_vendor.d", "/etc/glvnd/egl_vendor.d" });
+
+    appendEnvPath(ext.env, "EGL_EXTERNAL_PLATFORM_CONFIG_DIRS", eglExternalSearchDirs);
+    appendEnvPath(ext.env, "__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS", eglExternalSearchDirs);
+    appendEnvPath(ext.env, "__EGL_VENDOR_LIBRARY_DIRS", eglVendorSearchDirs);
     appendEnvPath(ext.env, "VK_ADD_DRIVER_FILES", vkIcdFiles);
 
     if (has64 || has32) {
         ext.env["NVIDIA_CTK_LIBCUDA_DIR"] = prefix + "/orig";
-    }
-    if (hasGlxLib) {
-        setEnvIfEmpty(ext.env, "__GLX_VENDOR_LIBRARY_NAME", "nvidia");
-        setEnvIfEmpty(ext.env, "__NV_PRIME_RENDER_OFFLOAD", "1");
     }
 
     const std::array<std::filesystem::path, 4> controlDevices = {

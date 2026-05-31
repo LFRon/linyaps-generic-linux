@@ -30,6 +30,7 @@ std::optional<std::string> app;
 std::optional<std::string> base;
 std::optional<std::vector<CdiDeviceEntry>> cdiDevices;
 std::optional<std::map<std::string, std::vector<std::string>>> extensions;
+std::optional<std::string> hostNvidiaExtension;
 std::optional<std::string> overlayfs;
 std::optional<std::string> runtime;
 std::optional<std::string> timezone;

@@ -1,3 +1,9 @@
+linglong (1.12.5-2) unstable; urgency=medium
+
+  * fix NVIDIA fallback.
+
+ -- LFRon <ronforever@qq.com>  Sun, 31 May 2026 14:30:00 +0800
+
 linglong (1.12.5-1) unstable; urgency=medium
 
   * update NVIDIA fallback func.

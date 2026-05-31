@@ -1244,6 +1244,7 @@ x.app = get_stack_optional<std::string>(j, "app");
 x.base = get_stack_optional<std::string>(j, "base");
 x.cdiDevices = get_stack_optional<std::vector<CdiDeviceEntry>>(j, "cdiDevices");
 x.extensions = get_stack_optional<std::map<std::string, std::vector<std::string>>>(j, "extensions");
+x.hostNvidiaExtension = get_stack_optional<std::string>(j, "hostNvidiaExtension");
 x.overlayfs = get_stack_optional<std::string>(j, "overlayfs");
 x.runtime = get_stack_optional<std::string>(j, "runtime");
 x.timezone = get_stack_optional<std::string>(j, "timezone");
@@ -1263,6 +1264,9 @@ j["cdiDevices"] = x.cdiDevices;
 }
 if (x.extensions) {
 j["extensions"] = x.extensions;
+}
+if (x.hostNvidiaExtension) {
+j["hostNvidiaExtension"] = x.hostNvidiaExtension;
 }
 if (x.overlayfs) {
 j["overlayfs"] = x.overlayfs;
