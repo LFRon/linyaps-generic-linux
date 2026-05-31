@@ -18,6 +18,7 @@
 
 #include <fmt/ranges.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <string_view>
 #include <unordered_set>
@@ -238,8 +239,10 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
         return LINGLONG_ERR("failed to resolve timezone", timezoneRet);
     }
 
-    if (opts.cdiDevices) {
+    if (opts.cdiDevices && !(opts.cdiDevicesAutoDetected && hostNvidiaExtensionName)) {
         contextCfg.cdiDevices = opts.cdiDevices.value();
+    } else if (opts.cdiDevicesAutoDetected && hostNvidiaExtensionName) {
+        LogI("skip auto-detected NVIDIA CDI because host NVIDIA driver fallback is active");
     }
 
     // all reference are cleard , we can get actual layer directory now
@@ -964,7 +967,19 @@ utils::error::Result<void> RunContext::fillContextCfg(
     }
 
     if (hostNvidiaExtensionName) {
-        auto hostExt = prepareHostNvidiaExtension(bundlePath, *hostNvidiaExtensionName);
+        auto hasNvidiaCdi = [&]() {
+            if (!contextCfg.cdiDevices) {
+                return false;
+            }
+
+            return std::any_of(contextCfg.cdiDevices->begin(),
+                               contextCfg.cdiDevices->end(),
+                               [](const api::types::v1::CdiDeviceEntry &device) {
+                                   return device.kind == "nvidia.com/gpu";
+                               });
+        }();
+        auto hostExt =
+          prepareHostNvidiaExtension(bundlePath, *hostNvidiaExtensionName, !hasNvidiaCdi);
         if (!hostExt) {
             return LINGLONG_ERR(hostExt);
         }

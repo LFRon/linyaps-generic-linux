@@ -29,6 +29,7 @@ struct HostNvidiaExtension
 
 utils::error::Result<std::optional<HostNvidiaExtension>>
 prepareHostNvidiaExtension(const std::filesystem::path &bundle,
-                           const std::string &extensionName) noexcept;
+                           const std::string &extensionName,
+                           bool exposeVulkanDriverFile = true) noexcept;
 
 } // namespace linglong::runtime

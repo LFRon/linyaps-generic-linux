@@ -649,6 +649,7 @@ int Cli::run(const RunOptions &options)
         opts.cdiDevices = std::move(*cdiDevices);
     } else if (autoDetectedCdiDevices) {
         opts.cdiDevices = std::move(*autoDetectedCdiDevices);
+        opts.cdiDevicesAutoDetected = true;
     }
 
     // 调整日志输出，打印扩展列表（用逗号拼接）

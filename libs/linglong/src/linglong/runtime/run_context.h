@@ -29,6 +29,7 @@ struct ResolveOptions
     std::optional<std::vector<std::string>> appModules;
     std::optional<std::string> baseRef;
     std::optional<std::vector<api::types::v1::CdiDeviceEntry>> cdiDevices;
+    bool cdiDevicesAutoDetected{ false };
     std::optional<std::string> runtimeRef;
     std::optional<std::vector<std::string>> extensionRefs;
     std::optional<std::map<std::string, std::vector<api::types::v1::ExtensionDefine>>>

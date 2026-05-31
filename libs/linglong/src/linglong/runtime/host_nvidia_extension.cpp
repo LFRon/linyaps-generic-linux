@@ -769,7 +769,8 @@ bool ensureSymlink(const std::filesystem::path &target, const std::filesystem::p
 
 utils::error::Result<std::optional<HostNvidiaExtension>>
 prepareHostNvidiaExtension(const std::filesystem::path &bundle,
-                           const std::string &extensionName) noexcept
+                           const std::string &extensionName,
+                           bool exposeVulkanDriverFile) noexcept
 {
     LINGLONG_TRACE("prepare host NVIDIA extension");
 
@@ -969,7 +970,7 @@ prepareHostNvidiaExtension(const std::filesystem::path &bundle,
             appendUnique(eglExternalDirSet, eglExternalDirs, parent.string());
         } else if (parent.filename() == "egl_vendor.d") {
             appendUnique(eglVendorDirSet, eglVendorDirs, parent.string());
-        } else if (parent.filename() == "icd.d"
+        } else if (exposeVulkanDriverFile && parent.filename() == "icd.d"
                    && parent.parent_path().filename() == "vulkan") {
             appendUnique(vkIcdFileSet, vkIcdFiles, containerPath.string());
         }
