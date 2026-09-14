@@ -25,7 +25,6 @@ struct repoCacheQuery
     std::optional<std::string> channel;
     std::optional<std::string> version; // could be fuzzy version
     std::optional<std::string> module;
-    std::optional<std::string> uuid;
     std::optional<bool> deleted;
     std::optional<std::string> architecture;
 
@@ -57,6 +56,7 @@ public:
     ~RepoCache() = default;
 
     utils::error::Result<void> load();
+    utils::error::Result<void> updateConfig(const api::types::v1::RepoConfigV2 &config);
     utils::error::Result<void> rebuild(const api::types::v1::RepoConfigV2 &repoConfig,
                                        OstreeRepo &repo) noexcept;
 

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2024 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2024 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
@@ -14,6 +14,9 @@ linglong::utils::error::Result<std::string> readFile(const std::filesystem::path
 
 linglong::utils::error::Result<void> writeFile(const std::filesystem::path &filepath,
                                                const std::string &content);
+linglong::utils::error::Result<void> writeFile(const std::filesystem::path &filepath,
+                                               const std::string &content,
+                                               std::filesystem::perms permissions);
 
 linglong::utils::error::Result<void> concatFile(const std::filesystem::path &source,
                                                 const std::filesystem::path &target);
@@ -37,6 +40,11 @@ linglong::utils::error::Result<std::vector<std::filesystem::path>>
 getFiles(const std::filesystem::path &dir);
 
 linglong::utils::error::Result<void> ensureDirectory(const std::filesystem::path &dir);
+linglong::utils::error::Result<void> ensureDirectory(const std::filesystem::path &dir,
+                                                     std::filesystem::perms permissions);
+
+linglong::utils::error::Result<void>
+makeDirectoryTreeRemovable(const std::filesystem::path &root) noexcept;
 
 linglong::utils::error::Result<void> relinkFileTo(const std::filesystem::path &link,
                                                   const std::filesystem::path &target) noexcept;

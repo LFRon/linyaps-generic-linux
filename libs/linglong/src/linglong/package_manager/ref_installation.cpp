@@ -9,6 +9,7 @@
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/utils/log/log.h"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -73,7 +74,7 @@ utils::error::Result<void> RefInstallationAction::doAction(PackageTask &task)
     mainTask = &task;
 
     DataMonitor monitor(5, 1, [this](DataMonitor &m) {
-        mainTask->updateMessage(
+        mainTask->updateStateMessage(
           fmt::format("{} {:>9}", taskMessage, fmt::format("[{}]", m.getHumanSpeed())));
     });
 
@@ -107,9 +108,9 @@ utils::error::Result<void> RefInstallationAction::preInstall(Task &task)
     task.updateState(linglong::api::types::v1::State::Processing,
                      fmt::format("Installing {} - Preparing...", fuzzyRef.id));
 
-    auto extraOnly = extraModuleOnly(modules);
+    installingExtraModulesOnly = extraModuleOnly(modules);
     auto localRef = repo.latestLocalReference(fuzzyRef);
-    if (extraOnly) {
+    if (installingExtraModulesOnly) {
         if (!localRef) {
             return LINGLONG_ERR("no matched binary module found",
                                 utils::error::ErrorCode::AppInstallModuleRequireAppFirst);
@@ -151,7 +152,7 @@ utils::error::Result<void> RefInstallationAction::preInstall(Task &task)
                             utils::error::ErrorCode::AppInstallNotFoundFromRemote);
     }
 
-    auto operation = getActionOperation(target->second.get(), extraOnly);
+    auto operation = getActionOperation(target->second.get(), installingExtraModulesOnly);
     if (!operation) {
         return LINGLONG_ERR(operation);
     }
@@ -173,8 +174,9 @@ utils::error::Result<void> RefInstallationAction::preInstall(Task &task)
             .localRef = operation->oldRef->toString(),
             .remoteRef = operation->newRef->reference.toString()
         };
-        if (!mainTask->waitConfirm(api::types::v1::InteractionMessageType::Upgrade,
-                                   additionalMessage)) {
+        if (!mainTask->requestInteraction(api::types::v1::InteractionMessageType::Upgrade,
+                                          additionalMessage)) {
+            mainTask->Cancel();
             return LINGLONG_ERR("action canceled");
         }
     }
@@ -196,10 +198,30 @@ utils::error::Result<void> RefInstallationAction::install(Task &task)
         return LINGLONG_ERR("no modules found");
     }
 
+    auto requestedModules = modules;
+    if ((operation.operation == ActionOperation::Upgrade
+         || operation.operation == ActionOperation::Downgrade)
+        && operation.oldRef) {
+        auto localModules = repo.getModuleList(*operation.oldRef);
+        for (const auto &module : localModules) {
+            if (std::find(requestedModules.begin(), requestedModules.end(), module)
+                == requestedModules.end()) {
+                requestedModules.emplace_back(module);
+            }
+        }
+    }
+
     auto installModules = std::vector<std::string>{};
-    for (const auto &module : modules) {
-        if (std::find(remoteModules.begin(), remoteModules.end(), module) != remoteModules.end()) {
+    auto appendInstallModule = [&installModules](const std::string &module) {
+        if (std::find(installModules.begin(), installModules.end(), module)
+            == installModules.end()) {
             installModules.emplace_back(module);
+        }
+    };
+
+    for (const auto &module : requestedModules) {
+        if (std::find(remoteModules.begin(), remoteModules.end(), module) != remoteModules.end()) {
+            appendInstallModule(module);
             continue;
         }
 
@@ -207,7 +229,7 @@ utils::error::Result<void> RefInstallationAction::install(Task &task)
         if (module == "binary"
             && std::find(remoteModules.begin(), remoteModules.end(), "runtime")
               != remoteModules.end()) {
-            installModules.emplace_back("runtime");
+            appendInstallModule("runtime");
             continue;
         }
     }
@@ -229,14 +251,22 @@ utils::error::Result<void> RefInstallationAction::install(Task &task)
       refsToInstall;
     refsToInstall.emplace_back(
       std::make_tuple(*operation.newRef, installModules.front(), std::move(meta).value()));
+    std::vector<package::Reference> refsForPostInstallHooks{ operation.newRef->reference };
 
-    auto gatherToInstallInfo = [this,
-                                &refsToInstall](package::ReferenceWithRepo refRepo,
-                                                std::string module) -> utils::error::Result<void> {
+    auto gatherToInstallInfo = [this, &refsToInstall, &refsForPostInstallHooks](
+                                 package::ReferenceWithRepo refRepo,
+                                 std::string module) -> utils::error::Result<void> {
         LINGLONG_TRACE("gather to install info");
         auto meta = repo.fetchRefMetaData(refRepo, module);
         if (!meta) {
             return LINGLONG_ERR(meta);
+        }
+
+        if (std::find(refsForPostInstallHooks.begin(),
+                      refsForPostInstallHooks.end(),
+                      refRepo.reference)
+            == refsForPostInstallHooks.end()) {
+            refsForPostInstallHooks.emplace_back(refRepo.reference);
         }
 
         refsToInstall.emplace_back(
@@ -322,11 +352,11 @@ utils::error::Result<void> RefInstallationAction::install(Task &task)
                  res.error());
         }
     });
-    for (const auto &ref : refsToInstall) {
-        const auto &[refRepo, module, meta] = ref;
+    for (const auto &item : refsToInstall) {
+        const auto &[refRepo, module, meta] = item;
 
         taskMessage = fmt::format("Installing {}/{}", refRepo.reference.toString(), module);
-        task.updateMessage(taskMessage);
+        task.updateStateMessage(taskMessage);
 
         auto res = pm.installRefModule(task, refRepo, module);
         if (!res) {
@@ -334,10 +364,22 @@ utils::error::Result<void> RefInstallationAction::install(Task &task)
         }
     }
 
+    auto merged = repo.mergeModules();
+    if (!merged) {
+        LogE("failed to merge modules: {}", merged.error());
+    }
+
     if (isApp) {
         auto res = postInstallApp(task);
         if (!res) {
             return LINGLONG_ERR(res);
+        }
+    }
+
+    for (const auto &ref : refsForPostInstallHooks) {
+        auto hooks = pm.executePostInstallHooks(ref);
+        if (!hooks) {
+            LogW("failed to execute post-install hooks for {}: {}", ref.toString(), hooks.error());
         }
     }
 
@@ -353,6 +395,16 @@ utils::error::Result<void> RefInstallationAction::postInstallApp([[maybe_unused]
     auto &newRef = operation.newRef->reference;
     auto &oldRef = operation.oldRef;
 
+    if (installingExtraModulesOnly) {
+        for (const auto &module : modules) {
+            auto res = pm.applyApp(newRef, module);
+            if (!res) {
+                return LINGLONG_ERR(res);
+            }
+        }
+        return LINGLONG_OK;
+    }
+
     auto res = oldRef ? pm.switchAppVersion(*oldRef, newRef, true) : pm.applyApp(newRef);
     if (!res) {
         return LINGLONG_ERR(res);
@@ -365,9 +417,13 @@ utils::error::Result<void> RefInstallationAction::postInstall(Task &task)
 {
     LINGLONG_TRACE("ref installation postInstall");
 
-    auto mergeRet = this->repo.mergeModules();
-    if (!mergeRet) {
-        LogE("failed to merge modules: {}", mergeRet.error());
+    if (operation.kind == "app" && operation.oldRef && !installingExtraModulesOnly) {
+        auto pruneRet = options.noAutoPrune.value_or(false) ? this->repo.prune() : pm.pruneUnused();
+        if (!pruneRet) {
+            LogE("failed to prune after installing {}: {}",
+                 operation.newRef->reference.toString(),
+                 pruneRet.error());
+        }
     }
 
     auto &repo = operation.newRef->repo;

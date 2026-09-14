@@ -20,6 +20,12 @@ ll\-cli\-upgrade - 升级应用程序或运行时
 **--help-all**
 : 展开所有帮助
 
+**--deps-only**
+: 仅升级指定应用的依赖项
+
+**--no-auto-prune**
+: 升级应用后不自动清理未使用的依赖
+
 ## POSITIONAL ARGUMENTS
 
 **APP** _TEXT_

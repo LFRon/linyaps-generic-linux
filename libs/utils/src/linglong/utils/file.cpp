@@ -15,8 +15,33 @@
 #include <system_error>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace linglong::utils {
+
+namespace {
+
+linglong::utils::error::Result<void>
+ensureOwnerPermissionsIfNeeded(const std::filesystem::path &path,
+                               std::filesystem::perms currentPerms,
+                               std::filesystem::perms requiredPerms) noexcept
+{
+    LINGLONG_TRACE("ensure owner permissions if needed");
+
+    if ((currentPerms & requiredPerms) == requiredPerms) {
+        return LINGLONG_OK;
+    }
+
+    std::error_code ec;
+    std::filesystem::permissions(path, requiredPerms, std::filesystem::perm_options::add, ec);
+    if (ec) {
+        return LINGLONG_ERR(fmt::format("failed to change permissions: {}", path), ec);
+    }
+
+    return LINGLONG_OK;
+}
+
+} // namespace
 
 linglong::utils::error::Result<std::string> readFile(const std::filesystem::path &filepath)
 {
@@ -54,10 +79,31 @@ linglong::utils::error::Result<void> writeFile(const std::filesystem::path &file
           fmt::format("failed to open file {}: {}", filepath, common::error::errorString(errno)));
     }
     out << content;
-    if (out.bad()) {
+    out.close();
+    if (!out) {
         return LINGLONG_ERR(
           fmt::format("failed to write file {}", common::error::errorString(errno)));
     }
+    return LINGLONG_OK;
+}
+
+linglong::utils::error::Result<void> writeFile(const std::filesystem::path &filepath,
+                                               const std::string &content,
+                                               std::filesystem::perms permissions)
+{
+    LINGLONG_TRACE(fmt::format("write file {} with permissions", filepath));
+
+    auto result = writeFile(filepath, content);
+    if (!result) {
+        return LINGLONG_ERR(result);
+    }
+
+    std::error_code ec;
+    std::filesystem::permissions(filepath, permissions, std::filesystem::perm_options::replace, ec);
+    if (ec) {
+        return LINGLONG_ERR(fmt::format("failed to set permissions for {}", filepath), ec);
+    }
+
     return LINGLONG_OK;
 }
 
@@ -270,6 +316,90 @@ linglong::utils::error::Result<void> ensureDirectory(const std::filesystem::path
 
     if (!std::filesystem::create_directories(dir, ec) && ec) {
         return LINGLONG_ERR("failed to create directory", ec);
+    }
+
+    return LINGLONG_OK;
+}
+
+linglong::utils::error::Result<void> ensureDirectory(const std::filesystem::path &dir,
+                                                     std::filesystem::perms permissions)
+{
+    LINGLONG_TRACE(fmt::format("ensure directory {} with permissions", dir));
+
+    std::vector<std::filesystem::path> missingDirectories;
+    for (auto current = dir; !current.empty();) {
+        std::error_code ec;
+        if (std::filesystem::exists(current, ec)) {
+            break;
+        }
+        if (ec) {
+            return LINGLONG_ERR(fmt::format("failed to check directory {}", current), ec);
+        }
+
+        missingDirectories.push_back(current);
+        auto parent = current.parent_path();
+        if (parent == current) {
+            break;
+        }
+        current = std::move(parent);
+    }
+
+    auto result = ensureDirectory(dir);
+    if (!result) {
+        return LINGLONG_ERR(result);
+    }
+
+    if (missingDirectories.empty()) {
+        missingDirectories.push_back(dir);
+    }
+    for (const auto &directory : missingDirectories) {
+        std::error_code ec;
+        std::filesystem::permissions(directory,
+                                     permissions,
+                                     std::filesystem::perm_options::replace,
+                                     ec);
+        if (ec) {
+            return LINGLONG_ERR(fmt::format("failed to set permissions for {}", directory), ec);
+        }
+    }
+
+    return LINGLONG_OK;
+}
+
+linglong::utils::error::Result<void>
+makeDirectoryTreeRemovable(const std::filesystem::path &root) noexcept
+{
+    LINGLONG_TRACE("make directory tree removable");
+
+    namespace fs = std::filesystem;
+
+    std::error_code ec;
+    fs::recursive_directory_iterator iter{ root,
+                                           fs::directory_options::skip_permission_denied,
+                                           ec };
+    if (ec) {
+        return LINGLONG_ERR(fmt::format("failed to iterate directory: {}", root), ec);
+    }
+
+    const fs::recursive_directory_iterator end;
+    for (; iter != end; iter.increment(ec)) {
+        if (ec) {
+            return LINGLONG_ERR(fmt::format("failed to iterate directory: {}", root), ec);
+        }
+
+        auto status = iter->symlink_status(ec);
+        if (ec) {
+            return LINGLONG_ERR(fmt::format("failed to get entry status: {}", iter->path()), ec);
+        }
+
+        if (status.type() == fs::file_type::directory) {
+            auto ret = ensureOwnerPermissionsIfNeeded(iter->path(),
+                                                      status.permissions(),
+                                                      fs::perms::owner_all);
+            if (!ret) {
+                return ret;
+            }
+        }
     }
 
     return LINGLONG_OK;

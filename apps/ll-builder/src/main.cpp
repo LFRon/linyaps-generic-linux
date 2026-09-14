@@ -9,6 +9,7 @@
 #include "linglong/builder/config.h"
 #include "linglong/builder/linglong_builder.h"
 #include "linglong/cli/cli.h"
+#include "linglong/cli/cli_printer.h"
 #include "linglong/common/global/initialize.h"
 #include "linglong/package/architecture.h"
 #include "linglong/package/version.h"
@@ -33,6 +34,7 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <wordexp.h>
@@ -73,28 +75,42 @@ parseProjectConfig(const std::filesystem::path &filename)
     }
     if (project->package.kind == "app" && !project->command.has_value()) {
         return LINGLONG_ERR(
-          "'command' field is missing, app should hava command as the default startup command");
+          "'command' field is missing, app should have command as the default startup command");
     }
 
-    // 校验bese和runtime版本是否合法
-    auto baseFuzzyRef = linglong::package::FuzzyReference::parse(project->base.c_str());
-    if (!baseFuzzyRef) {
-        return LINGLONG_ERR("failed to parse base field", baseFuzzyRef);
+    if (!project->base && !project->runtime) {
+        return LINGLONG_ERR("at least one of 'base' or 'runtime' must be specified");
     }
-    auto ret = linglong::package::Version::validateDependVersion(baseFuzzyRef->version.value());
-    if (!ret) {
-        return LINGLONG_ERR("base version is not valid", ret);
-    }
-    if (project->runtime) {
-        auto runtimeFuzzyRef =
-          linglong::package::FuzzyReference::parse(project->runtime.value().c_str());
-        if (!runtimeFuzzyRef) {
-            return LINGLONG_ERR("failed to parse runtime field", runtimeFuzzyRef);
+
+    // 校验 base 和 runtime 版本是否合法
+    auto validateDependency = [&](const std::optional<std::string> &dependency,
+                                  std::string_view field) -> linglong::utils::error::Result<void> {
+        if (!dependency) {
+            return LINGLONG_OK;
         }
-        ret = linglong::package::Version::validateDependVersion(runtimeFuzzyRef->version.value());
+
+        auto fuzzyRef = linglong::package::FuzzyReference::parse(*dependency);
+        if (!fuzzyRef) {
+            return LINGLONG_ERR(fmt::format("failed to parse {} field", field), fuzzyRef);
+        }
+        if (!fuzzyRef->version) {
+            return LINGLONG_ERR(fmt::format("{} version is missing", field));
+        }
+
+        auto ret = linglong::package::Version::validateDependVersion(*fuzzyRef->version);
         if (!ret) {
-            return LINGLONG_ERR("runtime version is not valid", ret);
+            return LINGLONG_ERR(fmt::format("{} version is not valid", field), ret);
         }
+        return LINGLONG_OK;
+    };
+
+    auto ret = validateDependency(project->base, "base");
+    if (!ret) {
+        return LINGLONG_ERR(ret);
+    }
+    ret = validateDependency(project->runtime, "runtime");
+    if (!ret) {
+        return LINGLONG_ERR(ret);
     }
     return project;
 }
@@ -268,6 +284,8 @@ int handleExport(linglong::builder::Builder &builder, const ExportCommandOptions
 {
     // Create a mutable copy of the export options to potentially modify defaults
     auto exportOpts = options.exportSpecificOptions;
+    exportOpts.mode = options.uabxMode ? linglong::builder::ExportMode::Exec
+                                       : linglong::builder::ExportMode::Distribution;
     // layer 默认使用lz4, 保持和之前版本的兼容
     if (exportOpts.compressor.empty()) {
         LogI("Compressor not specified, defaulting to lz4 for layer export.");
@@ -378,256 +396,16 @@ int handleExtract(const ExtractCommandOptions &options)
     return 0;
 }
 
-int handleRepoShow(linglong::repo::OSTreeRepo &repo)
+int handleClean(linglong::builder::Builder &builder, const CleanCommandOptions &options)
 {
-    const auto &cfg = repo.getConfig();
-    // Note: keep the same format as ll-cli repo
-    size_t maxUrlLength = 0;
-    for (const auto &r : cfg.repos) {
-        maxUrlLength = std::max(maxUrlLength, r.url.size());
+    auto result = builder.cleanBuildArtifacts();
+    if (!result) {
+        LogE("Clean failed: {}", result.error());
+        return result.error().code();
     }
-    std::cout << "Default: " << cfg.defaultRepo << std::endl;
-    std::cout << std::left << std::setw(11) << "Name";
-    std::cout << std::setw(maxUrlLength + 2) << "Url" << std::setw(11) << "Alias" << std::endl;
-    for (const auto &r : cfg.repos) {
-        std::cout << std::left << std::setw(11) << r.name << std::setw(maxUrlLength + 2) << r.url
-                  << std::setw(11) << r.alias.value_or(r.name) << std::endl;
-    }
+
+    LogI("Clean completed successfully.");
     return 0;
-}
-
-int handleRepoAdd(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOptions &options)
-{
-    auto newCfg = repo.getConfig();
-
-    std::string alias = options.repoAlias.value_or(options.repoName);
-
-    if (options.repoUrl.empty()) {
-        std::cerr << "url is empty." << std::endl;
-        return EINVAL;
-    }
-
-    bool isExist = std::any_of(newCfg.repos.begin(), newCfg.repos.end(), [&alias](const auto &r) {
-        return r.alias.value_or(r.name) == alias;
-    });
-    if (isExist) {
-        LogE("repo {} already exist.", alias);
-        return -1;
-    }
-
-    newCfg.repos.push_back(linglong::api::types::v1::Repo{
-      .alias = options.repoAlias,
-      .name = options.repoName,
-      .url = options.repoUrl,
-    });
-
-    auto ret = repo.setConfig(newCfg);
-    if (!ret) {
-        std::cerr << ret.error().message() << std::endl;
-        return -1;
-    }
-
-    return 0;
-}
-
-int handleRepoRemove(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOptions &options)
-{
-    auto newCfg = repo.getConfig();
-    const std::string &alias = options.repoAlias.value_or(options.repoName);
-
-    auto existingRepo =
-      std::find_if(newCfg.repos.begin(), newCfg.repos.end(), [&alias](const auto &r) {
-          return r.alias.value_or(r.name) == alias;
-      });
-
-    if (existingRepo == newCfg.repos.cend()) {
-        std::cerr << "the operated repo " + alias + " doesn't exist." << std::endl;
-        return -1;
-    }
-
-    if (newCfg.defaultRepo == alias) {
-        std::cerr << "repo " + alias
-            + " is default repo, please change default repo before removing it."
-                  << std::endl;
-        return -1;
-    }
-
-    newCfg.repos.erase(existingRepo);
-    auto ret = repo.setConfig(newCfg);
-    if (!ret) {
-        std::cerr << ret.error().message() << std::endl;
-        return -1;
-    }
-
-    LogI("Repository {} removed successfully.", alias);
-    return 0;
-}
-
-int handleRepoUpdate(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOptions &options)
-{
-    auto newCfg = repo.getConfig();
-    const std::string &alias = options.repoAlias.value_or(options.repoName);
-
-    if (options.repoUrl.empty()) {
-        std::cerr << "url is empty." << std::endl;
-        return EINVAL;
-    }
-
-    auto existingRepo =
-      std::find_if(newCfg.repos.begin(), newCfg.repos.end(), [&alias](const auto &r) {
-          return r.alias.value_or(r.name) == alias;
-      });
-
-    if (existingRepo == newCfg.repos.cend()) {
-        std::cerr << "the operated repo " + alias + " doesn't exist." << std::endl;
-        return -1;
-    }
-
-    existingRepo->url = options.repoUrl;
-
-    auto ret = repo.setConfig(newCfg);
-    if (!ret) {
-        std::cerr << ret.error().message() << std::endl;
-        return -1;
-    }
-
-    LogI("Repository {} updated successfully.", alias);
-    return 0;
-}
-
-int handleRepoSetDefault(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOptions &options)
-{
-    auto newCfg = repo.getConfig();
-    const std::string &alias = options.repoAlias.value_or(options.repoName);
-
-    auto existingRepo =
-      std::find_if(newCfg.repos.begin(), newCfg.repos.end(), [&alias](const auto &r) {
-          return r.alias.value_or(r.name) == alias;
-      });
-
-    if (existingRepo == newCfg.repos.cend()) {
-        std::cerr << "the operated repo " + alias + " doesn't exist." << std::endl;
-        return -1;
-    }
-
-    if (newCfg.defaultRepo != alias) {
-        newCfg.defaultRepo = alias;
-        auto ret = repo.setConfig(newCfg);
-        if (!ret) {
-            std::cerr << ret.error().message() << std::endl;
-            return -1;
-        }
-        LogI("Default repository set to {} successfully.", alias);
-    } else {
-        LogI("{} is already the default repository.", alias);
-    }
-
-    return 0;
-}
-
-int handleRepoEnableMirror(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOptions &options)
-{
-    auto newCfg = repo.getConfig();
-    const std::string &alias = options.repoAlias.value_or(options.repoName);
-
-    auto existingRepo =
-      std::find_if(newCfg.repos.begin(), newCfg.repos.end(), [&alias](const auto &r) {
-          return r.alias.value_or(r.name) == alias;
-      });
-
-    if (existingRepo == newCfg.repos.cend()) {
-        std::cerr << "the operated repo " + alias + " doesn't exist." << std::endl;
-        return -1;
-    }
-
-    existingRepo->mirrorEnabled = true;
-    auto ret = repo.setConfig(newCfg);
-    if (!ret) {
-        std::cerr << ret.error().message() << std::endl;
-        return -1;
-    }
-
-    std::cerr << "Repository " << alias << " mirror enabled successfully.";
-    return 0;
-}
-
-int handleRepoDisableMirror(linglong::repo::OSTreeRepo &repo, linglong::cli::RepoOptions &options)
-{
-    auto newCfg = repo.getConfig();
-    const std::string &alias = options.repoAlias.value_or(options.repoName);
-
-    auto existingRepo =
-      std::find_if(newCfg.repos.begin(), newCfg.repos.end(), [&alias](const auto &r) {
-          return r.alias.value_or(r.name) == alias;
-      });
-
-    if (existingRepo == newCfg.repos.cend()) {
-        std::cerr << "the operated repo " + alias + " doesn't exist." << std::endl;
-        return -1;
-    }
-
-    existingRepo->mirrorEnabled = false;
-    auto ret = repo.setConfig(newCfg);
-    if (!ret) {
-        std::cerr << ret.error().message() << std::endl;
-        return -1;
-    }
-    std::cerr << "Repository " << alias << " mirror disabled successfully.";
-    return 0;
-}
-
-int handleRepo(linglong::repo::OSTreeRepo &repo,
-               const RepoSubcommandOptions &options,
-               CLI::App *buildRepoShow,
-               CLI::App *buildRepoAdd,
-               CLI::App *buildRepoRemove,
-               CLI::App *buildRepoUpdate,
-               CLI::App *buildRepoSetDefault,
-               CLI::App *buildRepoEnableMirror,
-               CLI::App *buildRepoDisableMirror)
-{
-    if (buildRepoShow->parsed()) {
-        return handleRepoShow(repo);
-    }
-
-    linglong::cli::RepoOptions repoOptions = options.repoOptions;
-    if (!repoOptions.repoUrl.empty()) {
-        if (repoOptions.repoUrl.rfind("http", 0) != 0) {
-            std::cerr << "url is invalid." << std::endl;
-            return EINVAL;
-        }
-
-        if (repoOptions.repoUrl.back() == '/') {
-            repoOptions.repoUrl.pop_back();
-        }
-    }
-
-    if (buildRepoAdd->parsed()) {
-        return handleRepoAdd(repo, repoOptions);
-    }
-
-    if (buildRepoRemove->parsed()) {
-        return handleRepoRemove(repo, repoOptions);
-    }
-
-    if (buildRepoUpdate->parsed()) {
-        return handleRepoUpdate(repo, repoOptions);
-    }
-
-    if (buildRepoSetDefault->parsed()) {
-        return handleRepoSetDefault(repo, repoOptions);
-    }
-
-    if (buildRepoEnableMirror->parsed()) {
-        return handleRepoEnableMirror(repo, repoOptions);
-    }
-
-    if (buildRepoDisableMirror->parsed()) {
-        return handleRepoDisableMirror(repo, repoOptions);
-    }
-
-    std::cerr << "unknown repo operation, please see help information." << std::endl;
-    return EINVAL;
 }
 
 std::vector<std::string> getProjectModule(const linglong::api::types::v1::BuilderProject &project)
@@ -718,6 +496,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     ImportCommandOptions importOpts;
     ImportDirCommandOptions importDirOpts;
     ExtractCommandOptions extractOpts;
+    CleanCommandOptions cleanOpts;
     RepoSubcommandOptions repoCmdOpts;
 
     // add builder flags
@@ -820,7 +599,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     buildRemove->add_option("APP", removeOpts.removeList);
 
     // build export
-    auto *buildExport = commandParser.add_subcommand("export", _("Export to linyaps layer or uab"));
+    auto *buildExport = commandParser.add_subcommand("export", _("Export to linyaps layer or UAB"));
     buildExport->usage(_("Usage: ll-builder export [OPTIONS]"));
 
     buildExport->add_option("-f, --file", filePath, _("File path of the linglong.yaml"))
@@ -840,10 +619,15 @@ You can report bugs to the linyaps team under this project: https://github.com/O
       buildExport
         ->add_flag("--layer", exportOpts.layerMode, _("Export to linyaps layer file (deprecated)"))
         ->excludes(iconOpt);
+    auto *uabxFlag =
+      buildExport->add_flag("--uabx", exportOpts.uabxMode, _("Export an executable UABX file"))
+        ->excludes(layerFlag);
+    iconOpt->needs(uabxFlag);
     buildExport
       ->add_option("--loader", exportOpts.exportSpecificOptions.loader, _("Use custom loader"))
       ->type_name("FILE")
       ->check(CLI::ExistingFile)
+      ->needs(uabxFlag)
       ->excludes(layerFlag);
     buildExport
       ->add_flag("--no-develop",
@@ -907,80 +691,23 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     buildExtract->add_option("DIR", extractOpts.dir, _("Destination directory"))
       ->type_name("DIR")
       ->required();
+    // add builder clean
+    auto buildClean = commandParser.add_subcommand("clean", _("Clean build artifacts"));
+    buildClean->usage(_("Usage: ll-builder clean"));
+    buildClean->add_option("-f, --file", filePath, _("File path of the linglong.yaml"))
+      ->type_name("FILE")
+      ->check(CLI::ExistingFile);
 
-    // add build repo
-    auto buildRepo = commandParser.add_subcommand("repo", _("Display and manage repositories"));
-    buildRepo->usage(_("Usage: ll-builder repo [OPTIONS] SUBCOMMAND"));
-    buildRepo->require_subcommand(1);
-
-    // add repo sub command add
-    auto buildRepoAdd = buildRepo->add_subcommand("add", _("Add a new repository"));
-    buildRepoAdd->usage(_("Usage: ll-builder repo add [OPTIONS] NAME URL"));
-    buildRepoAdd->add_option("NAME", repoCmdOpts.repoOptions.repoName, _("Specify the repo name"))
-      ->required()
-      ->check(validatorString);
-    buildRepoAdd->add_option("URL", repoCmdOpts.repoOptions.repoUrl, _("Url of the repository"))
-      ->required()
-      ->check(validatorString);
-    buildRepoAdd
-      ->add_option("--alias", repoCmdOpts.repoOptions.repoAlias, _("Alias of the repo name"))
-      ->type_name("ALIAS")
-      ->check(validatorString);
-
-    // add repo sub command remove
-    auto buildRepoRemove = buildRepo->add_subcommand("remove", _("Remove a repository"));
-    buildRepoRemove->usage(_("Usage: ll-builder repo remove [OPTIONS] NAME"));
-    buildRepoRemove
-      ->add_option("Alias", repoCmdOpts.repoOptions.repoAlias, _("Alias of the repo name"))
-      ->required()
-      ->check(validatorString);
-
-    // add repo sub command update
-    auto buildRepoUpdate = buildRepo->add_subcommand("update", _("Update the repository URL"));
-    buildRepoUpdate->usage(_("Usage: ll-builder repo update [OPTIONS] NAME URL"));
-    buildRepoUpdate
-      ->add_option("Alias", repoCmdOpts.repoOptions.repoAlias, _("Alias of the repo name"))
-      ->required()
-      ->check(validatorString);
-    buildRepoUpdate->add_option("URL", repoCmdOpts.repoOptions.repoUrl, _("Url of the repository"))
-      ->required()
-      ->check(validatorString);
-
-    // add repo sub command update
-    auto buildRepoSetDefault =
-      buildRepo->add_subcommand("set-default", _("Set a default repository name"));
-    buildRepoSetDefault->usage(_("Usage: ll-builder repo set-default [OPTIONS] NAME"));
-    buildRepoSetDefault
-      ->add_option("Alias", repoCmdOpts.repoOptions.repoAlias, _("Alias of the repo name"))
-      ->required()
-      ->check(validatorString);
-
-    // add repo sub command enable mirror
-    auto buildRepoEnableMirror =
-      buildRepo->add_subcommand("enable-mirror", _("Enable mirror for the repo"));
-    buildRepoEnableMirror->usage(_("Usage: ll-builder repo enable-mirror [OPTIONS] ALIAS"));
-    buildRepoEnableMirror
-      ->add_option("ALIAS", repoCmdOpts.repoOptions.repoAlias, _("Alias of the repo name"))
-      ->required()
-      ->check(validatorString);
-
-    // add repo sub command disable mirror
-    auto buildRepoDisableMirror =
-      buildRepo->add_subcommand("disable-mirror", _("Disable mirror for the repo"));
-    buildRepoDisableMirror->usage(_("Usage: ll-builder repo disable-mirror [OPTIONS] ALIAS"));
-    buildRepoDisableMirror
-      ->add_option("ALIAS", repoCmdOpts.repoOptions.repoAlias, _("Alias of the repo name"))
-      ->required()
-      ->check(validatorString);
-
-    // add repo sub command show
-    auto buildRepoShow = buildRepo->add_subcommand("show", _("Show repository information"));
-    buildRepoShow->usage(_("Usage: ll-builder repo show [OPTIONS]"));
+    auto *buildRepo = linglong::common::cli::addRepoCommand(commandParser,
+                                                            repoCmdOpts.repoOptions,
+                                                            _("Managing remote repositories"),
+                                                            validatorString,
+                                                            "ll-builder");
 
     CLI11_PARSE(commandParser, argc, argv);
 
     if (versionFlag) {
-        std::cout << _("linyaps build tool version ") << LINGLONG_VERSION << std::endl;
+        std::cout << _("linyaps build tool version ") << LINGLONG_VERSION_FULL << std::endl;
         return 0;
     }
 
@@ -992,8 +719,14 @@ You can report bugs to the linyaps team under this project: https://github.com/O
             return -1;
         }
 
+        std::optional<uid_t> uid, gid;
+        if (buildRun->parsed()) {
+            uid = geteuid();
+            gid = getegid();
+        }
+
         if (*res) {
-            auto res = linglong::utils::runInNamespace(argc, argv);
+            auto res = linglong::utils::runInNamespace(argc, argv, uid, gid);
             if (!res) {
                 LogE("failed to run in namespace {}", res.error());
                 return -1;
@@ -1047,15 +780,38 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     }
 
     if (buildRepo->parsed()) {
-        return handleRepo(**repo,
-                          repoCmdOpts,
-                          buildRepoShow,
-                          buildRepoAdd,
-                          buildRepoRemove,
-                          buildRepoUpdate,
-                          buildRepoSetDefault,
-                          buildRepoEnableMirror,
-                          buildRepoDisableMirror);
+        linglong::cli::CLIPrinter printer;
+        linglong::common::cli::RepoConfigBackend backend{
+            .getConfig =
+              [&repo]() -> linglong::utils::error::Result<linglong::api::types::v1::RepoConfigV2> {
+                LINGLONG_TRACE("get builder repo config");
+
+                return (*repo)->getConfig();
+            },
+            .setConfig = [&repo](const linglong::api::types::v1::RepoConfigV2 &cfg)
+              -> linglong::utils::error::Result<void> {
+                LINGLONG_TRACE("set builder repo config");
+
+                auto ret = (*repo)->setConfig(cfg);
+                if (!ret) {
+                    return LINGLONG_ERR(ret);
+                }
+                return LINGLONG_OK;
+            },
+        };
+        auto ret =
+          linglong::common::cli::handleRepoCommand(buildRepo,
+                                                   repoCmdOpts.repoOptions,
+                                                   backend,
+                                                   { .showConfig = [&printer](const auto &cfg) {
+                                                       printer.printRepoConfig(cfg);
+                                                   } });
+        if (!ret) {
+            printer.printErr(ret.error());
+            return -1;
+        }
+
+        return 0;
     }
 
     if (buildImport->parsed()) {
@@ -1137,6 +893,10 @@ You can report bugs to the linyaps team under this project: https://github.com/O
             pushOpts.pushModules = getProjectModule(*project);
         }
         return handlePush(builder, pushOpts);
+    }
+
+    if (buildClean->parsed()) {
+        return handleClean(builder, cleanOpts);
     }
 
     if (!canonicalYamlPath) {

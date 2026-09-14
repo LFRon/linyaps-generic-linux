@@ -7,8 +7,11 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "../../common/scoped_umask.h"
 #include "../../common/tempdir.h"
 #include "../mocks/ostree_repo_mock.h"
+#include "linglong/api/types/v1/Generators.hpp"
+#include "linglong/common/constants.h"
 #include "linglong/package/reference.h"
 #include "linglong/repo/client_factory.h"
 #include "linglong/repo/config.h"
@@ -111,15 +114,290 @@ TEST_F(RepoTest, createPersistsConfigAndBootstrapsRepoArtifacts)
     ASSERT_TRUE(fs::create_directories(repoRoot));
 
     auto config = createRepoConfig();
+    ScopedUmask scopedUmask{ 0022 };
     auto repo = OSTreeRepo::create(repoRoot, config);
     ASSERT_TRUE(repo.has_value()) << repo.error().message();
 
     EXPECT_TRUE(fs::exists(repoRoot / "config.yaml"));
     EXPECT_TRUE(fs::exists(repoRoot / "repo"));
     EXPECT_TRUE(fs::exists(repoRoot / "states.json"));
+    EXPECT_EQ(fs::status(repoRoot / "config.yaml").permissions() & fs::perms::mask,
+              common::shared_file_permissions);
+    EXPECT_EQ(fs::status(repoRoot / "repo").permissions() & fs::perms::mask,
+              common::shared_directory_permissions);
+    EXPECT_EQ(fs::status(repoRoot / "states.json").permissions() & fs::perms::mask,
+              common::shared_file_permissions);
+    EXPECT_EQ(fs::status(repoRoot / ".version").permissions() & fs::perms::mask,
+              common::shared_file_permissions);
+
+    auto entriesResult = repo->get()->fixExportAllEntries();
+    ASSERT_TRUE(entriesResult.has_value()) << entriesResult.error().message();
+    EXPECT_EQ(fs::status(repoRoot / "entries").permissions() & fs::perms::mask,
+              common::shared_directory_permissions);
+    EXPECT_EQ(fs::status(repoRoot / "entries/.version").permissions() & fs::perms::mask,
+              common::shared_file_permissions);
 
     auto loaded = OSTreeRepo::loadFromPath(repoRoot);
     EXPECT_TRUE(loaded.has_value()) << loaded.error().message();
+}
+
+TEST_F(RepoTest, exportLayerSignDataExportsWhitelistedPathForEveryLayerKindAndModule)
+{
+    TempDir tempDir;
+    auto config = api::types::v1::RepoConfigV2{ .defaultRepo = "", .repos = {}, .version = 2 };
+    auto ostreeRepo = std::make_unique<MockOstreeRepo>(tempDir.path(), config);
+    ostreeRepo->wrapShouldExportSignDataFunc = []() -> utils::error::Result<bool> {
+        return true;
+    };
+
+    const std::array<std::pair<std::string, std::string>, 3> layerTypes{
+        std::pair{ "base", "develop" },
+        std::pair{ "runtime", "runtime" },
+        std::pair{ "custom", "custom-module" },
+    };
+
+    ScopedUmask scopedUmask{ 0022 };
+    for (std::size_t i = 0; i < layerTypes.size(); ++i) {
+        const auto commit = "commit-" + std::to_string(i);
+        const auto source = tempDir.path() / "layers" / commit / "entries";
+        fs::create_directories(source / "share/deepin-elf-verify/.elfsign");
+        fs::create_directories(source / "share/applications");
+        std::ofstream(source / "share/deepin-elf-verify/.elfsign/signature") << commit;
+        std::ofstream(source / "share/applications/not-exported.desktop") << "desktop";
+
+        api::types::v1::RepositoryCacheLayersItem item{
+            .commit = commit,
+            .info =
+              api::types::v1::PackageInfoV2{
+                .id = "org.test." + std::to_string(i),
+                .kind = layerTypes[i].first,
+                .packageInfoV2Module = layerTypes[i].second,
+              },
+        };
+
+        auto result = ostreeRepo->exportLayerSignData(tempDir.path() / "entries", item);
+        ASSERT_TRUE(result.has_value()) << result.error().message();
+        EXPECT_TRUE(fs::is_symlink(tempDir.path() / "entries/share/deepin-elf-verify" / commit
+                                   / ".elfsign/signature"));
+    }
+
+    EXPECT_FALSE(fs::exists(tempDir.path() / "entries/share/applications"));
+    for (const auto &entry : fs::recursive_directory_iterator(tempDir.path() / "entries")) {
+        if (entry.is_directory()) {
+            EXPECT_EQ(entry.status().permissions() & fs::perms::mask,
+                      common::shared_directory_permissions)
+              << entry.path();
+        }
+    }
+}
+
+TEST_F(RepoTest, exportLayerSignDataSkipsPathNotInWhitelist)
+{
+    TempDir tempDir;
+    auto config = api::types::v1::RepoConfigV2{ .defaultRepo = "", .repos = {}, .version = 2 };
+    auto ostreeRepo = std::make_unique<MockOstreeRepo>(tempDir.path(), config);
+    ostreeRepo->wrapShouldExportSignDataFunc = []() -> utils::error::Result<bool> {
+        return false;
+    };
+
+    const std::string commit = "not-whitelisted";
+    const auto source = tempDir.path() / "layers" / commit / "entries";
+    fs::create_directories(source / "share/deepin-elf-verify/.elfsign");
+    std::ofstream(source / "share/deepin-elf-verify/.elfsign/signature") << commit;
+
+    api::types::v1::RepositoryCacheLayersItem item{
+        .commit = commit,
+        .info = api::types::v1::PackageInfoV2{ .id = "org.test.not-whitelisted",
+                                               .kind = "runtime",
+                                               .packageInfoV2Module = "binary" },
+    };
+
+    auto result = ostreeRepo->exportLayerSignData(tempDir.path() / "entries", item);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    EXPECT_FALSE(fs::exists(tempDir.path() / "entries/share/deepin-elf-verify" / commit));
+}
+
+TEST_F(RepoTest, exportLayerSignDataPropagatesWhitelistError)
+{
+    TempDir tempDir;
+    auto config = api::types::v1::RepoConfigV2{ .defaultRepo = "", .repos = {}, .version = 2 };
+    auto ostreeRepo = std::make_unique<MockOstreeRepo>(tempDir.path(), config);
+    ostreeRepo->wrapShouldExportSignDataFunc = []() -> utils::error::Result<bool> {
+        LINGLONG_TRACE("mock invalid export config");
+        return LINGLONG_ERR("invalid export config");
+    };
+
+    api::types::v1::RepositoryCacheLayersItem item{
+        .commit = "invalid-config",
+        .info = api::types::v1::PackageInfoV2{ .id = "org.test.invalid-config",
+                                               .kind = "runtime",
+                                               .packageInfoV2Module = "binary" },
+    };
+
+    auto result = ostreeRepo->exportLayerSignData(tempDir.path() / "entries", item);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(RepoTest, unexportAppEntriesRemovesSelectedModulesAndPreservesLayerSignData)
+{
+    TempDir tempDir;
+    auto config = api::types::v1::RepoConfigV2{ .defaultRepo = "", .repos = {}, .version = 2 };
+    auto ostreeRepo = std::make_unique<MockOstreeRepo>(tempDir.path(), config);
+    ostreeRepo->wrapShouldExportSignDataFunc = []() -> utils::error::Result<bool> {
+        return true;
+    };
+
+    const auto entriesDir = tempDir.path() / "entries";
+    const std::array<std::string, 2> commits{ "binary-commit", "develop-commit" };
+    std::vector<std::filesystem::path> layerDirs;
+    std::vector<api::types::v1::RepositoryCacheLayersItem> items;
+
+    for (const auto &commit : commits) {
+        auto layerDir = tempDir.path() / "layers" / commit;
+        auto source = layerDir / "entries";
+        fs::create_directories(source / "share/applications");
+        fs::create_directories(source / "share/deepin-elf-verify/.elfsign");
+        std::ofstream(source / "share/applications" / (commit + ".desktop"))
+          << "[Desktop Entry]\nType=Application\nName=" << commit << "\nExec=true\n";
+        std::ofstream(source / "share/deepin-elf-verify/.elfsign/signature") << commit;
+
+        api::types::v1::RepositoryCacheLayersItem item{
+            .commit = commit,
+            .info = api::types::v1::PackageInfoV2{ .id = "org.test.app",
+                                                   .kind = "app",
+                                                   .packageInfoV2Module = commit },
+        };
+        auto exported = ostreeRepo->exportLayerSignData(entriesDir, item);
+        ASSERT_TRUE(exported.has_value()) << exported.error().message();
+
+        fs::create_directories(entriesDir / "share/applications");
+        fs::create_symlink(source / "share/applications" / (commit + ".desktop"),
+                           entriesDir / "share/applications" / (commit + ".desktop"));
+        layerDirs.emplace_back(std::move(layerDir));
+        items.emplace_back(std::move(item));
+    }
+
+    auto appEntriesUnexported = ostreeRepo->unexportAppEntries(entriesDir, { layerDirs.front() });
+    ASSERT_TRUE(appEntriesUnexported.has_value()) << appEntriesUnexported.error().message();
+    EXPECT_FALSE(
+      fs::exists(entriesDir / "share/applications" / (items.front().commit + ".desktop")));
+    EXPECT_TRUE(fs::exists(entriesDir / "share/applications" / (items.back().commit + ".desktop")));
+    for (const auto &item : items) {
+        EXPECT_TRUE(
+          fs::exists(entriesDir / "share/deepin-elf-verify" / item.commit / ".elfsign/signature"));
+    }
+
+    appEntriesUnexported = ostreeRepo->unexportAppEntries(entriesDir, { layerDirs.back() });
+    ASSERT_TRUE(appEntriesUnexported.has_value()) << appEntriesUnexported.error().message();
+    EXPECT_FALSE(
+      fs::exists(entriesDir / "share/applications" / (items.back().commit + ".desktop")));
+
+    for (const auto &item : items) {
+        auto signDataUnexported = ostreeRepo->unexportLayerSignData(entriesDir, item);
+        ASSERT_TRUE(signDataUnexported.has_value()) << signDataUnexported.error().message();
+        EXPECT_FALSE(fs::exists(entriesDir / "share/deepin-elf-verify" / item.commit));
+    }
+}
+
+TEST_F(RepoTest, exportAppEntriesDoesNotExportElfVerificationDataAgain)
+{
+    TempDir tempDir;
+    auto config = api::types::v1::RepoConfigV2{ .defaultRepo = "", .repos = {}, .version = 2 };
+    auto ostreeRepo = std::make_unique<MockOstreeRepo>(tempDir.path(), config);
+
+    const std::string commit = "app-commit";
+    const auto source = tempDir.path() / "layers" / commit / "entries";
+    fs::create_directories(source / "share/deepin-elf-verify/.elfsign");
+    std::ofstream(source / "share/deepin-elf-verify/.elfsign/signature") << commit;
+
+    api::types::v1::RepositoryCacheLayersItem item{
+        .commit = commit,
+        .info =
+          api::types::v1::PackageInfoV2{
+            .id = "org.test.app",
+            .kind = "app",
+            .packageInfoV2Module = "binary",
+          },
+    };
+
+    std::ignore = ostreeRepo->exportAppEntries(tempDir.path() / "entries", item);
+
+    EXPECT_FALSE(fs::exists(tempDir.path() / "entries/share/deepin-elf-verify"));
+}
+
+TEST_F(RepoTest, moduleMergesUseBinaryInfo)
+{
+    TempDir tempDir;
+    TempDir developDir;
+    TempDir binaryDir;
+    ASSERT_TRUE(tempDir.isValid());
+    ASSERT_TRUE(developDir.isValid());
+    ASSERT_TRUE(binaryDir.isValid());
+
+    auto repoRoot = tempDir.path() / "repo-root";
+    ASSERT_TRUE(fs::create_directories(repoRoot));
+    auto repo = OSTreeRepo::create(repoRoot, createRepoConfig());
+    ASSERT_TRUE(repo.has_value()) << repo.error().message();
+
+    auto makeInfo = [](std::string module) {
+        return api::types::v1::PackageInfoV2{
+            .arch = std::vector<std::string>{ "x86_64" },
+            .channel = "main",
+            .id = "org.test.merge",
+            .kind = "app",
+            .packageInfoV2Module = std::move(module),
+            .version = "1.0.0",
+        };
+    };
+    const auto developInfo = makeInfo("develop");
+    const auto binaryInfo = makeInfo("binary");
+
+    std::ofstream(developDir.path() / "info.json") << nlohmann::json(developInfo).dump();
+    std::ofstream(binaryDir.path() / "info.json") << nlohmann::json(binaryInfo).dump();
+
+    auto importedDevelop = repo->get()->importLayerDir(package::LayerDir{ developDir.path() });
+    ASSERT_TRUE(importedDevelop.has_value()) << importedDevelop.error().message();
+    EXPECT_FALSE(importedDevelop->commit.empty());
+    EXPECT_EQ(importedDevelop->info.packageInfoV2Module, "develop");
+    EXPECT_EQ(importedDevelop->repo, "local");
+    auto importedBinary = repo->get()->importLayerDir(package::LayerDir{ binaryDir.path() });
+    ASSERT_TRUE(importedBinary.has_value()) << importedBinary.error().message();
+    EXPECT_FALSE(importedBinary->commit.empty());
+    EXPECT_EQ(importedBinary->info.packageInfoV2Module, "binary");
+    EXPECT_EQ(importedBinary->repo, "local");
+
+    auto ref = package::Reference::fromPackageInfo(binaryInfo);
+    ASSERT_TRUE(ref.has_value()) << ref.error().message();
+    ASSERT_FALSE(fs::exists(repoRoot / "merged"));
+    fs::path temporaryMergedPath;
+    {
+        auto merged =
+          repo->get()->createTempMergedModuleDir(*ref,
+                                                 std::vector<std::string>{ "develop", "binary" });
+        ASSERT_TRUE(merged.has_value()) << merged.error().message();
+        temporaryMergedPath = merged->path();
+        EXPECT_TRUE(fs::exists(temporaryMergedPath));
+
+        auto anotherMerged =
+          repo->get()->createTempMergedModuleDir(*ref,
+                                                 std::vector<std::string>{ "develop", "binary" });
+        ASSERT_TRUE(anotherMerged.has_value()) << anotherMerged.error().message();
+        EXPECT_NE(anotherMerged->path(), temporaryMergedPath);
+        EXPECT_TRUE(fs::exists(anotherMerged->path()));
+
+        auto mergedInfo = merged->layerDir().info();
+        ASSERT_TRUE(mergedInfo.has_value()) << mergedInfo.error().message();
+        EXPECT_EQ(mergedInfo->packageInfoV2Module, "binary");
+    }
+    EXPECT_FALSE(fs::exists(temporaryMergedPath));
+
+    auto mergeResult = repo->get()->mergeModules();
+    ASSERT_TRUE(mergeResult.has_value()) << mergeResult.error().message();
+    auto persistentMerged = repo->get()->getMergedModuleDir(*ref, false);
+    ASSERT_TRUE(persistentMerged.has_value()) << persistentMerged.error().message();
+    auto persistentMergedInfo = persistentMerged->info();
+    ASSERT_TRUE(persistentMergedInfo.has_value()) << persistentMergedInfo.error().message();
+    EXPECT_EQ(persistentMergedInfo->packageInfoV2Module, "binary");
 }
 
 TEST_F(RepoTest, createPrefersRepoLocalConfigOverFallbackConfig)
@@ -184,6 +462,86 @@ TEST_F(RepoTest, loadFromPathFailsWhenCacheIsMissingButCreateCanRepairIt)
     auto repaired = OSTreeRepo::create(repoRoot, config);
     ASSERT_TRUE(repaired.has_value()) << repaired.error().message();
     EXPECT_TRUE(fs::exists(repoRoot / "states.json"));
+}
+
+TEST_F(RepoTest, exportDirRejectsDestinationsOutsideRoot)
+{
+    TempDir tempDir("repo_export_path_");
+    ASSERT_TRUE(tempDir.isValid());
+    const auto root = tempDir.path();
+    const auto source = root / "src";
+    const auto entries = root / "entries";
+    fs::create_directories(source);
+    const auto config =
+      api::types::v1::RepoConfigV2{ .defaultRepo = "", .repos = {}, .version = 2 };
+    MockOstreeRepo repo(root, config);
+    for (const auto &destination :
+         { root / "outside", fs::path("../outside"), fs::path("share/../../outside") }) {
+        SCOPED_TRACE(destination.string());
+        EXPECT_FALSE(repo.exportDir("appID", source, entries, destination, 10).has_value());
+    }
+    EXPECT_FALSE(fs::exists(entries));
+    EXPECT_FALSE(fs::exists(root / "outside"));
+}
+
+TEST_F(RepoTest, exportDirPreservesDesktopLocationsDuringRebuild)
+{
+    for (const bool overlayEnabled : { false, true }) {
+        for (const int existingLocations : { 0, 1, 2, 3 }) {
+            SCOPED_TRACE(existingLocations);
+            SCOPED_TRACE(overlayEnabled);
+            TempDir tempDir("repo_export_rebuild_");
+            ASSERT_TRUE(tempDir.isValid());
+            const auto root = tempDir.path();
+            const auto live = root / "entries";
+            const auto staging = root / "entries_new_test";
+            const fs::path defaultPath = "share/applications/nested/test.desktop";
+            const fs::path overlayPath =
+              overlayEnabled ? "apps/share/applications/nested/test.desktop" : defaultPath;
+            const auto source = root / "src/share/applications";
+            fs::create_directories(source / "nested");
+            std::ofstream(source / "nested/test.desktop") << "[Desktop Entry]\nName=Test\n";
+            fs::create_directories((live / defaultPath).parent_path());
+            fs::create_directories((live / overlayPath).parent_path());
+            // Broken links must still count as existing desktop locations.
+            if (existingLocations & 1) {
+                fs::create_symlink("missing-default", live / defaultPath);
+            }
+            if ((existingLocations & 2) && (overlayEnabled || !(existingLocations & 1))) {
+                fs::create_symlink("missing-overlay", live / overlayPath);
+            }
+            const auto config =
+              api::types::v1::RepoConfigV2{ .defaultRepo = "", .repos = {}, .version = 2 };
+            MockOstreeRepo repo(root, config);
+            repo.wrapGetOverlayShareDirFunc = [live, overlayEnabled]() {
+                return live / (overlayEnabled ? "apps/share" : "share");
+            };
+            for (int pass = 0; pass < 2; ++pass) {
+                auto result = repo.exportDir("appID", source, staging, "share/applications", 10);
+                ASSERT_TRUE(result.has_value()) << result.error().message();
+            }
+            const bool expectDefault = !overlayEnabled || (existingLocations & 1);
+            const bool expectOverlay =
+              !overlayEnabled || (existingLocations & 2) || existingLocations == 0;
+            EXPECT_EQ(fs::is_symlink(staging / defaultPath), expectDefault);
+            EXPECT_EQ(fs::is_symlink(staging / overlayPath), expectOverlay);
+            // Exporting to staging must not modify the live tree.
+            if (existingLocations & 1) {
+                EXPECT_EQ(fs::read_symlink(live / defaultPath), "missing-default");
+            }
+            if ((existingLocations & 2) && overlayEnabled) {
+                EXPECT_EQ(fs::read_symlink(live / overlayPath), "missing-overlay");
+            }
+            fs::rename(live, root / "entries_old_test");
+            fs::rename(staging, live);
+            if (expectDefault) {
+                EXPECT_TRUE(fs::equivalent(live / defaultPath, source / "nested/test.desktop"));
+            }
+            if (expectOverlay) {
+                EXPECT_TRUE(fs::equivalent(live / overlayPath, source / "nested/test.desktop"));
+            }
+        }
+    }
 }
 
 TEST_F(RepoTest, exportDir)
@@ -275,7 +633,7 @@ TEST_F(RepoTest, exportDir)
         EXPECT_TRUE(fs::exists(destDirPath / "share" / "applications"))
           << "Destination applications directory not created";
         std::ofstream(destDirPath / "share" / "applications" / "test").close();
-        auto result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath.string(), 10);
+        auto result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath, "", 10);
         EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
         auto status = fs::status(destDirPath / "share" / "applications" / "test", ec);
         EXPECT_FALSE(ec) << "Unexpected error code: " << ec.message();
@@ -299,7 +657,7 @@ TEST_F(RepoTest, exportDir)
         EXPECT_TRUE(fs::exists(destDirPath / "share" / "dbus-1" / "services" / "org.test.service"));
         EXPECT_TRUE(fs::exists(destDirPath / "lib" / "systemd" / "system" / "test.service"));
         // 测试重复导出
-        result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath.string(), 10);
+        result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath, "", 10);
         EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
         EXPECT_FALSE(ec) << "Unexpected error code: " << ec.message();
     }
@@ -308,39 +666,39 @@ TEST_F(RepoTest, exportDir)
     };
     // 如果defaultShareDir已存在desktop, 则优先导出到defaultShareDir目录
     {
-        auto result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath.string(), 10);
+        auto result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath, "", 10);
         EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
         EXPECT_FALSE(ec) << "Unexpected error code: " << ec.message();
         EXPECT_TRUE(fs::exists(destDirPath / "share/applications/test/test.desktop"));
         EXPECT_TRUE(!fs::exists(destDirPath / "app/share/applications/test/test.desktop"));
         // 测试重复导出
-        result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath.string(), 10);
+        result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath, "", 10);
         EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
         EXPECT_FALSE(ec) << "Unexpected error code: " << ec.message();
     }
     // 如果defaultShareDir不存在desktop, 则导出到overlayShareDir目录
     fs::remove_all(destDirPath);
     {
-        auto result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath.string(), 10);
+        auto result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath, "", 10);
         EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
         EXPECT_TRUE(!fs::exists(destDirPath / "share/applications/test/test.desktop"));
         EXPECT_TRUE(fs::exists(destDirPath / "apps/share/applications/test/test.desktop"));
         // 测试重复导出
-        result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath.string(), 10);
+        result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath, "", 10);
         EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
     }
     // 如果两个目录都有desktop，则导出到两个目录
     {
         std::ofstream(destDirPath / "share/applications/test/test.desktop").close();
         EXPECT_TRUE(!fs::is_symlink(destDirPath / "share/applications/test/test.desktop"));
-        auto result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath.string(), 10);
+        auto result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath, "", 10);
         EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
         EXPECT_TRUE(fs::exists(destDirPath / "share/applications/test/test.desktop"));
         EXPECT_TRUE(fs::exists(destDirPath / "apps/share/applications/test/test.desktop"));
         EXPECT_TRUE(fs::is_symlink(destDirPath / "share/applications/test/test.desktop"));
         EXPECT_TRUE(fs::is_symlink(destDirPath / "apps/share/applications/test/test.desktop"));
         // 测试重复导出
-        result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath.string(), 10);
+        result = ostreeRepo->exportDir("appID", srcDirPath.string(), destDirPath, "", 10);
         EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
     }
 
@@ -351,7 +709,7 @@ TEST_F(RepoTest, exportDir)
     EXPECT_FALSE(ec) << "Error creating empty directory: " << ec.message();
     EXPECT_TRUE(fs::exists(emptyDirPath)) << "Empty directory not created";
     fs::path emptyDestPath = tempDir.path() / "empty_dest";
-    auto result = ostreeRepo->exportDir("appID", emptyDirPath.string(), emptyDestPath.string(), 10);
+    auto result = ostreeRepo->exportDir("appID", emptyDirPath.string(), emptyDestPath, "", 10);
     EXPECT_TRUE(result.has_value()) << "exportDir failed: " << result.error().message();
     EXPECT_FALSE(ec) << "Unexpected error code: " << ec.message();
     EXPECT_TRUE(fs::exists(emptyDestPath));

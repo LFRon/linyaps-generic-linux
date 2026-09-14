@@ -80,7 +80,7 @@ bool bindIfExist(std::vector<Mount> &mounts,
     }
 
     mounts.emplace_back(Mount{ .destination = destination,
-                               .options = string_list{ "rbind", ro ? "ro" : "rw" },
+                               .options = string_list{ "rbind", ro ? "ro" : "rw", "rslave" },
                                .source = source,
                                .type = "bind" });
 
@@ -210,7 +210,7 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindDefault() noexcept
 ContainerCfgBuilder &ContainerCfgBuilder::bindSys() noexcept
 {
     sysMount = Mount{ .destination = "/sys",
-                      .options = string_list{ "rbind", "nosuid", "noexec", "nodev" },
+                      .options = string_list{ "rbind", "nosuid", "noexec", "nodev", "rslave" },
                       .source = "/sys",
                       .type = "bind" };
 
@@ -233,7 +233,7 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindDev(bool passthru) noexcept
     if (devPassthru) {
         devMount = {
             Mount{ .destination = "/dev",
-                   .options = string_list{ "rbind" },
+                   .options = string_list{ "rbind", "rslave" },
                    .source = "/dev",
                    .type = "bind" },
         };
@@ -253,7 +253,7 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindDev(bool passthru) noexcept
                    .source = "shm",
                    .type = "tmpfs" },
             Mount{ .destination = "/dev/mqueue",
-                   .options = string_list{ "rbind", "nosuid", "noexec", "nodev" },
+                   .options = string_list{ "rbind", "nosuid", "noexec", "nodev", "rslave" },
                    .source = "/dev/mqueue",
                    .type = "bind" },
         };
@@ -279,7 +279,7 @@ ContainerCfgBuilder::bindDevNode(std::function<bool(const std::string &)> ifBind
     for (const auto &entry : std::filesystem::directory_iterator{ "/dev" }) {
         if (ifBind(entry.path().filename())) {
             Mount m{ .destination = entry.path(),
-                     .options = string_list{ "rbind" },
+                     .options = string_list{ "rbind", "rslave" },
                      .source = entry.path(),
                      .type = "bind" };
 
@@ -344,7 +344,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildXDGRuntime() noexcept
     }
 
     runMount->emplace_back(Mount{ .destination = *containerXDGRuntimeDir,
-                                  .options = string_list{ "bind" },
+                                  .options = string_list{ "bind", "rslave" },
                                   .source = hostXDGRuntimeMountPoint,
                                   .type = "bind" });
     environment["XDG_RUNTIME_DIR"] = *containerXDGRuntimeDir;
@@ -352,9 +352,21 @@ utils::error::Result<void> ContainerCfgBuilder::buildXDGRuntime() noexcept
     if (xdpOption) {
         runMount->emplace_back(
           Mount{ .destination = *containerXDGRuntimeDir / "doc",
-                 .options = string_list{ "bind", "nosuid", "nodev", "relatime" },
+                 .options = string_list{ "bind", "nosuid", "nodev", "relatime", "rslave" },
                  .source = xdpOption->docMountPoint / "by-app" / appId,
                  .type = "bind" });
+    }
+    if (pipewireMountOption) {
+        bindIfExist(*runMount,
+                    pipewireMountOption->hostSocketPath,
+                    *containerXDGRuntimeDir / "pipewire-0",
+                    false);
+    }
+    if (atSpiMountOption) {
+        bindIfExist(*runMount,
+                    atSpiMountOption->hostSocketPath,
+                    *containerXDGRuntimeDir / "at-spi" / "bus_0",
+                    false);
     }
 
     return LINGLONG_OK;
@@ -364,7 +376,7 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindTmp() noexcept
 {
     tmpMount = Mount{
         .destination = "/tmp",
-        .options = string_list{ "rbind" },
+        .options = string_list{ "rbind", "rslave" },
         .source = "/tmp",
         .type = "bind",
     };
@@ -427,11 +439,11 @@ utils::error::Result<void> ContainerCfgBuilder::buildUserGroup() noexcept
     }
 
     UGMount = { Mount{ .destination = "/etc/passwd",
-                       .options = string_list{ "rbind", "ro" },
+                       .options = string_list{ "bind", "ro" },
                        .source = passwdSrc,
                        .type = "bind" },
                 Mount{ .destination = "/etc/group",
-                       .options = string_list{ "rbind", "ro" },
+                       .options = string_list{ "bind", "ro" },
                        .source = groupSrc,
                        .type = "bind" } };
 
@@ -458,46 +470,59 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindRemovableStorageMounts() noexcept
 ContainerCfgBuilder &ContainerCfgBuilder::forwardDefaultEnv() noexcept
 {
     return forwardEnv(std::vector<std::string>{
+      // 语言与终端
       "LANG",
       "LANGUAGE",
+      "TERM",
+
+      // 桌面会话
       "XDG_SESSION_DESKTOP",
-      "D_DISABLE_RT_SCREEN_SCALE",
-      "XMODIFIERS",
-      "XCURSOR_SIZE", // 鼠标尺寸
-      "DESKTOP_SESSION",
-      "DEEPIN_WINE_SCALE",
-      "XDG_CURRENT_DESKTOP",
-      "XIM",
       "XDG_SESSION_TYPE",
+      "XDG_CURRENT_DESKTOP",
+      "DESKTOP_SESSION",
+      "GDMSESSION",
+      "GNOME_DESKTOP_SESSION_ID",  // gnome 桌面标识，部分应用会读取此变量以使用 gsettings 配置
+      "GIO_LAUNCHED_DESKTOP_FILE", // 系统监视器
+
+      // 显示与缩放
+      "D_DISABLE_RT_SCREEN_SCALE",
+      "DEEPIN_WINE_SCALE",
+      "XCURSOR_SIZE", // 鼠标尺寸
+
+      // 输入法
+      "XMODIFIERS",
+      "XIM",
       "CLUTTER_IM_MODULE",
       "QT4_IM_MODULE",
+      "QT_IM_MODULE",
+      "QT_IM_MODULES",
       "GTK_IM_MODULE",
-      "all_proxy",
-      "auto_proxy",    // 网络系统代理自动代理
-      "http_proxy",    // 网络系统代理手动http代理
-      "https_proxy",   // 网络系统代理手动https代理
-      "ftp_proxy",     // 网络系统代理手动ftp代理
-      "SOCKS_SERVER",  // 网络系统代理手动socks代理
-      "no_proxy",      // 网络系统代理手动配置代理
-      "USER",          // wine应用会读取此环境变量
-      "QT_IM_MODULE",  // 输入法
-      "LINGLONG_ROOT", // 玲珑安装位置
+      "SDL_IM_MODULE",
+
+      // Qt 显示环境
       "QT_QPA_PLATFORM",
       "QT_WAYLAND_SHELL_INTEGRATION",
-      "GDMSESSION",
       "QT_WAYLAND_FORCE_DPI",
-      "GIO_LAUNCHED_DESKTOP_FILE", // 系统监视器
-      "GNOME_DESKTOP_SESSION_ID",  // gnome 桌面标识，有些应用会读取此变量以使用gsettings配置,
-      // 如chrome
-      "TERM",
-      // 控制应用将渲染任务路由到 NVIDIA 独立显卡
-      "__NV_PRIME_RENDER_OFFLOAD",
-      // 控制应用使用哪个OpenGL厂商提供的驱动库来与显卡通信和渲染。
-      "__GLX_VENDOR_LIBRARY_NAME",
-      // 控制NVIDIA独立显卡在Vulkan应用程序枚举GPU时拥有更高的优先级
-      "__VK_LAYER_NV_optimus",
-      // 控制应用尝试使用非默认（通常是独立显卡）的GPU来执行OpenGL渲染任务
-      "DRI_PRIME" });
+
+      // 网络代理
+      "all_proxy",
+      "auto_proxy",   // 网络系统代理自动代理
+      "http_proxy",   // 网络系统代理手动 http 代理
+      "https_proxy",  // 网络系统代理手动 https 代理
+      "ftp_proxy",    // 网络系统代理手动 ftp 代理
+      "SOCKS_SERVER", // 网络系统代理手动 socks 代理
+      "no_proxy",     // 网络系统代理手动配置代理
+
+      // 运行环境
+      "USER",          // wine 应用会读取此环境变量
+      "LINGLONG_ROOT", // 玲珑安装位置
+
+      // 独立显卡
+      "__NV_PRIME_RENDER_OFFLOAD", // 控制应用将渲染任务路由到 NVIDIA 独立显卡
+      "__GLX_VENDOR_LIBRARY_NAME", // 控制应用使用哪个 OpenGL 厂商提供的驱动库
+      "__VK_LAYER_NV_optimus",     // 控制 NVIDIA 独立显卡在 Vulkan 枚举 GPU 时拥有更高优先级
+      "DRI_PRIME",                 // 控制应用尝试使用非默认 GPU 执行 OpenGL 渲染
+    });
 }
 
 ContainerCfgBuilder &
@@ -560,7 +585,7 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindHostRoot() noexcept
         },
         Mount{
           .destination = "/run/host/rootfs",
-          .options = string_list{ "rbind" },
+          .options = string_list{ "rbind", "ro", "rslave" },
           .source = "/",
           .type = "bind",
         },
@@ -727,6 +752,16 @@ ContainerCfgBuilder &ContainerCfgBuilder::addMask(const std::vector<std::string>
     return *this;
 }
 
+std::filesystem::path ContainerCfgBuilder::appMountPoint(const std::string &id) noexcept
+{
+    return std::filesystem::path{ "/opt/apps" } / id / "files";
+}
+
+std::filesystem::path ContainerCfgBuilder::extensionMountPoint(const std::string &id) noexcept
+{
+    return std::filesystem::path{ "/opt/extensions" } / id;
+}
+
 std::string ContainerCfgBuilder::ldConf(const std::string &triplet) const
 {
     std::vector<std::string> factors;
@@ -743,7 +778,7 @@ std::string ContainerCfgBuilder::ldConf(const std::string &triplet) const
     }
 
     if (appPath) {
-        appendLdConf(std::filesystem::path{ "/opt/apps" } / appId / "files");
+        appendLdConf(appMountPoint(appId));
         factors.push_back(appPath->string());
     }
 
@@ -872,7 +907,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountRuntime() noexcept
     }
 
     runtimeMount = Mount{ .destination = runtimeMountPoint,
-                          .options = string_list{ "rbind", runtimePathRo ? "ro" : "rw" },
+                          .options = string_list{ "rbind", runtimePathRo ? "ro" : "rw", "rslave" },
                           .source = *runtimePath,
                           .type = "bind" };
 
@@ -896,8 +931,8 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountApp() noexcept
                         .options = string_list{ "nodev", "nosuid", "mode=700" },
                         .source = "tmpfs",
                         .type = "tmpfs" },
-                 Mount{ .destination = std::filesystem::path{ "/opt/apps" } / appId / "files",
-                        .options = string_list{ "rbind", appPathRo ? "ro" : "rw" },
+                 Mount{ .destination = appMountPoint(appId),
+                        .options = string_list{ "rbind", appPathRo ? "ro" : "rw", "rslave" },
                         .source = *appPath,
                         .type = "bind" } };
 
@@ -929,7 +964,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
     auto containerHome = homePath->string();
 
     homeMount->emplace_back(Mount{ .destination = containerHome,
-                                   .options = string_list{ "rbind" },
+                                   .options = string_list{ "rbind", "rslave" },
                                    .source = *homePath,
                                    .type = "bind" });
     environment["HOME"] = containerHome;
@@ -949,7 +984,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
 
         homeMount->emplace_back(Mount{
           .destination = containerDir,
-          .options = string_list{ "rbind" },
+          .options = string_list{ "rbind", "rslave" },
           .source = hostDir,
           .type = "bind",
         });
@@ -1033,7 +1068,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
     if ((XDG_CONFIG_HOME != containerConfigHome)
         && std::filesystem::exists(hostSystemdUserDir, ec)) {
         homeMount->emplace_back(Mount{ .destination = containerConfigHome + "/systemd/user",
-                                       .options = string_list{ "rbind" },
+                                       .options = string_list{ "rbind", "rslave" },
                                        .source = hostSystemdUserDir,
                                        .type = "bind" });
     }
@@ -1045,7 +1080,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
     if ((XDG_CONFIG_HOME != containerConfigHome)
         && std::filesystem::exists(hostUserDconfPath, ec)) {
         homeMount->emplace_back(Mount{ .destination = containerConfigHome + "/dconf",
-                                       .options = string_list{ "rbind" },
+                                       .options = string_list{ "rbind", "rslave" },
                                        .source = hostUserDconfPath,
                                        .type = "bind" });
     }
@@ -1054,7 +1089,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
     auto hostDDEApiPath = XDG_CACHE_HOME / "deepin" / "dde-api";
     if ((XDG_CACHE_HOME != containerCacheHome) && std::filesystem::exists(hostDDEApiPath, ec)) {
         homeMount->emplace_back(Mount{ .destination = containerCacheHome + "/deepin/dde-api",
-                                       .options = string_list{ "rbind" },
+                                       .options = string_list{ "rbind", "rslave" },
                                        .source = hostDDEApiPath,
                                        .type = "bind" });
     }
@@ -1063,7 +1098,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
     auto XDGUserDirs = XDG_CONFIG_HOME / "user-dirs.dirs";
     if ((XDG_CONFIG_HOME != containerConfigHome) && std::filesystem::exists(XDGUserDirs, ec)) {
         homeMount->push_back(Mount{ .destination = containerConfigHome + "/user-dirs.dirs",
-                                    .options = string_list{ "rbind" },
+                                    .options = string_list{ "bind" },
                                     .source = XDGUserDirs,
                                     .type = "bind" });
     }
@@ -1071,7 +1106,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
     auto XDGUserLocale = XDG_CONFIG_HOME / "user-dirs.locale";
     if ((XDG_CONFIG_HOME != containerConfigHome) && std::filesystem::exists(XDGUserLocale, ec)) {
         homeMount->push_back(Mount{ .destination = containerConfigHome + "/user-dirs.locale",
-                                    .options = string_list{ "rbind" },
+                                    .options = string_list{ "bind" },
                                     .source = XDGUserLocale,
                                     .type = "bind" });
     }
@@ -1137,7 +1172,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildPrivateMapped() noexcept
         }
 
         privateMount->emplace_back(Mount{ .destination = containerPath,
-                                          .options = string_list{ "rbind" },
+                                          .options = string_list{ "rbind", "rslave" },
                                           .source = hostPath,
                                           .type = "bind" });
     }
@@ -1290,7 +1325,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountIPC() noexcept
         }
 
         ipcMount->emplace_back(Mount{ .destination = containerDest.string(),
-                                      .options = std::vector<std::string>{ "rbind" },
+                                      .options = std::vector<std::string>{ "bind" },
                                       .source = selectedSource,
                                       .type = "bind" });
 
@@ -1340,7 +1375,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountIPC() noexcept
 
         ipcMount->emplace_back(ocppi::runtime::config::types::Mount{
           .destination = *containerXDGRuntimeDir / "dconf",
-          .options = string_list{ "rbind" },
+          .options = string_list{ "rbind", "rslave" },
           .source = dconfPath.string(),
           .type = "bind",
         });
@@ -1363,7 +1398,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountCache() noexcept
     }
 
     cacheMount = { Mount{ .destination = "/run/linglong/cache",
-                          .options = string_list{ "rbind", appCacheRo ? "ro" : "rw" },
+                          .options = string_list{ "rbind", appCacheRo ? "ro" : "rw", "rslave" },
                           .source = *appCache,
                           .type = "bind" } };
 
@@ -1384,7 +1419,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildLDCache() noexcept
 
     if (ldCacheMount) {
         ldCacheMount->emplace_back(Mount{ .destination = "/etc/ld.so.cache",
-                                          .options = string_list{ "rbind", "ro" },
+                                          .options = string_list{ "bind", "ro" },
                                           .source = *appCache / "ld.so.cache",
                                           .type = "bind" });
     }
@@ -1392,7 +1427,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildLDCache() noexcept
     if (ldConfMount) {
         ldConfMount->emplace_back(
           Mount{ .destination = "/etc/ld.so.conf.d/zz_deepin-linglong-app.conf",
-                 .options = { { "rbind", "ro" } },
+                 .options = { { "bind", "ro" } },
                  .source = *appCache / "ld.so.conf",
                  .type = "bind" });
     }
@@ -1428,47 +1463,36 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountNetworkConf() noexcept
 
     networkConfMount = std::vector<Mount>{};
 
-    std::filesystem::path resolvConf{ "/etc/resolv.conf" };
+    const std::filesystem::path resolvConfPath{ "/etc/resolv.conf" };
     std::error_code ec;
-    if (std::filesystem::exists(resolvConf, ec)) {
+    if (resolvConf) {
         // /etc/resolv.conf is volatile on host, we create a new symlink in the bundle
-        // directory pointing to the actual target, and then mount it with the
+        // directory pointing to the target resolved by RunContext, and then mount it with the
         // 'copy-symlink' option, which tells the runtime to recreate the symlink inside
         // the container.
-        // NOTE: it's not working if /etc/resolv.conf is a symlink, and points to a
-        // different path after container started.
+        // NOTE: If the host symlink target changes after the container starts, the running
+        // container still uses the old target.
         if (hostRootMount) {
-            auto target = resolvConf;
-            if (std::filesystem::is_symlink(resolvConf, ec)) {
-                std::array<char, PATH_MAX + 1> buf{};
-                auto *rpath = realpath(resolvConf.string().c_str(), buf.data());
-                if (rpath == nullptr) {
-                    return LINGLONG_ERR(
-                      fmt::format("Failed to read symlink {}: {}", resolvConf, strerror(errno)));
-                }
-                target = std::filesystem::path{ rpath };
-            }
-
-            target = std::filesystem::path{ "/run/host/rootfs" } / target.lexically_relative("/");
+            auto target =
+              std::filesystem::path{ "/run/host/rootfs" } / resolvConf->lexically_relative("/");
             auto bundleResolvConf = bundlePath / "resolv.conf";
             std::filesystem::create_symlink(target, bundleResolvConf, ec);
             if (ec) {
                 return LINGLONG_ERR(fmt::format("Failed to create symlink {}", bundleResolvConf),
                                     ec);
             }
-            networkConfMount->emplace_back(Mount{ .destination = resolvConf.string(),
-                                                  .options = string_list{ "rbind", "copy-symlink" },
+            networkConfMount->emplace_back(Mount{ .destination = resolvConfPath.string(),
+                                                  .options = string_list{ "bind", "copy-symlink" },
                                                   .source = bundleResolvConf,
                                                   .type = "bind" });
         } else {
-            networkConfMount->emplace_back(Mount{ .destination = resolvConf.string(),
-                                                  .options = string_list{ "rbind", "ro" },
-                                                  .source = resolvConf,
+            networkConfMount->emplace_back(Mount{ .destination = resolvConfPath.string(),
+                                                  .options = string_list{ "bind", "ro" },
+                                                  .source = *resolvConf,
                                                   .type = "bind" });
         }
     }
 
-    bindIfExist(*networkConfMount, "/etc/resolvconf");
     bindIfExist(*networkConfMount, "/etc/hosts");
     return LINGLONG_OK;
 }
@@ -1540,7 +1564,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildEnv() noexcept
     config.process->env = std::move(env);
 
     envMount = Mount{ .destination = "/etc/profile.d/00env.sh",
-                      .options = string_list{ "rbind", "ro" },
+                      .options = string_list{ "bind", "ro" },
                       .source = envShFile,
                       .type = "bind" };
 
@@ -1550,6 +1574,19 @@ utils::error::Result<void> ContainerCfgBuilder::buildEnv() noexcept
 ContainerCfgBuilder &ContainerCfgBuilder::enableXDP(XdpOption option) noexcept
 {
     xdpOption = std::move(option);
+    return *this;
+}
+
+ContainerCfgBuilder &
+ContainerCfgBuilder::enablePipewireSocketMount(PipewireMountOption option) noexcept
+{
+    pipewireMountOption = std::move(option);
+    return *this;
+}
+
+ContainerCfgBuilder &ContainerCfgBuilder::enableAtSpiSocketMount(AtSpiMountOption option) noexcept
+{
+    atSpiMountOption = std::move(option);
     return *this;
 }
 
@@ -1592,7 +1629,7 @@ Network={}
     }
 
     infoMount = Mount{ .destination = "/.linyaps",
-                       .options = string_list{ "rbind", "ro" },
+                       .options = string_list{ "bind", "ro" },
                        .source = containerInfoFile,
                        .type = "bind" };
     return LINGLONG_OK;

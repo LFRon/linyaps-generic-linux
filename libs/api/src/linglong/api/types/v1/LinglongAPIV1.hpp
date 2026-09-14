@@ -37,6 +37,7 @@
 #include "linglong/api/types/v1/InteractionReply.hpp"
 #include "linglong/api/types/v1/InteractionRequest.hpp"
 #include "linglong/api/types/v1/LayerInfo.hpp"
+#include "linglong/api/types/v1/Mount.hpp"
 #include "linglong/api/types/v1/OciConfigurationPatch.hpp"
 #include "linglong/api/types/v1/PackageInfo.hpp"
 #include "linglong/api/types/v1/PackageInfoDisplay.hpp"
@@ -59,6 +60,7 @@
 #include "linglong/api/types/v1/RepositoryCache.hpp"
 #include "linglong/api/types/v1/RunContextConfig.hpp"
 #include "linglong/api/types/v1/RuntimeConfigure.hpp"
+#include "linglong/api/types/v1/TaskState.hpp"
 #include "linglong/api/types/v1/UabMetaInfo.hpp"
 #include "linglong/api/types/v1/UpgradeListResult.hpp"
 #include "linglong/api/types/v1/XdgDirectoryPermission.hpp"
@@ -113,6 +115,7 @@ std::optional<InteractionMessageType> interactionMessageType;
 std::optional<InteractionReply> interactionReply;
 std::optional<InteractionRequest> interactionRequest;
 std::optional<LayerInfo> layerInfo;
+std::optional<Mount> mount;
 std::optional<OciConfigurationPatch> ociConfigurationPatch;
 std::optional<PackageInfo> packageInfo;
 std::optional<PackageInfoDisplay> packageInfoDisplay;
@@ -138,6 +141,7 @@ std::optional<RepositoryCache> repositoryCache;
 std::optional<RunContextConfig> runContextConfig;
 std::optional<RuntimeConfigure> runtimeConfigure;
 std::optional<State> state;
+std::optional<TaskState> taskState;
 std::optional<UabMetaInfo> uabMetaInfo;
 std::optional<UpgradeListResult> upgradeListResult;
 std::optional<std::vector<XdgDirectoryPermission>> xdgDirectoryPermissions;

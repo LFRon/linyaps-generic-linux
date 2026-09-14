@@ -9,6 +9,7 @@
 #include "configure.h"
 #include "linglong/common/formatter.h"
 #include "linglong/package/version.h"
+#include "linglong/utils/file.h"
 #include "linglong/utils/log/log.h"
 #include "linglong/utils/serialize/json.h"
 #include "linglong/utils/serialize/packageinfo_handler.h"
@@ -49,6 +50,21 @@ utils::error::Result<void> RepoCache::load()
                       cacheFileVersion));
     }
     this->cache = std::move(result).value();
+
+    return LINGLONG_OK;
+}
+
+utils::error::Result<void> RepoCache::updateConfig(const api::types::v1::RepoConfigV2 &config)
+{
+    LINGLONG_TRACE("update repo cache config");
+
+    auto originalConfig = cache.config;
+    cache.config = config;
+    auto result = writeToDisk();
+    if (!result) {
+        cache.config = std::move(originalConfig);
+        return LINGLONG_ERR(result);
+    }
 
     return LINGLONG_OK;
 }
@@ -132,7 +148,6 @@ RepoCache::addLayerItem(const api::types::v1::RepositoryCacheLayersItem &item)
 
     auto it = findMatchingItem(item);
     if (it) {
-        Q_ASSERT(false);
         return LINGLONG_ERR("item already exist");
     }
 
@@ -174,7 +189,6 @@ RepoCache::deleteLayerItem(const api::types::v1::RepositoryCacheLayersItem &item
 
     auto it = findMatchingItem(item);
     if (!it) {
-        Q_ASSERT(false);
         return LINGLONG_ERR(it);
     }
 
@@ -234,16 +248,6 @@ RepoCache::queryLayerItem(const repoCacheQuery &query) const noexcept
         if (query.deleted) {
             auto layerDeleted = layer.deleted.value_or(false);
             if (query.deleted.value() != layerDeleted) {
-                continue;
-            }
-        }
-
-        if (query.uuid) {
-            if (!layer.info.uuid) {
-                continue;
-            }
-
-            if (query.uuid.value() != layer.info.uuid.value()) {
                 continue;
             }
         }
@@ -329,6 +333,10 @@ utils::error::Result<void> RepoCache::writeToDisk()
     auto data = nlohmann::json(this->cache).dump();
     ofs << data;
     ofs.close();
+    if (!ofs) {
+        std::filesystem::remove(tmpFile, ec);
+        return LINGLONG_ERR("failed to write cache");
+    }
 
     std::filesystem::rename(tmpFile, this->cacheFile, ec);
     if (ec) {
@@ -358,14 +366,11 @@ utils::error::Result<void> RepoCache::writeToDisk()
     }
 
     auto versionTag = parent_path / ".version";
-    ofs.open(parent_path / ".version", std::ios::out | std::ios::trunc);
-    if (ofs.fail()) {
-        LogE("failed to open file {}", versionTag.string());
+    auto versionWritten = utils::writeFile(versionTag, LINGLONG_VERSION);
+    if (!versionWritten) {
+        LogE("failed to write file {}: {}", versionTag.string(), versionWritten.error());
         return LINGLONG_OK;
     }
-
-    ofs << LINGLONG_VERSION;
-    ofs.close();
 
     return LINGLONG_OK;
 }

@@ -23,6 +23,16 @@ struct XdpOption
     std::filesystem::path docMountPoint;
 };
 
+struct PipewireMountOption
+{
+    std::filesystem::path hostSocketPath;
+};
+
+struct AtSpiMountOption
+{
+    std::filesystem::path hostSocketPath;
+};
+
 enum class ANNOTATION {
     APPID,
     BASEDIR,
@@ -91,6 +101,12 @@ public:
         return *this;
     }
 
+    ContainerCfgBuilder &setResolvConf(std::filesystem::path path) noexcept
+    {
+        resolvConf = std::move(path);
+        return *this;
+    }
+
     ContainerCfgBuilder &setAnnotation(ANNOTATION annotation, std::string value) noexcept;
 
     ContainerCfgBuilder &addUIdMapping(int64_t containerID, int64_t hostID, int64_t size) noexcept;
@@ -139,6 +155,8 @@ public:
     ContainerCfgBuilder &enableQuirkVolatile() noexcept;
 
     ContainerCfgBuilder &enableXDP(XdpOption option) noexcept;
+    ContainerCfgBuilder &enablePipewireSocketMount(PipewireMountOption option) noexcept;
+    ContainerCfgBuilder &enableAtSpiSocketMount(AtSpiMountOption option) noexcept;
 
     ContainerCfgBuilder &
       setExtensionMounts(std::vector<ocppi::runtime::config::types::Mount>) noexcept;
@@ -193,6 +211,9 @@ public:
     applyCDIPatch(const linglong::cdi::types::ContainerEdits &edits) noexcept;
 
     std::string ldConf(const std::string &triplet) const;
+
+    static std::filesystem::path appMountPoint(const std::string &id) noexcept;
+    static std::filesystem::path extensionMountPoint(const std::string &id) noexcept;
 
     utils::error::Result<void> build() noexcept;
 
@@ -255,6 +276,7 @@ private:
     std::optional<std::filesystem::path> appCache;
     std::optional<std::filesystem::path> containerXDGRuntimeDir;
     std::optional<std::string> timezone;
+    std::optional<std::filesystem::path> resolvConf;
 
     bool runtimePathRo = true;
     bool appPathRo = true;
@@ -327,6 +349,8 @@ private:
     std::vector<MountNode> mountpoints;
     // this 'mounts' is used internally, distinct from config.mounts
     std::vector<ocppi::runtime::config::types::Mount> mounts;
+    std::optional<PipewireMountOption> pipewireMountOption;
+    std::optional<AtSpiMountOption> atSpiMountOption;
 
     std::optional<std::pair<std::filesystem::path, bool>> overlayMerged;
 

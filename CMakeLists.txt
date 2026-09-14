@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.11.4)
 
 project(
   linglong
-  VERSION 1.12.0
+  VERSION 1.15.0
   DESCRIPTION "a container based application package manager for Linux desktop"
   HOMEPAGE_URL "https://github.com/OpenAtom-Linyaps/linyaps"
   LANGUAGES CXX C)
@@ -15,10 +15,96 @@ set(LINGLONG_VERSION
     ""
     CACHE STRING "The version of linglong project.")
 
-if(NOT ("${LINGLONG_VERSION}" STREQUAL ""))
+if(NOT LINGLONG_VERSION STREQUAL "")
   message(STATUS "Project version has been overridden to ${LINGLONG_VERSION}")
   set(PROJECT_VERSION ${LINGLONG_VERSION})
 endif()
+
+set(LINGLONG_RELEASE
+    OFF
+    CACHE BOOL "Build a release version of the project.")
+set(LINGLONG_GIT_HASH
+    ""
+    CACHE STRING "The Git commit hash included in the build metadata.")
+set(LINGLONG_BUILD_CHANNEL
+    ""
+    CACHE STRING "The build channel included in the build metadata.")
+
+if(NOT PROJECT_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+  message(FATAL_ERROR "LINGLONG_VERSION must use the major.minor.patch format")
+endif()
+
+if(LINGLONG_GIT_HASH STREQUAL "" AND NOT LINGLONG_RELEASE)
+  execute_process(
+    COMMAND git rev-parse --git-path HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE LINGLONG_GIT_HEAD_FILE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE LINGLONG_GIT_HEAD_RESULT
+    ERROR_QUIET)
+  if(LINGLONG_GIT_HEAD_RESULT EQUAL 0)
+    get_filename_component(
+      LINGLONG_GIT_HEAD_FILE "${LINGLONG_GIT_HEAD_FILE}" ABSOLUTE
+      BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(
+      DIRECTORY APPEND
+      PROPERTY CMAKE_CONFIGURE_DEPENDS "${LINGLONG_GIT_HEAD_FILE}")
+
+    execute_process(
+      COMMAND git symbolic-ref -q HEAD
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      OUTPUT_VARIABLE LINGLONG_GIT_REF
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE LINGLONG_GIT_REF_RESULT
+      ERROR_QUIET)
+    if(LINGLONG_GIT_REF_RESULT EQUAL 0)
+      execute_process(
+        COMMAND git rev-parse --git-path "${LINGLONG_GIT_REF}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE LINGLONG_GIT_REF_FILE
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE LINGLONG_GIT_REF_FILE_RESULT
+        ERROR_QUIET)
+      if(LINGLONG_GIT_REF_FILE_RESULT EQUAL 0)
+        get_filename_component(
+          LINGLONG_GIT_REF_FILE "${LINGLONG_GIT_REF_FILE}" ABSOLUTE
+          BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_property(
+          DIRECTORY APPEND
+          PROPERTY CMAKE_CONFIGURE_DEPENDS "${LINGLONG_GIT_REF_FILE}")
+      endif()
+    endif()
+  endif()
+
+  execute_process(
+    COMMAND git rev-parse --short=7 HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE LINGLONG_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+endif()
+
+if(NOT LINGLONG_GIT_HASH STREQUAL ""
+   AND NOT LINGLONG_GIT_HASH MATCHES "^[0-9A-Fa-f]+$")
+  message(FATAL_ERROR "LINGLONG_GIT_HASH must be a Git hash")
+endif()
+
+set(LINGLONG_BUILDINFO "${LINGLONG_GIT_HASH}")
+if(NOT LINGLONG_BUILD_CHANNEL STREQUAL "")
+  if(NOT LINGLONG_BUILDINFO STREQUAL "")
+    string(APPEND LINGLONG_BUILDINFO ".")
+  endif()
+  string(APPEND LINGLONG_BUILDINFO "${LINGLONG_BUILD_CHANNEL}")
+endif()
+set(LINGLONG_VERSION_FULL "${PROJECT_VERSION}")
+if(NOT LINGLONG_RELEASE)
+  string(APPEND LINGLONG_VERSION_FULL "-dev")
+endif()
+if(NOT LINGLONG_BUILDINFO STREQUAL "")
+  string(APPEND LINGLONG_VERSION_FULL "+${LINGLONG_BUILDINFO}")
+endif()
+
+message(STATUS "Linglong version: ${LINGLONG_VERSION_FULL}")
 
 set(ENABLE_LINGLONG_APP_BUILDER_UTILS
     OFF
@@ -33,7 +119,7 @@ set(ENABLE_LINGLONG_INSTALLER
     CACHE BOOL "enable linglong installer")
 
 set(ENABLE_TESTING
-    OFF
+    ON
     CACHE BOOL "enable testing")
 
 option(ENABLE_CPM "enable CPM module" ON)
@@ -232,6 +318,7 @@ function(gen_library_target name)
       message(STATUS "system fmt not found, using external fmt")
       add_library(fmt-lib INTERFACE)
       add_library(${output} ALIAS fmt-lib)
+      add_library(fmt::fmt-header-only ALIAS fmt-lib)
       target_include_directories(fmt-lib INTERFACE external/fmt/include)
       target_compile_definitions(fmt-lib INTERFACE FMT_HEADER_ONLY)
     else()
@@ -393,12 +480,10 @@ pfl_add_libraries(
   cdi
   APPS
   ll-init
-  ll-dialog
   ll-builder
   ll-cli
   ll-package-manager
   llpkg
-  ll-session-helper
   ll-driver-detect)
 
 if(ENABLE_LINGLONG_APP_BUILDER_UTILS)

@@ -23,6 +23,7 @@
 #include <QList>
 #include <QObject>
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 
@@ -65,14 +66,25 @@ public
                                               const std::string &containerID) noexcept;
     void initDaemonMode(bool peerMode = false) noexcept;
 
-    virtual utils::error::Result<void> applyApp(const package::Reference &reference) noexcept;
-    virtual utils::error::Result<void> unapplyApp(const package::Reference &reference) noexcept;
+    virtual utils::error::Result<void>
+    applyApp(const package::Reference &reference,
+             const std::optional<std::string> &module = std::nullopt) noexcept;
+    virtual utils::error::Result<void>
+    unapplyApp(const package::Reference &reference,
+               const std::optional<std::string> &module = std::nullopt) noexcept;
     virtual utils::error::Result<void> switchAppVersion(const package::Reference &oldRef,
                                                         const package::Reference &newRef,
                                                         bool removeOldRef = false) noexcept;
+    // Scan installed application dependencies and remove unreferenced packages.
+    virtual utils::error::Result<void> pruneUnused() noexcept;
     virtual utils::error::Result<void> tryGenerateCache(const package::Reference &ref) noexcept;
-    utils::error::Result<void> executePostInstallHooks(const package::Reference &ref) noexcept;
+    utils::error::Result<void>
+    executeInstallHooks(const std::filesystem::path &packageFile) noexcept;
+    virtual utils::error::Result<void>
+    executePostInstallHooks(const package::Reference &ref) noexcept;
     utils::error::Result<void> executePostUninstallHooks(const package::Reference &ref) noexcept;
+    utils::error::Result<std::filesystem::path> copyToStaging(int sourceFD) noexcept;
+    utils::error::Result<void> cleanStaging() noexcept;
 
     virtual utils::error::Result<void> installAppDepends(Task &task,
                                                          const api::types::v1::PackageInfoV2 &app);
@@ -96,7 +108,8 @@ public
                                                         const std::string &module) noexcept;
     utils::error::Result<void> Uninstall(PackageTask &taskContext,
                                          const package::Reference &ref,
-                                         const std::string &module) noexcept;
+                                         const std::string &module,
+                                         bool noAutoPrune = false) noexcept;
     virtual utils::error::Result<bool> tryUninstallRef(const package::Reference &ref) noexcept;
     utils::error::Result<void>
     uninstallRef(const package::Reference &ref,
@@ -105,9 +118,6 @@ public
                                                   const std::string &module) noexcept;
 
 Q_SIGNALS:
-    void TaskAdded(QDBusObjectPath object_path);
-    void TaskRemoved(QDBusObjectPath object_path);
-    void SearchFinished(QString jobID, QVariantMap result);
     void PruneFinished(QString jobID, QVariantMap result);
     void InitRunContextFinished(QString jobID, bool success);
 

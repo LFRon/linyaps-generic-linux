@@ -9,6 +9,7 @@
 #include "linglong/cli/cli.h"
 #include "linglong/common/dir.h"
 #include "linglong/common/strings.h"
+#include "linglong/common/xdg.h"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/package/architecture.h"
 #include "linglong/runtime/run_context.h"
@@ -35,6 +36,18 @@ const std::vector<std::string> buildContainerCaps = {
     "CAP_KILL",    "CAP_NET_BIND_SERVICE", "CAP_SETFCAP",    "CAP_SETGID",
     "CAP_SETPCAP", "CAP_SETUID",           "CAP_SYS_CHROOT",
 };
+
+auto isPathInRootfs(const std::filesystem::path &path, const std::filesystem::path &rootfs) noexcept
+  -> bool
+{
+    auto relative = path.lexically_normal().lexically_relative(rootfs.lexically_normal());
+    if (relative.empty()) {
+        return false;
+    }
+
+    auto it = relative.begin();
+    return it == relative.end() || *it != "..";
+}
 
 auto getXDPDocumentsMountPoint() noexcept -> utils::error::Result<std::filesystem::path>
 {
@@ -118,6 +131,14 @@ auto RunContainerOptions::applyRuntimeConfig(
         this->disableXdp = *runtimeConfig.disableXdp;
     }
 
+    if (runtimeConfig.enablePipewire.has_value()) {
+        this->enablePipewireSocketMount = *runtimeConfig.enablePipewire;
+    }
+
+    if (runtimeConfig.enableAtspi.has_value()) {
+        this->enableAtSpiSocketMount = *runtimeConfig.enableAtspi;
+    }
+
     if (runtimeConfig.deviceMode) {
         for (const auto &option : *runtimeConfig.deviceMode) {
             if (option == api::types::v1::DeviceOption::Passthru) {
@@ -160,6 +181,14 @@ auto RunContainerOptions::applyCliRunOptions(const cli::RunOptions &options) noe
     if (options.disableXdp.has_value()) {
         this->disableXdp = *options.disableXdp;
     }
+
+    if (options.enablePipewireSocketMount.has_value()) {
+        this->enablePipewireSocketMount = *options.enablePipewireSocketMount;
+    }
+
+    if (options.enableAtSpiSocketMount.has_value()) {
+        this->enableAtSpiSocketMount = *options.enableAtSpiSocketMount;
+    }
     this->privileged = options.privileged;
     this->capabilities.insert(this->capabilities.end(),
                               options.capsAdd.begin(),
@@ -197,6 +226,16 @@ auto RunContainerOptions::getSecurityContexts() const noexcept
 auto RunContainerOptions::isDevicePassthruEnabled() const noexcept -> bool
 {
     return this->devicePassthru;
+}
+
+auto RunContainerOptions::isPipewireSocketMountEnabled() const noexcept -> bool
+{
+    return this->enablePipewireSocketMount;
+}
+
+auto RunContainerOptions::isAtSpiSocketMountEnabled() const noexcept -> bool
+{
+    return this->enableAtSpiSocketMount;
 }
 
 auto RunContainerOptions::isXdpDisabled() const noexcept -> bool
@@ -353,12 +392,12 @@ auto ContainerBuilder::finalizeContainer(PreparedContainer &prepared) noexcept
     bool useOverlayMode = true;
     bool needGenLdConf = false;
     if (prepared.mode == ContainerMode::Init) {
-        const auto &appLayer = prepared.runContext->getAppLayer();
-        if (!appLayer) {
-            return LINGLONG_ERR("app layer not found");
+        auto targetLayer = prepared.runContext->getTargetLayer();
+        if (!targetLayer) {
+            return LINGLONG_ERR("target layer not found", targetLayer);
         }
 
-        triplet = appLayer->getReference().arch.getTriplet();
+        triplet = targetLayer->get().getReference().arch.getTriplet();
         needGenLdConf = true;
     } else if (prepared.mode == ContainerMode::Build) {
         triplet = package::Architecture::currentCPUArchitecture().getTriplet();
@@ -384,9 +423,8 @@ auto ContainerBuilder::configureBuildContainer(PreparedContainer &prepared,
     LINGLONG_TRACE("configure build container");
 
     prepared.cfgBuilder.setBasePath(options.basePath, false)
-      .bindUserGroup()
       .forwardDefaultEnv()
-      .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1")
+      .appendEnv("LINYAPS_INIT_SKIP_LOCK", "YES")
       .disableUserNamespace()
       .setCapabilities(buildContainerCaps)
       .enableLDConf();
@@ -451,6 +489,73 @@ auto ContainerBuilder::normalizeContainerRootfs(
         }
     }
 
+    auto ensureMountPoint = [&](const std::string &destination,
+                                const std::string &srcType) -> utils::error::Result<void> {
+        auto destPath = std::filesystem::path(destination);
+        auto dest = rootfs / (destPath.is_absolute() ? destPath.relative_path() : destPath);
+        if (!isPathInRootfs(dest, rootfs)) {
+            return LINGLONG_ERR(
+              fmt::format("mount destination {} is outside rootfs {}", dest, rootfs));
+        }
+
+        std::error_code ec;
+        if (std::filesystem::exists(dest, ec)) {
+            const auto destIsDirectory = std::filesystem::is_directory(dest, ec);
+            if (!ec
+                && ((srcType == "file" && !destIsDirectory)
+                    || (srcType != "file" && destIsDirectory))) {
+                return LINGLONG_OK;
+            }
+
+            ec.clear();
+            std::filesystem::remove_all(dest, ec);
+            if (ec) {
+                LogW("failed to recreate mount point {}: {}", dest, ec.message());
+                return LINGLONG_OK;
+            }
+        }
+        if (srcType == "file") {
+            std::filesystem::create_directories(dest.parent_path(), ec);
+            if (ec) {
+                LogW("failed to create directories for mount point {}: {}",
+                     dest.parent_path(),
+                     ec.message());
+                return LINGLONG_OK;
+            }
+            std::ofstream(dest) << "";
+        } else {
+            std::filesystem::create_directories(dest, ec);
+            if (ec) {
+                LogW("failed to create mount point {}: {}", dest, ec.message());
+            }
+        }
+        return LINGLONG_OK;
+    };
+
+    if (config.mounts) {
+        for (const auto &m : *config.mounts) {
+            if (!m.srcType) {
+                continue;
+            }
+            auto ret = ensureMountPoint(m.destination, *m.srcType);
+            if (!ret) {
+                return ret;
+            }
+        }
+    }
+
+    if (config.hostDynamic) {
+        for (const auto &state : *config.hostDynamic) {
+            if (!state.srcType) {
+                continue;
+            }
+            auto ret = ensureMountPoint(state.destination, *state.srcType);
+            if (!ret) {
+                return ret;
+            }
+        }
+    }
+
     return LINGLONG_OK;
 }
 
@@ -465,7 +570,8 @@ auto ContainerBuilder::configureInitContainer(PreparedContainer &prepared) noexc
       .bindXDGRuntime()
       .bindHostRoot()
       .bindHostStatics()
-      .forwardDefaultEnv();
+      .forwardDefaultEnv()
+      .appendEnv("LINYAPS_INIT_SKIP_LOCK", "YES");
 
     if (runContext.getConfig().overlayfs) {
         auto res = prepared.context->setupOverlayFS(runContext, true);
@@ -545,6 +651,16 @@ auto ContainerBuilder::configureRunContainer(PreparedContainer &prepared,
                  docMountPoint.error());
         }
     }
+    if (options.isPipewireSocketMountEnabled()) {
+        auto pwSocketPath = common::xdg::getXDGRuntimeDir() / "pipewire-0";
+        prepared.cfgBuilder.enablePipewireSocketMount(
+          generator::PipewireMountOption{ .hostSocketPath = std::move(pwSocketPath) });
+    }
+    if (options.isAtSpiSocketMountEnabled()) {
+        auto atSpiSocketPath = common::xdg::getXDGRuntimeDir() / "at-spi" / "bus_0";
+        prepared.cfgBuilder.enableAtSpiSocketMount(
+          generator::AtSpiMountOption{ .hostSocketPath = std::move(atSpiSocketPath) });
+    }
 
     if (options.isDevicePassthruEnabled()) {
         prepared.cfgBuilder.bindDev(true);
@@ -622,6 +738,21 @@ auto ContainerBuilder::configureRunContainer(PreparedContainer &prepared,
         return LINGLONG_ERR(applyRes);
     }
 
+    const auto &mounts = runContext.getConfig().mounts;
+    if (mounts) {
+        for (const auto &m : *mounts) {
+            ocppi::runtime::config::types::Mount ociMount{
+                .destination = m.destination,
+                .gidMappings = {},
+                .options = m.options,
+                .source = m.source,
+                .type = m.type,
+                .uidMappings = {},
+            };
+            prepared.cfgBuilder.addExtraMount(ociMount);
+        }
+    }
+
     return LINGLONG_OK;
 }
 
@@ -634,6 +765,16 @@ auto ContainerBuilder::createRunContainer(runtime::RunContext &context,
     auto prepared = this->prepareContainer(context, ContainerMode::Run, options.common);
     if (!prepared) {
         return LINGLONG_ERR(prepared);
+    }
+
+    if (!options.lockName.empty()) {
+        const auto lockPath = prepared->context->getBundleDir() / options.lockName;
+        prepared->cfgBuilder.addExtraMount({
+          .destination = common::dir::containerLockPath,
+          .options = std::vector<std::string>{ "bind" },
+          .source = lockPath.string(),
+          .type = "bind",
+        });
     }
 
     auto res = this->configureRunContainer(*prepared, options);

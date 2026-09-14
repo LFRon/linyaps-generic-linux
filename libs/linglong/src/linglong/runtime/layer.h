@@ -28,7 +28,6 @@ public:
 
     static utils::error::Result<RuntimeLayer> create(package::Reference ref,
                                                      const RunContext &context);
-    ~RuntimeLayer() noexcept;
 
     struct ExtensionRuntimeLayerInfo
     {
@@ -38,8 +37,8 @@ public:
     };
 
     utils::error::Result<void>
-    resolveLayer(const std::vector<std::string> &modules = {},
-                 const std::optional<std::string> &subRef = std::nullopt);
+    resolveLayer(const std::optional<std::vector<std::string>> &includeModules = std::nullopt,
+                 const std::optional<std::vector<std::string>> &excludeModules = std::nullopt);
 
     [[nodiscard]] const api::types::v1::RepositoryCacheLayersItem &getCachedItem() const noexcept
     {
@@ -66,8 +65,8 @@ private:
     package::Reference reference;
     const RunContext *runContext{ nullptr };
     std::optional<package::LayerDir> layerDir;
+    std::optional<package::TempLayerDir> tempLayerDir;
     api::types::v1::RepositoryCacheLayersItem cachedItem;
-    bool temporary{ false };
     std::optional<ExtensionRuntimeLayerInfo> extensionOf;
 };
 

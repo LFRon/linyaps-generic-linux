@@ -6,6 +6,7 @@
 
 #include "common/tempdir.h"
 #include "linglong/runtime/overlayfs_driver.h"
+#include "linglong/utils/cmd.h"
 
 #include <filesystem>
 
@@ -55,6 +56,35 @@ TEST(OverlayFSDriverStatic, CanUseKernelOverlay)
       << "canUseKernelOverlay should match canUseInUserNS from KernelOverlaySupport";
 
     std::cout << "canUseKernelOverlay: " << (canUse ? "yes" : "no") << std::endl;
+}
+
+TEST(OverlayFSDriverStatic, CanUseFUSEOverlay)
+{
+    bool canUse = linglong::runtime::OverlayFSDriver::canUseFUSEOverlay();
+
+    EXPECT_EQ(canUse, linglong::utils::Cmd("fuse-overlayfs").exists())
+      << "canUseFUSEOverlay should reflect fuse-overlayfs command availability";
+
+    std::cout << "canUseFUSEOverlay: " << (canUse ? "yes" : "no") << std::endl;
+}
+
+TEST(OverlayFSDriverStatic, ResolveOverlayMode)
+{
+    auto support = linglong::runtime::OverlayFSDriver::detectKernelOverlaySupport();
+    auto fuseAvailable = linglong::runtime::OverlayFSDriver::canUseFUSEOverlay();
+
+    auto resolvedMode =
+      linglong::runtime::OverlayFSDriver::resolveOverlayMode(linglong::utils::OverlayMode::Auto);
+
+    if (support.canUseInUserNS) {
+        ASSERT_TRUE(resolvedMode);
+        EXPECT_EQ(*resolvedMode, linglong::utils::OverlayMode::Kernel);
+    } else if (fuseAvailable) {
+        ASSERT_TRUE(resolvedMode);
+        EXPECT_EQ(*resolvedMode, linglong::utils::OverlayMode::FUSE);
+    } else {
+        EXPECT_FALSE(resolvedMode);
+    }
 }
 
 TEST_F(OverlayFSDriverTest, AutoModeSelection)
@@ -118,3 +148,34 @@ TEST_F(OverlayFSDriverTest, KernelDriverPersistentCreatesUpperdirAndWorkdir)
 }
 
 } // namespace
+
+TEST(OverlayFSDriverStatic, ModeToStringAndFromString)
+{
+    using linglong::runtime::OverlayFSDriver;
+    using linglong::utils::OverlayMode;
+
+    EXPECT_EQ(OverlayFSDriver::modeToString(OverlayMode::Auto), "auto");
+    EXPECT_EQ(OverlayFSDriver::modeToString(OverlayMode::Kernel), "kernel");
+    EXPECT_EQ(OverlayFSDriver::modeToString(OverlayMode::FUSE), "fuse");
+
+    EXPECT_EQ(*OverlayFSDriver::modeFromString("auto"), OverlayMode::Auto);
+    EXPECT_EQ(*OverlayFSDriver::modeFromString("kernel"), OverlayMode::Kernel);
+    EXPECT_EQ(*OverlayFSDriver::modeFromString("fuse"), OverlayMode::FUSE);
+    EXPECT_FALSE(OverlayFSDriver::modeFromString("bogus").has_value());
+    EXPECT_FALSE(OverlayFSDriver::modeFromString("Kernel").has_value());
+    EXPECT_FALSE(OverlayFSDriver::modeFromString("").has_value());
+}
+
+TEST_F(OverlayFSDriverTest, OverlayFSUtilsRefusesToMountInAutoMode)
+{
+    // utils::OverlayFS in Auto mode must not attempt a real mount.
+    auto overlay = std::make_unique<linglong::utils::OverlayFS>(std::vector<fs::path>{ lower_dir },
+                                                                fs::path{},
+                                                                std::nullopt,
+                                                                merged_dir,
+                                                                linglong::utils::OverlayMode::Auto);
+
+    EXPECT_FALSE(overlay->mount());
+    EXPECT_FALSE(overlay->isMounted());
+    overlay->unmount();
+}

@@ -8,6 +8,7 @@
 
 #include <fmt/format.h>
 
+#include <random>
 #include <sstream>
 
 namespace {
@@ -42,15 +43,29 @@ bool stringEqual(std::string_view str1, std::string_view str2, bool caseSensitiv
     });
 }
 
-std::string_view trim(std::string_view str, std::string_view chars) noexcept
+std::string_view trim_left(std::string_view str, std::string_view chars) noexcept
 {
     auto first = str.find_first_not_of(chars);
     if (first == std::string_view::npos) {
         return {};
     }
 
+    return str.substr(first);
+}
+
+std::string_view trim_right(std::string_view str, std::string_view chars) noexcept
+{
     auto last = str.find_last_not_of(chars);
-    return str.substr(first, last - first + 1);
+    if (last == std::string_view::npos) {
+        return {};
+    }
+
+    return str.substr(0, last + 1);
+}
+
+std::string_view trim(std::string_view str, std::string_view chars) noexcept
+{
+    return trim_right(trim_left(str, chars), chars);
 }
 
 std::vector<std::string_view> split(std::string_view str,
@@ -178,6 +193,25 @@ std::string quoteBashArg(std::string arg) noexcept
         }
     }
     return "'" + arg + "'";
+}
+
+std::string generateRandomString(std::size_t length) noexcept
+{
+    static constexpr std::string_view charset = "0123456789"
+                                                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                                "abcdefghijklmnopqrstuvwxyz";
+
+    static thread_local std::mt19937 gen{ std::random_device{}() };
+    std::uniform_int_distribution<std::size_t> dis(0, charset.size() - 1);
+
+    std::string result;
+    result.reserve(length);
+
+    for (std::size_t i = 0; i < length; ++i) {
+        result += charset[dis(gen)];
+    }
+
+    return result;
 }
 
 std::optional<std::string> decode_url(std::string_view url) noexcept

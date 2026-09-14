@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+# SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
 #
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
@@ -18,7 +18,6 @@ configure_files(
   libexec/linglong/builder/helper/ldd-check.sh
   libexec/linglong/builder/helper/main-check.sh
   libexec/linglong/builder/helper/symbols-strip.sh
-  libexec/linglong/dialog/99-linglong-permission
   libexec/linglong/fetch-archive-source
   libexec/linglong/fetch-dsc-source
   libexec/linglong/fetch-file-source
@@ -31,7 +30,6 @@ configure_files(
   lib/systemd/system/org.deepin.linglong.PackageManager.service
   lib/systemd/system-preset/91-linglong.preset
   lib/systemd/user-generators/linglong-user-systemd-generator
-  lib/systemd/user/linglong-session-helper.service
   lib/sysusers.d/linglong.conf
   lib/tmpfiles.d/linglong.conf
   script/linglong.sh
@@ -90,12 +88,6 @@ install(
            ${CMAKE_CURRENT_BINARY_DIR}/libexec/linglong/fetch-git-source
   DESTINATION ${LIBEXEC_LINGLONG_DIR})
 
-set(LINGLONG_DIALOG_DIR ${LIBEXEC_LINGLONG_DIR}/dialog)
-install(
-  PROGRAMS
-    ${CMAKE_CURRENT_BINARY_DIR}/libexec/linglong/dialog/99-linglong-permission
-  DESTINATION ${LINGLONG_DIALOG_DIR})
-
 # builder helpers
 set(LIBEXEC_LINGLONG_BUILDER_DIR ${LIBEXEC_LINGLONG_DIR}/builder)
 install(
@@ -138,10 +130,6 @@ set(SYSTEMD_SYSTEM_UNIT_PATH ${CMAKE_INSTALL_PREFIX}/lib/systemd)
 install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib/systemd/system
         DESTINATION ${SYSTEMD_SYSTEM_UNIT_PATH})
 
-set(SYSTEMD_USER_UNIT_PATH ${CMAKE_INSTALL_PREFIX}/lib/systemd)
-install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib/systemd/user
-        DESTINATION ${SYSTEMD_USER_UNIT_PATH})
-
 set(SYSTEMD_SYSTEM_GENERATOR_PATH
     ${CMAKE_INSTALL_PREFIX}/lib/systemd/system-environment-generators)
 
@@ -174,7 +162,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/share/applications/linyaps.desktop
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/share/icons/linyaps.svg
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 
-# set linglong XDG_DATA_DIRS environtment
+# set linglong XDG_DATA_DIRS environment
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/script/linglong.sh
         DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/profile.d)
 

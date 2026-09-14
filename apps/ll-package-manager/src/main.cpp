@@ -20,16 +20,24 @@
 #include <CLI/CLI.hpp>
 
 #include <QCoreApplication>
+#include <QDBusConnection>
+#include <QDBusServer>
+#include <QTimer>
 
 #include <filesystem>
 #include <memory>
 #include <string>
 
+#include <sys/stat.h>
+
 namespace {
+
+constexpr mode_t packageManagerUmask = 0022;
 
 struct CommandLineOptions
 {
     bool noDBus{ false };
+    std::string peerSocket;
     std::string initRunContext;
     std::string containerID;
 };
@@ -42,6 +50,9 @@ auto parseCommandLine(int argc, char *argv[], CommandLineOptions &options) -> in
     auto *noDBusOption =
       commandParser.add_flag("--no-dbus", options.noDBus, "service without dbus-daemon")
         ->group(cliHiddenGroup);
+    auto *peerSocketOption =
+      commandParser.add_option("--peer-socket", options.peerSocket, "peer dbus socket path")
+        ->group(cliHiddenGroup);
 
     auto *initRunOption = commandParser.add_option("--init-run",
                                                    options.initRunContext,
@@ -52,6 +63,8 @@ auto parseCommandLine(int argc, char *argv[], CommandLineOptions &options) -> in
     containerIDOption->needs(initRunOption);
     initRunOption->excludes(noDBusOption);
     containerIDOption->excludes(noDBusOption);
+    peerSocketOption->needs(noDBusOption);
+    noDBusOption->needs(peerSocketOption);
 
     try {
         commandParser.parse(argc, argv);
@@ -162,22 +175,37 @@ auto runDaemonMode(ocppi::cli::CLI &cli, const CommandLineOptions &options) -> i
     } else {
         LogI("Running linglong package manager without dbus daemon...");
 
-        auto *server = new QDBusServer("unix:path=/tmp/linglong-package-manager.socket",
-                                       QCoreApplication::instance());
+        const auto peerSocket = std::filesystem::path{ options.peerSocket };
+        const auto serverAddress = "unix:path=" + options.peerSocket;
+        auto *server =
+          new QDBusServer(QString::fromStdString(serverAddress), QCoreApplication::instance());
         if (!server->isConnected()) {
             LogE("listen on socket: {}", server->lastError().message().toStdString());
             return -1;
         }
-        QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, []() {
-            if (QDir::root().remove("/tmp/linglong-package-manager.socket")) {
-                return;
-            }
-            LogE("failed to remove /tmp/linglong-package-manager.socket.");
+
+        auto *startupTimer = new QTimer(server);
+        startupTimer->setSingleShot(true);
+        QObject::connect(startupTimer, &QTimer::timeout, []() {
+            LogW("peer package manager was not connected before startup timeout");
+            QCoreApplication::quit();
         });
+        startupTimer->start(std::chrono::seconds{ 10 });
+
+        QObject::connect(QCoreApplication::instance(),
+                         &QCoreApplication::aboutToQuit,
+                         [peerSocket] {
+                             std::error_code ec;
+                             std::filesystem::remove(peerSocket, ec);
+                             if (ec) {
+                                 LogE("failed to remove {}: {}", peerSocket.string(), ec.message());
+                             }
+                         });
 
         QObject::connect(server,
                          &QDBusServer::newConnection,
-                         [packageManagerPtr](QDBusConnection conn) {
+                         [packageManagerPtr, startupTimer](QDBusConnection conn) {
+                             startupTimer->stop();
                              auto res = linglong::common::dbus::registerDBusObject(
                                conn,
                                "/org/deepin/linglong/PackageManager1",
@@ -193,6 +221,15 @@ auto runDaemonMode(ocppi::cli::CLI &cli, const CommandLineOptions &options) -> i
                                                     conn,
                                                     "/org/deepin/linglong/PackageManager1");
                                               });
+                             auto connected = conn.connect("",
+                                                           "/org/freedesktop/DBus/Local",
+                                                           "org.freedesktop.DBus.Local",
+                                                           "Disconnected",
+                                                           QCoreApplication::instance(),
+                                                           SLOT(quit()));
+                             if (!connected) {
+                                 LogW("failed to connect to Disconnected signal for peer mode");
+                             }
                          });
     }
 
@@ -225,6 +262,8 @@ auto runInitRunMode(ocppi::cli::CLI &cli, const CommandLineOptions &options) -> 
 
 auto main(int argc, char *argv[]) -> int
 {
+    ::umask(packageManagerUmask);
+
     QCoreApplication app(argc, argv);
 
     linglong::common::global::applicationInitialize();

@@ -1,30 +1,26 @@
 /*
- * SPDX-FileCopyrightText: 2025 UnionTech Software Technology Co., Ltd.
+ * SPDX-FileCopyrightText: 2025 - 2026 UnionTech Software Technology Co., Ltd.
  *
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
 
 #include "hooks.h"
 
+#include "cmd.h"
 #include "configure.h"
-#include "linglong/common/error.h"
-#include "linglong/utils/env.h"
+#include "linglong/common/strings.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/log/log.h"
 
 #include <fmt/format.h>
 
 #include <array>
-#include <climits>
-#include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <optional>
+#include <string_view>
+#include <utility>
 #include <vector>
-
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace linglong::utils {
 
@@ -33,58 +29,61 @@ constexpr std::string_view PRE_INSTALL_ACTION_PREFIX = "ll-pre-install=";
 constexpr std::string_view POST_INSTALL_ACTION_PREFIX = "ll-post-install=";
 constexpr std::string_view POST_UNINSTALL_ACTION_PREFIX = "ll-post-uninstall=";
 
-// This function ensures the command string is safely wrapped for 'sh -c'.
-static std::string escapeAndWrapCommandForShell(const std::string &command)
+using CommandList = const std::vector<std::string> &;
+
+namespace {
+
+constexpr std::string_view WHITESPACE_CHARS = " \t\n\r\f\v";
+
+} // namespace
+
+utils::error::Result<std::optional<std::string>>
+details::parseInstallHookCommandLine(std::string_view line, std::string_view prefix)
 {
-    std::string escapedCommand = command;
-    size_t pos = 0;
-    // Replace ' with '\'' (close current quote, add literal single quote, open new quote)
-    while ((pos = escapedCommand.find('\'', pos)) != std::string::npos) {
-        escapedCommand.replace(pos, 1, "'\\''");
-        pos += 4;
+    LINGLONG_TRACE("Parsing install hook command line");
+
+    line = common::strings::trim_left(line, WHITESPACE_CHARS);
+    if (!common::strings::starts_with(line, prefix)) {
+        return std::optional<std::string>{};
     }
 
-    return "sh -c " + escapedCommand;
-}
+    auto command = common::strings::trim_left(line.substr(prefix.size()), WHITESPACE_CHARS);
+    if (command.empty()) {
+        return std::optional<std::string>{ std::string{} };
+    }
 
-using CommandList = const std::vector<std::string> &;
+    const auto quote = command.front();
+    if (quote != '"' && quote != '\'') {
+        return std::optional<std::string>{ std::string(command) };
+    }
+
+    command.remove_prefix(1);
+
+    auto suffix = common::strings::trim_right(command, WHITESPACE_CHARS);
+    if (suffix.empty() || suffix.back() != quote) {
+        return LINGLONG_ERR("Invalid install hook command: unterminated quoted command");
+    }
+
+    suffix.remove_suffix(1);
+    return std::optional<std::string>{ std::string(suffix) };
+}
 
 utils::error::Result<void> executeHookCommands(
   CommandList commands, const std::vector<std::pair<std::string, std::string>> &envVars) noexcept
 {
-    LINGLONG_TRACE("Executing command");
+    LINGLONG_TRACE("Executing hook commands");
 
-    std::vector<std::unique_ptr<EnvironmentVariableGuard>> envVarGuards;
-    envVarGuards.reserve(envVars.size());
-    for (const auto &pair : envVars) {
-        envVarGuards.emplace_back(
-          std::make_unique<EnvironmentVariableGuard>(pair.first, pair.second));
-    }
+    for (const auto &command : commands) {
+        Cmd cmd("sh");
 
-    for (const auto &command_raw : commands) {
-        std::string fullCommand = escapeAndWrapCommandForShell(command_raw);
-
-        int ret = std::system(fullCommand.c_str());
-
-        if (ret == -1) {
-            return LINGLONG_ERR(fmt::format("Failed to execute command: '{}'. System error: {}.",
-                                            fullCommand,
-                                            common::error::errorString(errno)));
+        for (const auto &[name, value] : envVars) {
+            cmd.setEnv(name, value);
         }
 
-        if (!WIFEXITED(ret)) {
-            int signalNum = WTERMSIG(ret);
-            return LINGLONG_ERR(fmt::format("Command '{}' terminated by signal {} ({}).",
-                                            fullCommand,
-                                            signalNum,
-                                            strsignal(signalNum)));
-        }
-
-        int exitStatus = WEXITSTATUS(ret);
-        if (exitStatus != 0) {
-            return LINGLONG_ERR(fmt::format("Command '{}' exited with non-zero status: {}.",
-                                            fullCommand,
-                                            exitStatus));
+        auto result = cmd.exec({ "-c", command });
+        if (!result.has_value()) {
+            return LINGLONG_ERR(
+              fmt::format("Hook command '{}' failed: {}.", command, result.error()));
         }
     }
     return LINGLONG_OK;
@@ -114,26 +113,31 @@ utils::error::Result<void> InstallHookManager::parseInstallHooks()
             return LINGLONG_ERR(fmt::format("Couldn't open file: {}", entry.path()));
         }
 
+        const std::array<std::pair<std::string_view, std::vector<std::string> *>, 3> hookRules = {
+            { { PRE_INSTALL_ACTION_PREFIX, &preInstallCommands },
+              { POST_INSTALL_ACTION_PREFIX, &postInstallCommands },
+              { POST_UNINSTALL_ACTION_PREFIX, &postUninstallCommands } }
+        };
+
         std::string line;
+        std::size_t lineNumber = 0;
         while (std::getline(file, line)) {
-            std::size_t pos = line.find(PRE_INSTALL_ACTION_PREFIX);
-            if (pos != std::string::npos) {
-                preInstallCommands.emplace_back(
-                  line.substr(pos + PRE_INSTALL_ACTION_PREFIX.length()));
-                break;
-            }
+            ++lineNumber;
 
-            pos = line.find(POST_INSTALL_ACTION_PREFIX);
-            if (pos != std::string::npos) {
-                postInstallCommands.emplace_back(
-                  line.substr(pos + POST_INSTALL_ACTION_PREFIX.length()));
-                break;
-            }
+            for (auto [prefix, commands] : hookRules) {
+                auto command = details::parseInstallHookCommandLine(line, prefix);
+                if (!command.has_value()) {
+                    return LINGLONG_ERR(fmt::format("Invalid install hook command in {}:{}",
+                                                    entry.path().string(),
+                                                    lineNumber),
+                                        command);
+                }
 
-            pos = line.find(POST_UNINSTALL_ACTION_PREFIX);
-            if (pos != std::string::npos) {
-                postUninstallCommands.emplace_back(
-                  line.substr(pos + POST_UNINSTALL_ACTION_PREFIX.length()));
+                if (!command->has_value()) {
+                    continue;
+                }
+
+                commands->emplace_back(std::move(**command));
                 break;
             }
         }
@@ -142,7 +146,8 @@ utils::error::Result<void> InstallHookManager::parseInstallHooks()
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> InstallHookManager::executeInstallHooks(int fd) noexcept
+utils::error::Result<void>
+InstallHookManager::executeInstallHooks(const std::filesystem::path &path) noexcept
 {
     LINGLONG_TRACE("Executing pre-install hooks.");
 
@@ -150,23 +155,8 @@ utils::error::Result<void> InstallHookManager::executeInstallHooks(int fd) noexc
         return LINGLONG_OK;
     }
 
-    // Convert fd into a specific path using /proc/pid/fd/fd_num
-    std::ostringstream oss;
-    oss << "/proc/" << getpid() << "/fd/" << fd;
-
-    std::array<char, PATH_MAX + 1> pathBuf{};
-    auto size = readlink(oss.str().c_str(), pathBuf.data(), PATH_MAX);
-
-    if (size == -1) {
-        return LINGLONG_ERR(fmt::format("Failed to read file link for fd {}: {}",
-                                        fd,
-                                        common::error::errorString(errno)));
-    }
-
-    pathBuf[size] = '\0';
-    std::string uabPath = pathBuf.data();
-
-    std::vector<std::pair<std::string, std::string>> envVars = { { "LINGLONG_UAB_PATH", uabPath } };
+    const std::vector<std::pair<std::string, std::string>> envVars = { { "LINGLONG_UAB_PATH",
+                                                                         path.string() } };
 
     return executeHookCommands(preInstallCommands, envVars);
 }

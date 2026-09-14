@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2025-2026 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2025 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
@@ -14,27 +14,39 @@
 
 namespace linglong::service {
 
+namespace {
+
+bool containsRef(const PackageUpdateAction::RefsToInstall &refs,
+                 const package::Reference &ref) noexcept
+{
+    return std::any_of(refs.begin(), refs.end(), [&ref](const auto &item) {
+        return item.first.reference == ref;
+    });
+}
+
+} // namespace
+
 std::shared_ptr<PackageUpdateAction>
 PackageUpdateAction::create(std::vector<api::types::v1::PackageManager1Package> toUpgrade,
-                            bool appOnly,
                             bool depsOnly,
+                            bool noAutoPrune,
                             PackageManager &pm,
                             repo::OSTreeRepo &repo)
 {
-    auto p = new PackageUpdateAction(std::move(toUpgrade), appOnly, depsOnly, pm, repo);
+    auto p = new PackageUpdateAction(std::move(toUpgrade), depsOnly, noAutoPrune, pm, repo);
     return std::shared_ptr<PackageUpdateAction>(p);
 }
 
 PackageUpdateAction::PackageUpdateAction(
   std::vector<api::types::v1::PackageManager1Package> toUpgrade,
-  bool appOnly,
   bool depsOnly,
+  bool noAutoPrune,
   PackageManager &pm,
   repo::OSTreeRepo &repo)
     : Action(pm, repo, api::types::v1::CommonOptions{})
     , toUpgrade(std::move(toUpgrade))
-    , appOnly(appOnly)
     , depsOnly(depsOnly)
+    , noAutoPrune(noAutoPrune)
     , taskTotalSize(0)
     , taskNeededSize(0)
     , taskFetchedSize(0)
@@ -92,7 +104,14 @@ utils::error::Result<void> PackageUpdateAction::doAction(PackageTask &task)
         return LINGLONG_ERR(res.error());
     }
 
-    return postUpdate(task);
+    auto postUpdateRet = postUpdate(task);
+    if (!postUpdateRet) {
+        return LINGLONG_ERR(postUpdateRet.error());
+    }
+
+    task.updateState(linglong::api::types::v1::State::Succeed, "Update applications success");
+
+    return LINGLONG_OK;
 }
 
 utils::error::Result<void> PackageUpdateAction::update(PackageTask &task)
@@ -100,7 +119,7 @@ utils::error::Result<void> PackageUpdateAction::update(PackageTask &task)
     LINGLONG_TRACE("package update");
 
     DataMonitor monitor(5, 1, [this, &task](DataMonitor &m) {
-        task.updateMessage(
+        task.updateStateMessage(
           fmt::format("{} {:>9}", taskMessage, fmt::format("[{}]", m.getHumanSpeed())));
     });
 
@@ -123,9 +142,11 @@ utils::error::Result<void> PackageUpdateAction::update(PackageTask &task)
             return LINGLONG_ERR("task was cancelled");
         }
 
-        auto res = updateApp(task, app, appOnly, depsOnly);
+        auto res = updateApp(task, app, depsOnly);
         if (!res) {
             LogW("failed to update app {}: {}", app.id, res.error());
+            task.sendMessage(
+              fmt::format("failed to update app {}: {}", app.id, res.error().message()));
             continue;
         }
         monitor.pause(true);
@@ -137,8 +158,6 @@ utils::error::Result<void> PackageUpdateAction::update(PackageTask &task)
                             utils::error::ErrorCode::AppUpgradeFailed);
     }
 
-    task.updateState(linglong::api::types::v1::State::Succeed, "Update applications success");
-
     return LINGLONG_OK;
 }
 
@@ -146,9 +165,11 @@ utils::error::Result<void> PackageUpdateAction::postUpdate([[maybe_unused]] Task
 {
     LINGLONG_TRACE("package update postUpdate");
 
-    auto res = repo.mergeModules();
-    if (!res) {
-        LogE("failed to merge modules: {}", res.error());
+    if (repositoryChanged) {
+        auto pruneRet = noAutoPrune ? repo.prune() : pm.pruneUnused();
+        if (!pruneRet) {
+            LogE("failed to prune after update: {}", pruneRet.error());
+        }
     }
 
     return LINGLONG_OK;
@@ -156,11 +177,9 @@ utils::error::Result<void> PackageUpdateAction::postUpdate([[maybe_unused]] Task
 
 utils::error::Result<void> PackageUpdateAction::updateApp(Task &task,
                                                           const api::types::v1::PackageInfoV2 &app,
-                                                          bool appOnly,
                                                           bool depsOnly)
 {
-    LINGLONG_TRACE(
-      fmt::format("update app: {} appOnly: {} depsOnly: {}", app.id, appOnly, depsOnly));
+    LINGLONG_TRACE(fmt::format("update app: {} depsOnly: {}", app.id, depsOnly));
 
     // reset task status
     taskTotalSize = 0;
@@ -200,11 +219,9 @@ utils::error::Result<void> PackageUpdateAction::updateApp(Task &task,
         newAppInfo = std::move(info).value();
     }
 
-    if (!appOnly) {
-        auto res = gatherAppDepsToUpgrade(refsToInstall, newAppInfo ? newAppInfo.value() : app);
-        if (!res) {
-            return LINGLONG_ERR(res);
-        }
+    auto res = gatherAppDepsToUpgrade(refsToInstall, newAppInfo ? newAppInfo.value() : app);
+    if (!res) {
+        return LINGLONG_ERR(res);
     }
 
     for (const auto &[refRepo, modules] : refsToInstall) {
@@ -235,18 +252,36 @@ utils::error::Result<void> PackageUpdateAction::updateApp(Task &task,
     for (const auto &[refRepo, modules] : refsToInstall) {
         for (const auto &[module, meta] : modules) {
             taskMessage = fmt::format("Updating {}/{}", refRepo.reference.toString(), module);
-            task.updateMessage(taskMessage);
+            task.updateStateMessage(taskMessage);
             auto res = pm.installRefModule(task, refRepo, module);
             if (!res) {
                 return LINGLONG_ERR(res);
             }
+            repositoryChanged = true;
         }
     }
 
-    if (!depsOnly && newAppInfo) {
-        auto res = postUpdateApp(task, *localRef, refsToInstall.front().first);
-        if (!res) {
-            return LINGLONG_ERR(res);
+    if (!refsToInstall.empty()) {
+        auto merged = repo.mergeModules();
+        if (!merged) {
+            LogE("failed to merge modules: {}", merged.error());
+        }
+
+        if (!depsOnly && newAppInfo) {
+            auto res = postUpdateApp(task, *localRef, refsToInstall.front().first);
+            if (!res) {
+                return LINGLONG_ERR(res);
+            }
+        }
+
+        for (const auto &item : refsToInstall) {
+            const auto &refRepo = item.first;
+            auto hooks = pm.executePostInstallHooks(refRepo.reference);
+            if (!hooks) {
+                LogW("failed to execute post-install hooks for {}: {}",
+                     refRepo.reference.toString(),
+                     hooks.error());
+            }
         }
     }
 
@@ -287,6 +322,10 @@ PackageUpdateAction::gatherRefsToUpdate(RefsToInstall &refsToInstall,
 
     if (res->has_value()) {
         const auto &[remoteRef, modules] = res->value();
+        if (containsRef(refsToInstall, remoteRef.reference)) {
+            return LINGLONG_OK;
+        }
+
         std::vector<std::pair<std::string, repo::RefMetaData>> modulePairs;
         // fetch package info only once for the same ref
         bool fetchPackageInfo = true;
@@ -379,7 +418,11 @@ utils::error::Result<void> PackageUpdateAction::gatherDepsToUpdate(RefsToInstall
         }
     }
 
-    std::move(tmp.begin(), tmp.end(), std::back_inserter(refsToInstall));
+    for (auto &item : tmp) {
+        if (!containsRef(refsToInstall, item.first.reference)) {
+            refsToInstall.emplace_back(std::move(item));
+        }
+    }
     return LINGLONG_OK;
 }
 

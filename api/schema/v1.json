@@ -294,8 +294,7 @@
       "required": [
         "version",
         "package",
-        "build",
-        "base"
+        "build"
       ],
       "properties": {
         "version": {
@@ -622,6 +621,10 @@
         "mirror_enabled": {
           "type": "boolean",
           "description": "whether mirror is enabled for this repo"
+        },
+        "region": {
+          "type": "string",
+          "description": "region code for mirror selection, e.g. CN, US"
         }
       }
     },
@@ -890,6 +893,10 @@
         "force": {
           "description": "force to overwrite",
           "type": "boolean"
+        },
+        "noAutoPrune": {
+          "description": "do not automatically remove unused dependencies",
+          "type": "boolean"
         }
       }
     },
@@ -954,6 +961,28 @@
         "Failed",
         "Canceled"
       ]
+    },
+    "TaskState": {
+      "description": "complete state information of a task",
+      "type": "object",
+      "required": [
+        "state",
+        "progress",
+        "message"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/State"
+        },
+        "progress": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "message": {
+          "type": "string"
+        }
+      }
     },
     "PackageManager1InstallLayerFDResult": {
       "$ref": "#/$defs/CommonResult"
@@ -1034,8 +1063,7 @@
       "description": "package manager update result",
       "required": [
         "packages",
-        "depsOnly",
-        "appOnly"
+        "depsOnly"
       ],
       "properties": {
         "packages": {
@@ -1049,9 +1077,9 @@
           "type": "boolean",
           "description": "upgrade dependencies only"
         },
-        "appOnly": {
+        "noAutoPrune": {
           "type": "boolean",
-          "description": "upgrade applications only"
+          "description": "do not automatically remove unused dependencies"
         }
       }
     },
@@ -1457,6 +1485,30 @@
         },
         "disable_xdp": {
           "type": "boolean"
+        },
+        "enable_pipewire": {
+          "type": "boolean"
+        },
+        "enable_atspi": {
+          "type": "boolean"
+        },
+        "mounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mount"
+          }
+        },
+        "instances": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RuntimeConfigure"
+          }
+        },
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -1491,6 +1543,9 @@
         "overlayfs": {
           "type": "string"
         },
+        "resolvConf": {
+          "type": "string"
+        },
         "timezone": {
           "type": "string"
         },
@@ -1498,6 +1553,21 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/CDIDeviceEntry"
+          }
+        },
+        "instance": {
+          "type": "string"
+        },
+        "mounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mount"
+          }
+        },
+        "hostDynamic": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mount"
           }
         }
       }
@@ -1545,6 +1615,34 @@
       "enum": [
         "passthru"
       ]
+    },
+    "Mount": {
+      "type": "object",
+      "required": [
+        "destination",
+        "source",
+        "type"
+      ],
+      "properties": {
+        "destination": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "src_type": {
+          "type": "string"
+        }
+      }
     }
   },
   "type": "object",
@@ -1627,6 +1725,9 @@
     "State": {
       "$ref": "#/$defs/State"
     },
+    "TaskState": {
+      "$ref": "#/$defs/TaskState"
+    },
     "PackageManager1InstallLayerFDResult": {
       "$ref": "#/$defs/PackageManager1InstallLayerFDResult"
     },
@@ -1698,6 +1799,9 @@
     },
     "DeviceOption": {
       "$ref": "#/$defs/DeviceOption"
+    },
+    "Mount": {
+      "$ref": "#/$defs/Mount"
     }
   }
 }

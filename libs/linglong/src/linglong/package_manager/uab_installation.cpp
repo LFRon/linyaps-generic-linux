@@ -4,7 +4,10 @@
 
 #include "uab_installation.h"
 
+#include "linglong/utils/finally/finally.h"
 #include "linglong/utils/log/log.h"
+
+#include <unistd.h>
 
 namespace linglong::service {
 
@@ -26,59 +29,6 @@ splitUABLayers(std::vector<linglong::api::types::v1::UabLayer> layers)
     layers.erase(it, layers.end());
 
     return std::make_pair(std::move(layers), std::move(otherLayers));
-}
-
-// executable mode includes app layers and optional runtime layers
-utils::error::Result<UabInstallationAction::CheckedLayers>
-UabInstallationAction::checkExecModeUABLayers(
-  repo::OSTreeRepo &repo, const std::vector<linglong::api::types::v1::UabLayer> &layers)
-{
-    LINGLONG_TRACE("check exec mode uab layers");
-
-    auto splitLayers = splitUABLayers(layers);
-    const auto &appLayers = splitLayers.first;
-    const auto &otherLayers = splitLayers.second;
-
-    if (appLayers.empty()) {
-        return LINGLONG_ERR("no app layers found");
-    }
-
-    const auto &appInfo = appLayers.front().info;
-    if (appInfo.runtime) {
-        if (otherLayers.empty()) {
-            return LINGLONG_ERR("runtime layer not found");
-        }
-
-        auto runtimeRef = package::Reference::fromPackageInfo(otherLayers.front().info);
-        if (!runtimeRef) {
-            return LINGLONG_ERR(runtimeRef);
-        }
-
-        auto fuzzyRef = package::FuzzyReference::parse(*appInfo.runtime);
-        if (!fuzzyRef) {
-            return LINGLONG_ERR(fuzzyRef);
-        }
-
-        if (fuzzyRef->id != runtimeRef->id || appInfo.channel != runtimeRef->channel) {
-            return LINGLONG_ERR("runtime layer not matched");
-        }
-
-        if (fuzzyRef->version) {
-            if (!runtimeRef->version.semanticMatch(*fuzzyRef->version)) {
-                return LINGLONG_ERR("runtime layer version not matched");
-            }
-        }
-    }
-
-    if (auto res = checkUABLayersConstrain(repo, appLayers); !res) {
-        return LINGLONG_ERR(res);
-    }
-
-    if (auto res = checkUABLayersConstrain(repo, otherLayers); !res) {
-        return LINGLONG_ERR(res);
-    }
-
-    return splitLayers;
 }
 
 // distribution mode includes one or more module layers from a single package
@@ -146,12 +96,7 @@ utils::error::Result<void> UabInstallationAction::checkUABLayersConstrain(
             return LINGLONG_ERR(fuzzyRef);
         }
 
-        auto localRef = repo.clearReference(*fuzzyRef,
-                                            {
-                                              .forceRemote = false,
-                                              .fallbackToRemote = false,
-                                              .semanticMatching = false,
-                                            });
+        auto localRef = repo.clearReferenceLocal(*fuzzyRef);
 
         auto version = package::Version::parse(front.version);
         if (!version) {
@@ -194,13 +139,17 @@ utils::error::Result<void> UabInstallationAction::prepare()
 {
     LINGLONG_TRACE("uab installation prepare");
 
-    if (this->uabFile) {
-        return LINGLONG_OK;
-    }
+    taskName = "installing uab";
+    return LINGLONG_OK;
+}
 
-    auto uabFileRet = package::UABFile::loadFromFile(fd);
+utils::error::Result<void> UabInstallationAction::loadUABFile(const std::filesystem::path &path)
+{
+    LINGLONG_TRACE("load staged uab file");
+
+    auto uabFileRet = package::UABFile::loadFromFile(path);
     if (!uabFileRet) {
-        return LINGLONG_ERR(fmt::format("failed to load uab file from fd {}", fd), uabFileRet);
+        return LINGLONG_ERR(fmt::format("failed to load staged uab file {}", path), uabFileRet);
     }
     auto uabFile = std::move(uabFileRet).value();
 
@@ -218,33 +167,55 @@ utils::error::Result<void> UabInstallationAction::prepare()
     }
     const auto &metaInfo = metaInfoRet->get();
 
-    if (metaInfo.onlyApp && *metaInfo.onlyApp) {
-        auto res = checkExecModeUABLayers(repo, metaInfo.layers);
-        if (!res) {
-            return LINGLONG_ERR(res);
-        }
-        checkedLayers = std::move(res).value();
-    } else {
-        auto res = checkDistributionModeUABLayers(repo, metaInfo.layers);
-        if (!res) {
-            return LINGLONG_ERR(res);
-        }
-        checkedLayers = std::move(res).value();
+    if (metaInfo.onlyApp.value_or(false)) {
+        return LINGLONG_ERR("executable UAB installation is not supported");
     }
 
-    this->taskName = fmt::format("installing uab");
+    auto layersRet = checkDistributionModeUABLayers(repo, metaInfo.layers);
+    if (!layersRet) {
+        return LINGLONG_ERR(layersRet);
+    }
+    checkedLayers = std::move(layersRet).value();
+
     this->uabFile = std::move(uabFile);
 
     return LINGLONG_OK;
+}
+
+utils::error::Result<void> UabInstallationAction::prepareUAB()
+{
+    LINGLONG_TRACE("prepare staged uab file");
+
+    auto stagedFileRet = pm.copyToStaging(fd);
+    if (!stagedFileRet) {
+        return LINGLONG_ERR(stagedFileRet);
+    }
+    auto stagedFile = std::move(stagedFileRet).value();
+
+    auto ret = pm.executeInstallHooks(stagedFile);
+    if (!ret) {
+        return LINGLONG_ERR(ret);
+    }
+
+    uabMountPoint = stagedFile;
+    uabMountPoint += ".unpack";
+    uabMountPoint /= "unpack";
+
+    return loadUABFile(stagedFile);
 }
 
 utils::error::Result<void> UabInstallationAction::doAction(PackageTask &task)
 {
     LINGLONG_TRACE("uab installation action");
 
-    if (!uabFile) {
-        return LINGLONG_ERR("action not prepared");
-    }
+    auto cleanupStaging = utils::finally::finally([this] {
+        // Unmount the bundle before removing its staging directory.
+        uabFile.reset();
+        auto ret = pm.cleanStaging();
+        if (!ret) {
+            LogW("failed to clean staging directory: {}", ret.error());
+        }
+    });
 
     auto ret = preInstall(task);
     if (!ret) {
@@ -263,10 +234,18 @@ utils::error::Result<void> UabInstallationAction::preInstall(PackageTask &task)
 {
     LINGLONG_TRACE("uab installation preInstall");
 
+    task.updateState(linglong::api::types::v1::State::Processing, "preparing uab");
+
+    auto ret = prepareUAB();
+    if (!ret) {
+        return ret;
+    }
+
     task.updateState(linglong::api::types::v1::State::Processing, "installing uab");
 
     const auto &toCheck = checkedLayers.first.empty() ? checkedLayers.second : checkedLayers.first;
-    auto operation = getActionOperation(toCheck.front().info, extraModuleOnly(toCheck));
+    installingExtraModulesOnly = extraModuleOnly(toCheck);
+    auto operation = getActionOperation(toCheck.front().info, installingExtraModulesOnly);
     if (!operation) {
         return LINGLONG_ERR(operation);
     }
@@ -288,7 +267,9 @@ utils::error::Result<void> UabInstallationAction::preInstall(PackageTask &task)
             .localRef = operation->oldRef->toString(),
             .remoteRef = operation->newRef->reference.toString()
         };
-        if (!task.waitConfirm(api::types::v1::InteractionMessageType::Upgrade, additionalMessage)) {
+        if (!task.requestInteraction(api::types::v1::InteractionMessageType::Upgrade,
+                                     additionalMessage)) {
+            task.Cancel();
             return LINGLONG_ERR("action canceled");
         }
     }
@@ -304,20 +285,14 @@ utils::error::Result<void> UabInstallationAction::install([[maybe_unused]] Packa
 
     task.updateProgress(10);
 
-    auto mountPoint = uabFile->unpack();
-    if (!mountPoint) {
-        return LINGLONG_ERR(mountPoint);
+    auto ret = uabFile->unpack(uabMountPoint);
+    if (!ret) {
+        return LINGLONG_ERR(ret);
     }
-    uabMountPoint = std::move(mountPoint).value();
 
     task.updateProgress(15);
 
-    const auto &metaInfo = uabFile->getMetaInfo()->get();
-    if (metaInfo.onlyApp && *metaInfo.onlyApp) {
-        return installExecModeUAB(task);
-    } else {
-        return installDistributionModeUAB(task);
-    }
+    return installDistributionModeUAB(task);
 }
 
 utils::error::Result<void> UabInstallationAction::postInstall(PackageTask &task)
@@ -327,32 +302,59 @@ utils::error::Result<void> UabInstallationAction::postInstall(PackageTask &task)
     const auto &newRef = operation.newRef->reference;
     const auto &oldRef = operation.oldRef;
 
-    auto res = repo.mergeModules();
-    if (!res) {
-        LogE("merge modules failed: {}", res.error());
-    }
-
-    auto ret = pm.executePostInstallHooks(newRef);
-    if (!ret) {
-        task.reportError(std::move(ret).error());
-        return LINGLONG_ERR("failed to execute post install hooks");
+    auto merged = repo.mergeModules();
+    if (!merged) {
+        LogE("merge modules failed: {}", merged.error());
     }
 
     if (operation.kind == "app") {
-        auto res = oldRef ? pm.switchAppVersion(*oldRef, newRef, true) : pm.applyApp(newRef);
-        if (!res) {
-            return LINGLONG_ERR(res);
+        if (installingExtraModulesOnly) {
+            for (const auto &layer : checkedLayers.first) {
+                if (layer.info.kind != "app") {
+                    continue;
+                }
+                auto res = pm.applyApp(newRef, layer.info.packageInfoV2Module);
+                if (!res) {
+                    return LINGLONG_ERR(res);
+                }
+            }
+        } else {
+            auto res = oldRef ? pm.switchAppVersion(*oldRef, newRef, true) : pm.applyApp(newRef);
+            if (!res) {
+                return LINGLONG_ERR(res);
+            }
         }
     }
 
+    auto ret = pm.executePostInstallHooks(newRef);
+
+    transaction.addRollBack([this, ref = newRef]() noexcept {
+        auto ret = pm.executePostUninstallHooks(ref);
+        if (!ret) {
+            LogE("failed to compensate post-install hooks for {}: {}", ref.toString(), ret.error());
+        }
+    });
+
+    if (!ret) {
+        LogW("failed to execute post-install hooks for {}: {}", newRef.toString(), ret.error());
+    }
+
     transaction.commit();
+
+    if (operation.kind == "app" && operation.oldRef && !installingExtraModulesOnly) {
+        auto pruneRet = options.noAutoPrune.value_or(false) ? repo.prune() : pm.pruneUnused();
+        if (!pruneRet) {
+            LogE("failed to prune after installing {}: {}", newRef.toString(), pruneRet.error());
+        }
+    }
+
     task.updateState(linglong::api::types::v1::State::Succeed, "install uab successfully");
 
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> UabInstallationAction::installUabLayer(
-  const std::vector<api::types::v1::UabLayer> &layers, std::optional<std::string> subRef)
+utils::error::Result<void>
+UabInstallationAction::installUabLayer(const std::vector<api::types::v1::UabLayer> &layers)
 {
     LINGLONG_TRACE("install uab layers from single package");
 
@@ -371,7 +373,7 @@ utils::error::Result<void> UabInstallationAction::installUabLayer(
         }
 
         std::vector<std::filesystem::path> overlays;
-        auto signPath = uabFile->extractSignData();
+        auto signPath = uabFile->extractSignData(uabMountPoint.parent_path() / "sign-data");
         if (!signPath) {
             return LINGLONG_ERR(signPath);
         }
@@ -384,10 +386,12 @@ utils::error::Result<void> UabInstallationAction::installUabLayer(
             return LINGLONG_ERR(ref);
         }
 
-        auto ret = this->repo.importLayerDir(package::LayerDir{ layerDirPath }, overlays, subRef);
+        auto ret = this->repo.importLayerDir(package::LayerDir{ layerDirPath }, overlays);
         if (!ret) {
             return LINGLONG_ERR(ret);
         }
+
+        this->repo.exportLayerSignData(*ret);
 
         std::for_each(overlays.begin(), overlays.end(), [](const std::filesystem::path &dir) {
             std::error_code ec;
@@ -396,64 +400,13 @@ utils::error::Result<void> UabInstallationAction::installUabLayer(
             }
         });
 
-        transaction.addRollBack([this,
-                                 ref = std::move(ref).value(),
-                                 module = layer.info.packageInfoV2Module,
-                                 subRef]() noexcept {
-            auto ret = this->repo.remove(ref, module, subRef);
-            if (!ret) {
-                LogE("rollback importLayerDir failed: {}", ret.error());
-            }
-
-            ret = pm.executePostUninstallHooks(ref);
-            if (!ret) {
-                LogE("failed to rollback execute uninstall hooks: {}", ret.error());
-            }
-        });
-    }
-
-    return LINGLONG_OK;
-}
-
-utils::error::Result<void> UabInstallationAction::installExecModeUAB(PackageTask &task)
-{
-    LINGLONG_TRACE("install exec mode uab");
-
-    const auto &appLayers = checkedLayers.first;
-    const auto &appInfo = appLayers.front().info;
-
-    auto res = pm.installDependsRef(task, appInfo.base, appInfo.channel);
-    if (!res) {
-        return LINGLONG_ERR(res);
-    }
-
-    task.updateProgress(25);
-
-    if (appInfo.runtime) {
-        const auto &otherLayers = checkedLayers.second;
-        auto fuzzyRef = package::FuzzyReference::parse(*appInfo.runtime);
-        if (!fuzzyRef) {
-            return LINGLONG_ERR(fuzzyRef);
-        }
-
-        auto satisfiedRef = repo.latestLocalReference(*fuzzyRef);
-        // no compatible runtime found in local, install the one from the UAB file, the
-        // runtime is identified by a uuid, so it is exclusively usable by the currently
-        // installed application
-        if (!satisfiedRef) {
-            auto metaInfo = uabFile->getMetaInfo()->get();
-            auto res = installUabLayer(otherLayers, metaInfo.uuid);
-            if (!res) {
-                return LINGLONG_ERR(res);
-            }
-        }
-    }
-
-    task.updateProgress(35);
-
-    res = installUabLayer(appLayers);
-    if (!res) {
-        return LINGLONG_ERR(res);
+        transaction.addRollBack(
+          [this, ref = std::move(ref).value(), module = layer.info.packageInfoV2Module]() noexcept {
+              auto ret = this->repo.remove(ref, module);
+              if (!ret) {
+                  LogE("rollback importLayerDir failed: {}", ret.error());
+              }
+          });
     }
 
     return LINGLONG_OK;

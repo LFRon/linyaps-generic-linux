@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "../../common/tempdir.h"
+#include "linglong/cli/cli.h"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/package/fuzzy_reference.h"
 #include "linglong/repo/ostree_repo.h"
@@ -22,9 +23,27 @@ using ::testing::Return;
 
 namespace {
 
-using RunContext = linglong::runtime::RunContext;
 using RuntimeLayer = linglong::runtime::RuntimeLayer;
 using ResolveOptions = linglong::runtime::ResolveOptions;
+
+class TestRunContext final : public linglong::runtime::RunContext
+{
+public:
+    using linglong::runtime::RunContext::RunContext;
+
+protected:
+    auto selectOverlayMode(utils::OverlayMode requestedMode) const
+      -> utils::error::Result<utils::OverlayMode> override
+    {
+        if (requestedMode == utils::OverlayMode::Auto) {
+            return utils::OverlayMode::FUSE;
+        }
+
+        return requestedMode;
+    }
+};
+
+using RunContext = TestRunContext;
 
 std::string specChecksum(const std::filesystem::path &path)
 {
@@ -53,26 +72,27 @@ public:
 
     MOCK_METHOD(utils::error::Result<api::types::v1::RepositoryCacheLayersItem>,
                 getLayerItem,
-                (const package::Reference &ref,
-                 std::string module,
-                 const std::optional<std::string> &subRef),
+                (const package::Reference &ref, std::string module),
                 (override, const, noexcept));
     MOCK_METHOD(utils::error::Result<package::LayerDir>,
                 getMergedModuleDir,
-                (const package::Reference &ref,
-                 bool fallbackLayerDir,
-                 const std::optional<std::string> &subRef),
+                (const package::Reference &ref, bool fallbackLayerDir),
                 (override, const, noexcept));
     MOCK_METHOD(utils::error::Result<package::LayerDir>,
+                getLayerDir,
+                (const package::Reference &ref, const std::string &module),
+                (override, const, noexcept));
+    MOCK_METHOD(utils::error::Result<package::TempLayerDir>,
                 createTempMergedModuleDir,
                 (const package::Reference &ref, const std::vector<std::string> &modules),
                 (override, const, noexcept));
+    MOCK_METHOD(std::vector<std::string>,
+                getModuleList,
+                (const package::Reference &ref),
+                (override, const, noexcept));
     MOCK_METHOD(utils::error::Result<package::Reference>,
-                clearReference,
-                (const package::FuzzyReference &fuzzy,
-                 const repo::clearReferenceOption &opts,
-                 const std::string &module,
-                 const std::optional<std::string> &repo),
+                clearReferenceLocal,
+                (const package::FuzzyReference &fuzzy, bool semanticMatching),
                 (override, const, noexcept));
 };
 
@@ -109,7 +129,7 @@ TEST_F(RunContextTest, layerExist)
     mockItem.info.channel = "stable";
     mockItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_)).WillOnce(Return(mockItem));
 
     // Create runtime layer
     RunContext context(*this->repo);
@@ -126,7 +146,7 @@ TEST_F(RunContextTest, layerNotExist)
     ASSERT_TRUE(ref.has_value()) << "Failed to create reference: " << ref.error().message();
 
     // Mock failed layer item retrieval (layer doesn't exist)
-    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_, testing::_))
+    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_))
       .WillOnce(Return(LINGLONG_ERR("Layer not found")));
 
     // Attempt to create runtime layer
@@ -151,12 +171,13 @@ TEST_F(RunContextTest, resolveBinaryModule)
     mockItem.info.channel = "stable";
     mockItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getModuleList(*ref))
+      .WillOnce(Return(std::vector<std::string>{ "binary", "develop" }));
 
     // Mock successful layer directory retrieval for binary module
-    package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(testing::_, true, testing::_))
-      .WillOnce(Return(mockLayerDir));
+    package::LayerDir mockLayerDir(tempDir->path() / "binary");
+    EXPECT_CALL(*repo, getLayerDir(testing::_, "binary")).WillOnce(Return(mockLayerDir));
 
     // Create runtime layer
     RunContext context(*this->repo);
@@ -164,7 +185,7 @@ TEST_F(RunContextTest, resolveBinaryModule)
     ASSERT_TRUE(layer.has_value()) << "Failed to create runtime layer: " << layer.error().message();
 
     // Test resolving binary module
-    auto result = layer->resolveLayer({ "binary" });
+    auto result = layer->resolveLayer(std::vector<std::string>{ "binary" });
     ASSERT_TRUE(result.has_value())
       << "Failed to resolve binary module: " << result.error().message();
 
@@ -186,14 +207,18 @@ TEST_F(RunContextTest, resolveMultiModules)
     mockItem.info.channel = "stable";
     mockItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getModuleList(*ref))
+      .WillOnce(Return(std::vector<std::string>{ "binary", "debug", "develop" }));
 
     // Mock successful merged module directory retrieval for multiple modules
-    package::LayerDir mockLayerDir(tempDir->path() / "merged");
+    const auto mockLayerPath = tempDir->path() / "merged";
     EXPECT_CALL(
       *repo,
       createTempMergedModuleDir(testing::_, std::vector<std::string>{ "binary", "debug" }))
-      .WillOnce(Return(mockLayerDir));
+      .WillOnce([mockLayerPath](const auto &, const auto &) {
+          return package::TempLayerDir{ mockLayerPath };
+      });
 
     // Create runtime layer
     RunContext context(*this->repo);
@@ -201,7 +226,7 @@ TEST_F(RunContextTest, resolveMultiModules)
     ASSERT_TRUE(layer.has_value()) << "Failed to create runtime layer: " << layer.error().message();
 
     // Test resolving multiple modules
-    auto result = layer->resolveLayer({ "binary", "debug" });
+    auto result = layer->resolveLayer(std::vector<std::string>{ "binary", "debug" });
     ASSERT_TRUE(result.has_value())
       << "Failed to resolve multiple modules: " << result.error().message();
 
@@ -209,41 +234,134 @@ TEST_F(RunContextTest, resolveMultiModules)
     EXPECT_TRUE(layer->getLayerDir().has_value());
 }
 
-TEST_F(RunContextTest, resolveSubRef)
+TEST_F(RunContextTest, resolveExcludeModules)
 {
-    // Create a valid reference
-    auto ref = package::Reference::parse("stable:org.example.subref/1.0.0/x86_64");
+    auto ref = package::Reference::parse("stable:org.example.exclude/1.0.0/x86_64");
     ASSERT_TRUE(ref.has_value()) << "Failed to create reference: " << ref.error().message();
 
-    // Mock successful layer item retrieval
     api::types::v1::RepositoryCacheLayersItem mockItem;
-    mockItem.info.id = "org.example.subref";
+    mockItem.info.id = "org.example.exclude";
     mockItem.info.version = "1.0.0";
-    mockItem.info.kind = "app";
+    mockItem.info.kind = "base";
     mockItem.info.channel = "stable";
     mockItem.info.arch = { std::string{ "x86_64" } };
-    mockItem.info.uuid = "test-uuid-12345";
 
-    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getModuleList(*ref))
+      .WillOnce(Return(std::vector<std::string>{ "binary", "develop", "lang_zh" }));
 
-    // Mock successful layer directory retrieval with sub-reference
-    package::LayerDir mockLayerDir(tempDir->path() / "merged");
+    const auto mockLayerPath = tempDir->path() / "exclude-develop";
     EXPECT_CALL(
       *repo,
-      getMergedModuleDir(testing::_, "binary", std::optional<std::string>("test-uuid-12345")))
-      .WillOnce(Return(mockLayerDir));
+      createTempMergedModuleDir(testing::_, std::vector<std::string>{ "binary", "lang_zh" }))
+      .WillOnce([mockLayerPath](const auto &, const auto &) {
+          return package::TempLayerDir{ mockLayerPath };
+      });
 
-    // Create runtime layer
     RunContext context(*this->repo);
     auto layer = RuntimeLayer::create(*ref, context);
     ASSERT_TRUE(layer.has_value()) << "Failed to create runtime layer: " << layer.error().message();
 
-    // Test resolving with sub-reference
-    auto result = layer->resolveLayer({}, "test-uuid-12345");
+    auto result = layer->resolveLayer(std::nullopt, std::vector<std::string>{ "develop" });
     ASSERT_TRUE(result.has_value())
-      << "Failed to resolve layer with sub-ref: " << result.error().message();
+      << "Failed to resolve excluding modules: " << result.error().message();
 
-    // Verify layer directory is set
+    EXPECT_TRUE(layer->getLayerDir().has_value());
+}
+
+TEST_F(RunContextTest, resolveExcludeModulesReturnsTempMergeError)
+{
+    LINGLONG_TRACE("resolveExcludeModulesReturnsTempMergeError");
+
+    auto ref = package::Reference::parse("stable:org.example.exclude-error/1.0.0/x86_64");
+    ASSERT_TRUE(ref.has_value()) << "Failed to create reference: " << ref.error().message();
+
+    api::types::v1::RepositoryCacheLayersItem mockItem;
+    mockItem.info.id = "org.example.exclude-error";
+    mockItem.info.version = "1.0.0";
+    mockItem.info.kind = "base";
+    mockItem.info.channel = "stable";
+    mockItem.info.arch = { std::string{ "x86_64" } };
+
+    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getModuleList(*ref))
+      .WillOnce(Return(std::vector<std::string>{ "binary", "develop", "lang_zh" }));
+    EXPECT_CALL(
+      *repo,
+      createTempMergedModuleDir(testing::_, std::vector<std::string>{ "binary", "lang_zh" }))
+      .WillOnce(Return(LINGLONG_ERR("merge failed")));
+
+    RunContext context(*this->repo);
+    auto layer = RuntimeLayer::create(*ref, context);
+    ASSERT_TRUE(layer.has_value()) << "Failed to create runtime layer: " << layer.error().message();
+
+    auto result = layer->resolveLayer(std::nullopt, std::vector<std::string>{ "develop" });
+    EXPECT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().message().find("merge failed") != std::string::npos);
+    EXPECT_FALSE(layer->getLayerDir().has_value());
+}
+
+TEST_F(RunContextTest, resolveExcludeModulesSameAsInstalledUsesMergedDir)
+{
+    auto ref = package::Reference::parse("stable:org.example.same/1.0.0/x86_64");
+    ASSERT_TRUE(ref.has_value()) << "Failed to create reference: " << ref.error().message();
+
+    api::types::v1::RepositoryCacheLayersItem mockItem;
+    mockItem.info.id = "org.example.same";
+    mockItem.info.version = "1.0.0";
+    mockItem.info.kind = "base";
+    mockItem.info.channel = "stable";
+    mockItem.info.arch = { std::string{ "x86_64" } };
+
+    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getModuleList(*ref))
+      .WillOnce(Return(std::vector<std::string>{ "binary", "lang_zh" }));
+
+    package::LayerDir mockLayerDir(tempDir->path() / "merged");
+    EXPECT_CALL(*repo, getMergedModuleDir(testing::_, true)).WillOnce(Return(mockLayerDir));
+    EXPECT_CALL(*repo, createTempMergedModuleDir(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*repo, getLayerDir(testing::_, testing::_)).Times(0);
+
+    RunContext context(*this->repo);
+    auto layer = RuntimeLayer::create(*ref, context);
+    ASSERT_TRUE(layer.has_value()) << "Failed to create runtime layer: " << layer.error().message();
+
+    auto result = layer->resolveLayer(std::nullopt, std::vector<std::string>{ "develop" });
+    ASSERT_TRUE(result.has_value())
+      << "Failed to resolve excluding modules: " << result.error().message();
+
+    EXPECT_TRUE(layer->getLayerDir().has_value());
+}
+
+TEST_F(RunContextTest, resolveIncludeModulesSameAsInstalledUsesMergedDir)
+{
+    auto ref = package::Reference::parse("stable:org.example.include/1.0.0/x86_64");
+    ASSERT_TRUE(ref.has_value()) << "Failed to create reference: " << ref.error().message();
+
+    api::types::v1::RepositoryCacheLayersItem mockItem;
+    mockItem.info.id = "org.example.include";
+    mockItem.info.version = "1.0.0";
+    mockItem.info.kind = "base";
+    mockItem.info.channel = "stable";
+    mockItem.info.arch = { std::string{ "x86_64" } };
+
+    EXPECT_CALL(*repo, getLayerItem(testing::_, testing::_)).WillOnce(Return(mockItem));
+    EXPECT_CALL(*repo, getModuleList(*ref))
+      .WillOnce(Return(std::vector<std::string>{ "binary", "lang_zh" }));
+
+    package::LayerDir mockLayerDir(tempDir->path() / "merged");
+    EXPECT_CALL(*repo, getMergedModuleDir(testing::_, true)).WillOnce(Return(mockLayerDir));
+    EXPECT_CALL(*repo, createTempMergedModuleDir(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*repo, getLayerDir(testing::_, testing::_)).Times(0);
+
+    RunContext context(*this->repo);
+    auto layer = RuntimeLayer::create(*ref, context);
+    ASSERT_TRUE(layer.has_value()) << "Failed to create runtime layer: " << layer.error().message();
+
+    auto result = layer->resolveLayer(std::vector<std::string>{ "lang_zh", "binary" });
+    ASSERT_TRUE(result.has_value())
+      << "Failed to resolve including modules: " << result.error().message();
+
     EXPECT_TRUE(layer->getLayerDir().has_value());
 }
 
@@ -287,22 +405,20 @@ TEST_F(RunContextTest, resolveRunnableWithApp)
     baseItem.info.channel = "stable";
     baseItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_, testing::_))
-      .WillOnce(Return(appItem));
-    EXPECT_CALL(*repo, clearReference(testing::_, testing::_, testing::_, testing::_))
+    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_)).WillOnce(Return(appItem));
+    EXPECT_CALL(*repo, clearReferenceLocal(testing::_, testing::_))
       .WillOnce(Return(*runtimeRef))
       .WillOnce(Return(*baseRef));
 
-    EXPECT_CALL(*repo, getLayerItem(*runtimeRef, testing::_, testing::_))
-      .WillOnce(Return(runtimeItem));
-    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*runtimeRef, testing::_)).WillOnce(Return(runtimeItem));
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
 
     package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(*runnableRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*runnableRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*runtimeRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*runtimeRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     RunContext context(*this->repo);
@@ -343,17 +459,15 @@ TEST_F(RunContextTest, resolveRunnableWithRuntime)
     baseItem.info.channel = "stable";
     baseItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_, testing::_))
-      .WillOnce(Return(runtimeItem));
-    EXPECT_CALL(*repo, clearReference(testing::_, testing::_, testing::_, testing::_))
-      .WillOnce(Return(*baseRef));
+    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_)).WillOnce(Return(runtimeItem));
+    EXPECT_CALL(*repo, clearReferenceLocal(testing::_, testing::_)).WillOnce(Return(*baseRef));
 
-    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
 
     package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(*runnableRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*runnableRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     RunContext context(*this->repo);
@@ -380,11 +494,10 @@ TEST_F(RunContextTest, resolveRunnableWithBase)
     baseItem.info.channel = "stable";
     baseItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_, testing::_))
-      .WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_)).WillOnce(Return(baseItem));
 
     package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(*runnableRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*runnableRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     RunContext context(*this->repo);
@@ -394,6 +507,8 @@ TEST_F(RunContextTest, resolveRunnableWithBase)
     EXPECT_FALSE(context.getAppLayer().has_value());
     EXPECT_FALSE(context.getRuntimeLayer().has_value());
     EXPECT_TRUE(context.getBaseLayer().has_value());
+    ASSERT_TRUE(context.getConfig().overlayfs.has_value());
+    EXPECT_EQ(*context.getConfig().overlayfs, "fuse");
 }
 
 TEST_F(RunContextTest, resolveRunnableWithInvalidKind)
@@ -411,8 +526,7 @@ TEST_F(RunContextTest, resolveRunnableWithInvalidKind)
     invalidItem.info.channel = "stable";
     invalidItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_, testing::_))
-      .WillOnce(Return(invalidItem));
+    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_)).WillOnce(Return(invalidItem));
 
     RunContext context(*this->repo);
     auto result = context.resolve(*runnableRef);
@@ -472,28 +586,25 @@ TEST_F(RunContextTest, toConfig)
     extensionItem.info.channel = "stable";
     extensionItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_, testing::_))
-      .WillOnce(Return(appItem));
-    EXPECT_CALL(*repo, clearReference(testing::_, testing::_, testing::_, testing::_))
+    EXPECT_CALL(*repo, getLayerItem(*runnableRef, testing::_)).WillOnce(Return(appItem));
+    EXPECT_CALL(*repo, clearReferenceLocal(testing::_, testing::_))
       .Times(AtLeast(2))
       .WillOnce(Return(*runtimeRef))
       .WillOnce(Return(*baseRef))
       .WillOnce(Return(*extensionRef));
 
-    EXPECT_CALL(*repo, getLayerItem(*runtimeRef, testing::_, testing::_))
-      .WillOnce(Return(runtimeItem));
-    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_, testing::_)).WillOnce(Return(baseItem));
-    EXPECT_CALL(*repo, getLayerItem(*extensionRef, testing::_, testing::_))
-      .WillOnce(Return(extensionItem));
+    EXPECT_CALL(*repo, getLayerItem(*runtimeRef, testing::_)).WillOnce(Return(runtimeItem));
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*extensionRef, testing::_)).WillOnce(Return(extensionItem));
 
     package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(*runnableRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*runnableRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*runtimeRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*runtimeRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*extensionRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*extensionRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     RunContext context(*this->repo);
@@ -538,6 +649,10 @@ TEST_F(RunContextTest, resolveFromConfig)
     config.base = baseRef->toString();
     config.runtime = runtimeRef->toString();
     config.app = appRef->toString();
+    config.resolvConf = "/run/systemd/resolve/stub-resolv.conf";
+    config.hostDynamic = std::vector<api::types::v1::Mount>{
+        { .destination = "/etc/hosts", .source = "/etc/hosts", .srcType = "file", .type = "bind" },
+    };
     config.extensions = std::map<std::string, std::vector<std::string>>{
         { appRef->toString(), std::vector<std::string>{ extensionRef->toString() } }
     };
@@ -570,21 +685,19 @@ TEST_F(RunContextTest, resolveFromConfig)
     extensionItem.info.channel = "stable";
     extensionItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_, testing::_)).WillOnce(Return(baseItem));
-    EXPECT_CALL(*repo, getLayerItem(*runtimeRef, testing::_, testing::_))
-      .WillOnce(Return(runtimeItem));
-    EXPECT_CALL(*repo, getLayerItem(*appRef, testing::_, testing::_)).WillOnce(Return(appItem));
-    EXPECT_CALL(*repo, getLayerItem(*extensionRef, testing::_, testing::_))
-      .WillOnce(Return(extensionItem));
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*runtimeRef, testing::_)).WillOnce(Return(runtimeItem));
+    EXPECT_CALL(*repo, getLayerItem(*appRef, testing::_)).WillOnce(Return(appItem));
+    EXPECT_CALL(*repo, getLayerItem(*extensionRef, testing::_)).WillOnce(Return(extensionItem));
 
     package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*runtimeRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*runtimeRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*appRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*appRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
-    EXPECT_CALL(*repo, getMergedModuleDir(*extensionRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*extensionRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     RunContext context(*this->repo);
@@ -599,6 +712,12 @@ TEST_F(RunContextTest, resolveFromConfig)
     EXPECT_EQ(retConfig.runtime.value(), runtimeRef->toString());
     EXPECT_TRUE(retConfig.app.has_value());
     EXPECT_EQ(retConfig.app.value(), appRef->toString());
+    ASSERT_TRUE(retConfig.resolvConf.has_value());
+    EXPECT_EQ(*retConfig.resolvConf, "/run/systemd/resolve/stub-resolv.conf");
+    ASSERT_TRUE(retConfig.hostDynamic.has_value());
+    ASSERT_EQ(retConfig.hostDynamic->size(), 1);
+    EXPECT_EQ(retConfig.hostDynamic->front().destination, "/etc/hosts");
+    EXPECT_EQ(retConfig.hostDynamic->front().srcType, "file");
     ASSERT_TRUE(retConfig.extensions.has_value());
     ASSERT_FALSE(retConfig.extensions->empty());
     ASSERT_EQ(retConfig.extensions->size(), 1);
@@ -630,10 +749,10 @@ TEST_F(RunContextTest, resolveFromConfigBaseOnly)
     baseItem.info.channel = "stable";
     baseItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
 
     package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     RunContext context(*this->repo);
@@ -661,10 +780,10 @@ TEST_F(RunContextTest, resolveWithCDIDevicesInOptions)
     baseItem.info.channel = "stable";
     baseItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
 
     package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     const auto specPath = tempDir->path() / "vendor.yaml";
@@ -703,8 +822,8 @@ devices:
     EXPECT_EQ(retConfig.cdiDevices->at(0).spec.path, specPath.string());
     EXPECT_FALSE(retConfig.cdiDevices->at(0).spec.checksum.empty());
 
-    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_, testing::_)).WillOnce(Return(baseItem));
-    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     RunContext restored(*this->repo);
@@ -732,10 +851,10 @@ TEST_F(RunContextTest, cdiEnvPreservesEqualsInValue)
     baseItem.info.channel = "stable";
     baseItem.info.arch = { std::string{ "x86_64" } };
 
-    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
 
     package::LayerDir mockLayerDir(tempDir->path() / "merged");
-    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_, testing::_))
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
       .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
 
     const auto specPath = tempDir->path() / "vendor-env.yaml";
@@ -800,6 +919,218 @@ TEST_F(RunContextTest, resolveFromConfigVersionMismatch)
     auto result = context.resolve(config);
     ASSERT_FALSE(result.has_value()) << "Expected resolve to fail for version mismatch";
     EXPECT_THAT(result.error().message(), ::testing::HasSubstr("version mismatch"));
+}
+
+TEST(ResolveOptionsTest, ApplyRuntimeConfigSetsExtDefs)
+{
+    ResolveOptions opts;
+
+    api::types::v1::RuntimeConfigure runtimeConfig;
+    runtimeConfig.extDefs = std::map<std::string, std::vector<api::types::v1::ExtensionDefine>>{
+        { "org.deepin.base",
+          { api::types::v1::ExtensionDefine{
+            .directory = "/opt/extensions/test",
+            .name = "test-extension",
+            .version = "1.0.0",
+          } } }
+    };
+
+    auto result = opts.applyRuntimeConfig(runtimeConfig);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(opts.externalExtensionDefs.has_value());
+    EXPECT_EQ(opts.externalExtensionDefs->size(), 1);
+}
+
+TEST(ResolveOptionsTest, ApplyRuntimeConfigSetsMounts)
+{
+    ResolveOptions opts;
+
+    api::types::v1::RuntimeConfigure runtimeConfig;
+    runtimeConfig.mounts = std::vector<api::types::v1::Mount>{
+        { .destination = "/tmp/test",
+          .options = std::vector<std::string>{ "rw", "rbind" },
+          .source = "/host/tmp",
+          .type = "bind" },
+    };
+
+    auto result = opts.applyRuntimeConfig(runtimeConfig);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(opts.mounts.has_value());
+    EXPECT_EQ(opts.mounts->size(), 1);
+    EXPECT_EQ(opts.mounts->at(0).destination, "/tmp/test");
+    EXPECT_EQ(opts.mounts->at(0).source, "/host/tmp");
+}
+
+TEST(ResolveOptionsTest, ApplyOptionsSetsEmptyRuntimeConfigCdiDevices)
+{
+    TempDir tempDir;
+    const auto specPath = tempDir.path() / "nvidia.yaml";
+    std::ofstream spec(specPath);
+    spec << R"(cdiVersion: "0.6.0"
+kind: "nvidia.com/gpu"
+devices:
+  - name: "all"
+    containerEdits:
+      env:
+        - "NVIDIA_VISIBLE_DEVICES=all"
+)";
+    spec.close();
+
+    ResolveOptions opts;
+
+    api::types::v1::RuntimeConfigure runtimeConfig;
+    runtimeConfig.devices = std::vector<std::string>{};
+    cli::RunOptions runOptions;
+    runOptions.cdiSpecDir = { tempDir.path().string() };
+
+    auto result = opts.applyOptions(runtimeConfig, runOptions);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(opts.cdiDevices.has_value());
+    EXPECT_TRUE(opts.cdiDevices->empty());
+}
+
+TEST(ResolveOptionsTest, ApplyOptionsRejectsInvalidRuntimeConfigCdiDeviceFormat)
+{
+    ResolveOptions opts;
+
+    api::types::v1::RuntimeConfigure runtimeConfig;
+    runtimeConfig.devices = std::vector<std::string>{ "invalid-device" };
+    cli::RunOptions runOptions;
+
+    auto result = opts.applyOptions(runtimeConfig, runOptions);
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("invalid device format"));
+}
+
+TEST(ResolveOptionsTest, ApplyOptionsUsesCliCdiSpecDirsForRuntimeConfigCdiDevices)
+{
+    TempDir tempDir;
+    const auto specPath = tempDir.path() / "vendor.yaml";
+    std::ofstream spec(specPath);
+    spec << R"(cdiVersion: "0.6.0"
+kind: "vendor.com/device"
+devices:
+  - name: "gpu0"
+    containerEdits:
+      env:
+        - "FOO=GPU0"
+  - name: "gpu1"
+    containerEdits:
+      env:
+        - "FOO=GPU1"
+)";
+    spec.close();
+
+    ResolveOptions opts;
+
+    api::types::v1::RuntimeConfigure runtimeConfig;
+    runtimeConfig.devices = std::vector<std::string>{ "vendor.com/device=gpu0" };
+
+    cli::RunOptions runOptions;
+    runOptions.cdiSpecDir = { tempDir.path().string() };
+
+    auto result = opts.applyOptions(runtimeConfig, runOptions);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(opts.cdiDevices.has_value());
+    ASSERT_EQ(opts.cdiDevices->size(), 1);
+    EXPECT_EQ(opts.cdiDevices->at(0).name, "gpu0");
+}
+
+TEST(ResolveOptionsTest, ApplyOptionsCliCdiDevicesOverrideRuntimeConfigCdiDevices)
+{
+    TempDir tempDir;
+    const auto specPath = tempDir.path() / "vendor.yaml";
+    std::ofstream spec(specPath);
+    spec << R"(cdiVersion: "0.6.0"
+kind: "vendor.com/device"
+devices:
+  - name: "gpu0"
+    containerEdits:
+      env:
+        - "FOO=GPU0"
+  - name: "gpu1"
+    containerEdits:
+      env:
+        - "FOO=GPU1"
+)";
+    spec.close();
+
+    ResolveOptions opts;
+
+    api::types::v1::RuntimeConfigure runtimeConfig;
+    runtimeConfig.devices = std::vector<std::string>{ "vendor.com/device=gpu0" };
+
+    cli::RunOptions runOptions;
+    runOptions.cdiSpecDir = { tempDir.path().string() };
+    runOptions.cdiDevices = { "vendor.com/device=gpu1" };
+
+    auto result = opts.applyOptions(runtimeConfig, runOptions);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(opts.cdiDevices.has_value());
+    ASSERT_EQ(opts.cdiDevices->size(), 1);
+    EXPECT_EQ(opts.cdiDevices->at(0).name, "gpu1");
+}
+
+TEST(ResolveOptionsTest, ApplyOptionsAutoDetectsNvidiaCdiDevice)
+{
+    TempDir tempDir;
+    const auto specPath = tempDir.path() / "nvidia.yaml";
+    std::ofstream spec(specPath);
+    spec << R"(cdiVersion: "0.6.0"
+kind: "nvidia.com/gpu"
+devices:
+  - name: "all"
+    containerEdits:
+      env:
+        - "NVIDIA_VISIBLE_DEVICES=all"
+)";
+    spec.close();
+
+    ResolveOptions opts;
+
+    cli::RunOptions runOptions;
+    runOptions.cdiSpecDir = { tempDir.path().string() };
+
+    auto result = opts.applyOptions(std::nullopt, runOptions);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(opts.cdiDevices.has_value());
+    ASSERT_EQ(opts.cdiDevices->size(), 1);
+    EXPECT_EQ(opts.cdiDevices->at(0).kind, "nvidia.com/gpu");
+    EXPECT_EQ(opts.cdiDevices->at(0).name, "all");
+}
+
+TEST(ResolveOptionsTest, ApplyCliRunOptionsSetsFields)
+{
+    ResolveOptions opts;
+
+    cli::RunOptions runOptions;
+    runOptions.base = "org.deepin.base/23.0.0";
+    runOptions.runtime = "org.deepin.runtime/23.0.0";
+    runOptions.extensions = { "org.deepin.extension1", "org.deepin.extension2" };
+    runOptions.instance = "test-instance";
+    runOptions.cdiSpecDir = { "/tmp/cdi" };
+
+    auto result = opts.applyCliRunOptions(runOptions);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(opts.baseRef.value(), "org.deepin.base/23.0.0");
+    EXPECT_EQ(opts.cdiSpecDirs, std::vector<std::string>{ "/tmp/cdi" });
+    EXPECT_EQ(opts.runtimeRef.value(), "org.deepin.runtime/23.0.0");
+    ASSERT_TRUE(opts.extensionRefs.has_value());
+    EXPECT_EQ(opts.extensionRefs->size(), 2);
+    EXPECT_EQ(opts.instance.value(), "test-instance");
+}
+
+TEST(ResolveOptionsTest, ApplyCliRunOptionsSkipsEmptyExtensions)
+{
+    ResolveOptions opts;
+
+    cli::RunOptions runOptions;
+    runOptions.base = "org.deepin.base/23.0.0";
+
+    auto result = opts.applyCliRunOptions(runOptions);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(opts.baseRef.value(), "org.deepin.base/23.0.0");
+    EXPECT_FALSE(opts.extensionRefs.has_value());
 }
 
 } // namespace

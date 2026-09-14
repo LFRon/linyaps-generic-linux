@@ -6,6 +6,7 @@
 
 #include "../../common/tempdir.h"
 #include "linglong/api/types/v1/Generators.hpp"
+#include "linglong/utils/env.h"
 #include "linglong/utils/log/log.h"
 #include "linglong/utils/runtime_config.h"
 
@@ -17,6 +18,8 @@ namespace fs = std::filesystem;
 using namespace linglong::api::types::v1;
 using namespace linglong::utils;
 
+using linglong::utils::EnvironmentVariableGuard;
+
 TEST(RuntimeConfigTest, LoadFromPath)
 {
     TempDir tempDir;
@@ -25,6 +28,8 @@ TEST(RuntimeConfigTest, LoadFromPath)
 
     RuntimeConfigure config;
     config.disableXdp = true;
+    config.enablePipewire = true;
+    config.enableAtspi = true;
     config.deviceMode = std::vector<DeviceOption>{ DeviceOption::Passthru };
     config.env =
       std::map<std::string, std::string>{ { "PATH", "/usr/bin" }, { "HOME", "/home/user" } };
@@ -81,6 +86,9 @@ TEST(RuntimeConfigTest, MergeConfigs)
     RuntimeConfigure config1;
     config1.disableXdp = false;
     config1.deviceMode = std::vector<DeviceOption>{ DeviceOption::Passthru };
+    config1.enablePipewire = false;
+    config1.enableAtspi = false;
+    config1.devices = std::vector<std::string>{ "vendor.com/device=gpu0" };
     config1.env =
       std::map<std::string, std::string>{ { "PATH", "/usr/bin" }, { "HOME", "/home/user1" } };
 
@@ -94,6 +102,9 @@ TEST(RuntimeConfigTest, MergeConfigs)
     RuntimeConfigure config2;
     config2.disableXdp = true;
     config2.deviceMode = std::vector<DeviceOption>{ DeviceOption::Passthru };
+    config2.enablePipewire = true;
+    config2.enableAtspi = true;
+    config2.devices = std::vector<std::string>{ "vendor.com/device=gpu1" };
     config2.env =
       std::map<std::string, std::string>{ { "PATH", "/usr/local/bin" }, { "USER", "testuser" } };
 
@@ -110,6 +121,10 @@ TEST(RuntimeConfigTest, MergeConfigs)
     std::vector<RuntimeConfigure> configs = { config1, config2 };
     auto merged = linglong::utils::MergeRuntimeConfig(configs);
 
+    ASSERT_TRUE(merged.enablePipewire.has_value());
+    EXPECT_TRUE(*merged.enablePipewire);
+    ASSERT_TRUE(merged.enableAtspi.has_value());
+    EXPECT_TRUE(*merged.enableAtspi);
     ASSERT_TRUE(merged.disableXdp.has_value());
     EXPECT_TRUE(*merged.disableXdp);
 
@@ -117,6 +132,11 @@ TEST(RuntimeConfigTest, MergeConfigs)
     EXPECT_EQ(merged.deviceMode->size(), 2);
     EXPECT_EQ(merged.deviceMode->at(0), DeviceOption::Passthru);
     EXPECT_EQ(merged.deviceMode->at(1), DeviceOption::Passthru);
+
+    ASSERT_TRUE(merged.devices);
+    EXPECT_EQ(merged.devices->size(), 2);
+    EXPECT_EQ(merged.devices->at(0), "vendor.com/device=gpu0");
+    EXPECT_EQ(merged.devices->at(1), "vendor.com/device=gpu1");
 
     // Check environment variables
     ASSERT_TRUE(merged.env);
@@ -144,6 +164,8 @@ TEST(RuntimeConfigTest, MergeEmptyConfigs)
     std::vector<RuntimeConfigure> empty_configs;
     auto merged = linglong::utils::MergeRuntimeConfig(empty_configs);
 
+    EXPECT_FALSE(merged.enablePipewire);
+    EXPECT_FALSE(merged.enableAtspi);
     EXPECT_FALSE(merged.disableXdp);
     EXPECT_FALSE(merged.deviceMode);
     EXPECT_FALSE(merged.env);
@@ -155,6 +177,8 @@ TEST(RuntimeConfigTest, MergePartialConfigs)
     // Config with only env
     RuntimeConfigure config1;
     config1.disableXdp = false;
+    config1.enablePipewire = false;
+    config1.enableAtspi = false;
     config1.deviceMode = std::vector<DeviceOption>{ DeviceOption::Passthru };
     config1.env = std::map<std::string, std::string>{ { "PATH", "/usr/bin" } };
 
@@ -175,6 +199,10 @@ TEST(RuntimeConfigTest, MergePartialConfigs)
     nlohmann::json j;
     linglong::api::types::v1::to_json(j, merged);
     LogD("{}", j.dump());
+    ASSERT_TRUE(merged.enablePipewire.has_value());
+    EXPECT_FALSE(*merged.enablePipewire);
+    ASSERT_TRUE(merged.enableAtspi.has_value());
+    EXPECT_FALSE(*merged.enableAtspi);
 
     ASSERT_TRUE(merged.disableXdp.has_value());
     EXPECT_FALSE(*merged.disableXdp);
@@ -191,4 +219,227 @@ TEST(RuntimeConfigTest, MergePartialConfigs)
     EXPECT_EQ(merged.extDefs->size(), 1);
     EXPECT_EQ(merged.extDefs->at("app").size(), 1);
     EXPECT_EQ(merged.extDefs->at("app")[0].name, "test-ext");
+}
+
+TEST(RuntimeConfigTest, MergeMounts)
+{
+    RuntimeConfigure config1;
+    config1.mounts = std::vector<Mount>{
+        { .destination = "/tmp/a", .source = "/host/a", .type = "bind" },
+    };
+
+    RuntimeConfigure config2;
+    config2.mounts = std::vector<Mount>{
+        { .destination = "/tmp/b", .source = "/host/b", .type = "bind" },
+    };
+
+    std::vector<RuntimeConfigure> configs = { config1, config2 };
+    auto merged = linglong::utils::MergeRuntimeConfig(configs);
+
+    ASSERT_TRUE(merged.mounts.has_value());
+    EXPECT_EQ(merged.mounts->size(), 2);
+    EXPECT_EQ(merged.mounts->at(0).destination, "/tmp/a");
+    EXPECT_EQ(merged.mounts->at(1).destination, "/tmp/b");
+}
+
+TEST(RuntimeConfigTest, MergeInstances)
+{
+    RuntimeConfigure config1;
+    config1.disableXdp = false;
+    config1.instances = std::map<std::string, RuntimeConfigure>{
+        { "dev",
+          RuntimeConfigure{ .disableXdp = true,
+                            .env = std::map<std::string, std::string>{ { "DEBUG", "1" } } } },
+        { "prod", RuntimeConfigure{ .disableXdp = false } },
+    };
+
+    RuntimeConfigure config2;
+    config2.instances = std::map<std::string, RuntimeConfigure>{
+        { "dev",
+          RuntimeConfigure{ .env = std::map<std::string, std::string>{ { "VERBOSE", "1" } } } },
+        { "test", RuntimeConfigure{ .disableXdp = true } },
+    };
+
+    std::vector<RuntimeConfigure> configs = { config1, config2 };
+    auto merged = linglong::utils::MergeRuntimeConfig(configs);
+
+    ASSERT_TRUE(merged.instances.has_value());
+    EXPECT_EQ(merged.instances->size(), 3);
+
+    // dev should be merged recursively
+    auto &devInstance = (*merged.instances)["dev"];
+    EXPECT_TRUE(devInstance.disableXdp.has_value());
+    EXPECT_TRUE(*devInstance.disableXdp);
+    ASSERT_TRUE(devInstance.env.has_value());
+    EXPECT_EQ(devInstance.env->size(), 2);
+    EXPECT_EQ(devInstance.env->at("DEBUG"), "1");
+    EXPECT_EQ(devInstance.env->at("VERBOSE"), "1");
+
+    // prod should be from config1
+    EXPECT_TRUE((*merged.instances)["prod"].disableXdp.has_value());
+    EXPECT_FALSE(*(*merged.instances)["prod"].disableXdp);
+
+    // test should be from config2
+    EXPECT_TRUE((*merged.instances)["test"].disableXdp.has_value());
+    EXPECT_TRUE(*(*merged.instances)["test"].disableXdp);
+}
+
+TEST(RuntimeConfigTest, MergeInstancesWithMounts)
+{
+    RuntimeConfigure config1;
+    config1.mounts = std::vector<Mount>{
+        { .destination = "/tmp/a", .source = "/host/a", .type = "bind" },
+    };
+    config1.instances = std::map<std::string, RuntimeConfigure>{
+        { "dev",
+          RuntimeConfigure{
+            .mounts =
+              std::vector<Mount>{
+                { .destination = "/tmp/instance-a", .source = "/host/instance-a", .type = "bind" },
+              } } },
+    };
+
+    RuntimeConfigure config2;
+    config2.mounts = std::vector<Mount>{
+        { .destination = "/tmp/b", .source = "/host/b", .type = "bind" },
+    };
+    config2.instances = std::map<std::string, RuntimeConfigure>{
+        { "dev",
+          RuntimeConfigure{
+            .mounts =
+              std::vector<Mount>{
+                { .destination = "/tmp/instance-b", .source = "/host/instance-b", .type = "bind" },
+              } } },
+    };
+
+    std::vector<RuntimeConfigure> configs = { config1, config2 };
+    auto merged = linglong::utils::MergeRuntimeConfig(configs);
+
+    // Base mounts should be merged
+    ASSERT_TRUE(merged.mounts.has_value());
+    EXPECT_EQ(merged.mounts->size(), 2);
+    EXPECT_EQ(merged.mounts->at(0).destination, "/tmp/a");
+    EXPECT_EQ(merged.mounts->at(1).destination, "/tmp/b");
+
+    // dev instance mounts should be merged
+    ASSERT_TRUE(merged.instances.has_value());
+    auto &devInstance = (*merged.instances)["dev"];
+    ASSERT_TRUE(devInstance.mounts.has_value());
+    EXPECT_EQ(devInstance.mounts->size(), 2);
+    EXPECT_EQ(devInstance.mounts->at(0).destination, "/tmp/instance-a");
+    EXPECT_EQ(devInstance.mounts->at(1).destination, "/tmp/instance-b");
+}
+
+TEST(RuntimeConfigTest, LoadRuntimeConfigWithInstanceMounts)
+{
+    TempDir tempDir;
+
+    RuntimeConfigure config;
+    config.disableXdp = false;
+    config.mounts = std::vector<Mount>{
+        { .destination = "/tmp/base", .source = "/host/base", .type = "bind" },
+    };
+    config.instances = std::map<std::string, RuntimeConfigure>{
+        { "dev",
+          RuntimeConfigure{
+            .disableXdp = true,
+            .env = std::map<std::string, std::string>{ { "DEBUG", "1" } },
+            .mounts =
+              std::vector<Mount>{
+                { .destination = "/tmp/dev", .source = "/host/dev", .type = "bind" },
+              },
+          } },
+    };
+
+    fs::path configDir = tempDir.path() / "linglong" / "apps" / "test-app";
+    fs::create_directories(configDir);
+
+    fs::path configFile = configDir / "config.json";
+    std::ofstream file(configFile);
+    nlohmann::json j;
+    linglong::api::types::v1::to_json(j, config);
+    file << j.dump();
+    file.close();
+
+    std::vector<std::filesystem::path> configDirs = { tempDir.path() / "linglong" };
+
+    auto loadedDefault = linglong::utils::loadRuntimeConfig(configDirs, "test-app", "");
+    ASSERT_TRUE(loadedDefault.has_value());
+    EXPECT_TRUE(loadedDefault->has_value());
+    auto &defaultConfig = **loadedDefault;
+    EXPECT_FALSE(*defaultConfig.disableXdp);
+    ASSERT_TRUE(defaultConfig.mounts.has_value());
+    EXPECT_EQ(defaultConfig.mounts->size(), 1);
+    EXPECT_EQ(defaultConfig.mounts->at(0).destination, "/tmp/base");
+    EXPECT_FALSE(defaultConfig.instances.has_value());
+
+    auto loadedDev = linglong::utils::loadRuntimeConfig(configDirs, "test-app", "dev");
+    ASSERT_TRUE(loadedDev.has_value());
+    EXPECT_TRUE(loadedDev->has_value());
+    auto &devConfig = **loadedDev;
+    EXPECT_TRUE(*devConfig.disableXdp);
+    ASSERT_TRUE(devConfig.mounts.has_value());
+    EXPECT_EQ(devConfig.mounts->size(), 2);
+    ASSERT_TRUE(devConfig.env.has_value());
+    EXPECT_EQ(devConfig.env->at("DEBUG"), "1");
+    EXPECT_FALSE(devConfig.instances.has_value());
+}
+
+TEST(RuntimeConfigTest, LoadRuntimeConfigWithConfigD)
+{
+    TempDir tempDir;
+
+    RuntimeConfigure config;
+    config.env = std::map<std::string, std::string>{ { "ORDER", "base" } };
+    config.devices = std::vector<std::string>{ "vendor.com/device=base" };
+
+    RuntimeConfigure config10;
+    config10.env = std::map<std::string, std::string>{ { "ORDER", "10" } };
+    config10.devices = std::vector<std::string>{ "vendor.com/device=10" };
+
+    RuntimeConfigure config20;
+    config20.env = std::map<std::string, std::string>{ { "ORDER", "20" }, { "EXTRA", "enabled" } };
+    config20.devices = std::vector<std::string>{ "vendor.com/device=20" };
+
+    fs::path configDir = tempDir.path() / "linglong" / "apps" / "test-config-d";
+    fs::create_directories(configDir / "config.d");
+
+    {
+        std::ofstream file(configDir / "config.json");
+        nlohmann::json j;
+        linglong::api::types::v1::to_json(j, config);
+        file << j.dump();
+    }
+    {
+        std::ofstream file(configDir / "config.d" / "20-runtime.json");
+        nlohmann::json j;
+        linglong::api::types::v1::to_json(j, config20);
+        file << j.dump();
+    }
+    {
+        std::ofstream file(configDir / "config.d" / "10-runtime.json");
+        nlohmann::json j;
+        linglong::api::types::v1::to_json(j, config10);
+        file << j.dump();
+    }
+    {
+        std::ofstream file(configDir / "config.d" / "README");
+        file << "runtime config drop-ins must use the .json suffix";
+    }
+
+    std::vector<std::filesystem::path> configDirs = { tempDir.path() / "linglong" };
+    auto loaded = linglong::utils::loadRuntimeConfig(configDirs, "test-config-d", "");
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_TRUE(loaded->has_value());
+
+    auto &loadedConfig = **loaded;
+    ASSERT_TRUE(loadedConfig.env.has_value());
+    EXPECT_EQ(loadedConfig.env->at("ORDER"), "20");
+    EXPECT_EQ(loadedConfig.env->at("EXTRA"), "enabled");
+
+    ASSERT_TRUE(loadedConfig.devices.has_value());
+    ASSERT_EQ(loadedConfig.devices->size(), 3);
+    EXPECT_EQ(loadedConfig.devices->at(0), "vendor.com/device=base");
+    EXPECT_EQ(loadedConfig.devices->at(1), "vendor.com/device=10");
+    EXPECT_EQ(loadedConfig.devices->at(2), "vendor.com/device=20");
 }

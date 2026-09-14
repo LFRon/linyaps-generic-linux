@@ -23,6 +23,7 @@
 #include "linglong/api/types/v1/Version.hpp"
 #include "linglong/api/types/v1/Sections.hpp"
 #include "linglong/api/types/v1/UabLayer.hpp"
+#include "linglong/api/types/v1/TaskState.hpp"
 #include "linglong/api/types/v1/State.hpp"
 #include "linglong/api/types/v1/RuntimeConfigure.hpp"
 #include "linglong/api/types/v1/RunContextConfig.hpp"
@@ -50,6 +51,7 @@
 #include "linglong/api/types/v1/PackageInfoDisplay.hpp"
 #include "linglong/api/types/v1/PackageInfo.hpp"
 #include "linglong/api/types/v1/OciConfigurationPatch.hpp"
+#include "linglong/api/types/v1/Mount.hpp"
 #include "linglong/api/types/v1/LayerInfo.hpp"
 #include "linglong/api/types/v1/InteractionRequest.hpp"
 #include "linglong/api/types/v1/InteractionReply.hpp"
@@ -173,6 +175,9 @@ void to_json(json & j, const InteractionRequest & x);
 void from_json(const json & j, LayerInfo & x);
 void to_json(json & j, const LayerInfo & x);
 
+void from_json(const json & j, Mount & x);
+void to_json(json & j, const Mount & x);
+
 void from_json(const json & j, OciConfigurationPatch & x);
 void to_json(json & j, const OciConfigurationPatch & x);
 
@@ -250,6 +255,9 @@ void to_json(json & j, const RunContextConfig & x);
 
 void from_json(const json & j, RuntimeConfigure & x);
 void to_json(json & j, const RuntimeConfigure & x);
+
+void from_json(const json & j, TaskState & x);
+void to_json(json & j, const TaskState & x);
 
 void from_json(const json & j, UabLayer & x);
 void to_json(json & j, const UabLayer & x);
@@ -502,7 +510,7 @@ j["version"] = x.version;
 }
 
 inline void from_json(const json & j, BuilderProject& x) {
-x.base = j.at("base").get<std::string>();
+x.base = get_stack_optional<std::string>(j, "base");
 x.build = j.at("build").get<std::string>();
 x.buildext = get_stack_optional<BuilderProjectBuildEXT>(j, "buildext");
 x.command = get_stack_optional<std::vector<std::string>>(j, "command");
@@ -519,7 +527,9 @@ x.version = j.at("version").get<std::string>();
 
 inline void to_json(json & j, const BuilderProject & x) {
 j = json::object();
+if (x.base) {
 j["base"] = x.base;
+}
 j["build"] = x.build;
 if (x.buildext) {
 j["buildext"] = x.buildext;
@@ -591,12 +601,16 @@ j["pid"] = x.pid;
 
 inline void from_json(const json & j, CommonOptions& x) {
 x.force = j.at("force").get<bool>();
+x.noAutoPrune = get_stack_optional<bool>(j, "noAutoPrune");
 x.skipInteraction = j.at("skipInteraction").get<bool>();
 }
 
 inline void to_json(json & j, const CommonOptions & x) {
 j = json::object();
 j["force"] = x.force;
+if (x.noAutoPrune) {
+j["noAutoPrune"] = x.noAutoPrune;
+}
 j["skipInteraction"] = x.skipInteraction;
 }
 
@@ -751,6 +765,27 @@ inline void to_json(json & j, const LayerInfo & x) {
 j = json::object();
 j["info"] = x.info;
 j["version"] = x.version;
+}
+
+inline void from_json(const json & j, Mount& x) {
+x.destination = j.at("destination").get<std::string>();
+x.options = get_stack_optional<std::vector<std::string>>(j, "options");
+x.source = j.at("source").get<std::string>();
+x.srcType = get_stack_optional<std::string>(j, "src_type");
+x.type = j.at("type").get<std::string>();
+}
+
+inline void to_json(json & j, const Mount & x) {
+j = json::object();
+j["destination"] = x.destination;
+if (x.options) {
+j["options"] = x.options;
+}
+j["source"] = x.source;
+if (x.srcType) {
+j["src_type"] = x.srcType;
+}
+j["type"] = x.type;
 }
 
 inline void from_json(const json & j, OciConfigurationPatch& x) {
@@ -1123,15 +1158,17 @@ j["package"] = x.package;
 }
 
 inline void from_json(const json & j, PackageManager1UpdateParameters& x) {
-x.appOnly = j.at("appOnly").get<bool>();
 x.depsOnly = j.at("depsOnly").get<bool>();
+x.noAutoPrune = get_stack_optional<bool>(j, "noAutoPrune");
 x.packages = j.at("packages").get<std::vector<PackageManager1Package>>();
 }
 
 inline void to_json(json & j, const PackageManager1UpdateParameters & x) {
 j = json::object();
-j["appOnly"] = x.appOnly;
 j["depsOnly"] = x.depsOnly;
+if (x.noAutoPrune) {
+j["noAutoPrune"] = x.noAutoPrune;
+}
 j["packages"] = x.packages;
 }
 
@@ -1140,6 +1177,7 @@ x.alias = get_stack_optional<std::string>(j, "alias");
 x.mirrorEnabled = get_stack_optional<bool>(j, "mirror_enabled");
 x.name = j.at("name").get<std::string>();
 x.priority = j.at("priority").get<int64_t>();
+x.region = get_stack_optional<std::string>(j, "region");
 x.url = j.at("url").get<std::string>();
 }
 
@@ -1153,6 +1191,9 @@ j["mirror_enabled"] = x.mirrorEnabled;
 }
 j["name"] = x.name;
 j["priority"] = x.priority;
+if (x.region) {
+j["region"] = x.region;
+}
 j["url"] = x.url;
 }
 
@@ -1244,8 +1285,11 @@ x.app = get_stack_optional<std::string>(j, "app");
 x.base = get_stack_optional<std::string>(j, "base");
 x.cdiDevices = get_stack_optional<std::vector<CdiDeviceEntry>>(j, "cdiDevices");
 x.extensions = get_stack_optional<std::map<std::string, std::vector<std::string>>>(j, "extensions");
-x.hostNvidiaExtension = get_stack_optional<std::string>(j, "hostNvidiaExtension");
+x.hostDynamic = get_stack_optional<std::vector<Mount>>(j, "hostDynamic");
+x.instance = get_stack_optional<std::string>(j, "instance");
+x.mounts = get_stack_optional<std::vector<Mount>>(j, "mounts");
 x.overlayfs = get_stack_optional<std::string>(j, "overlayfs");
+x.resolvConf = get_stack_optional<std::string>(j, "resolvConf");
 x.runtime = get_stack_optional<std::string>(j, "runtime");
 x.timezone = get_stack_optional<std::string>(j, "timezone");
 x.version = j.at("version").get<std::string>();
@@ -1265,11 +1309,20 @@ j["cdiDevices"] = x.cdiDevices;
 if (x.extensions) {
 j["extensions"] = x.extensions;
 }
-if (x.hostNvidiaExtension) {
-j["hostNvidiaExtension"] = x.hostNvidiaExtension;
+if (x.hostDynamic) {
+j["hostDynamic"] = x.hostDynamic;
+}
+if (x.instance) {
+j["instance"] = x.instance;
+}
+if (x.mounts) {
+j["mounts"] = x.mounts;
 }
 if (x.overlayfs) {
 j["overlayfs"] = x.overlayfs;
+}
+if (x.resolvConf) {
+j["resolvConf"] = x.resolvConf;
 }
 if (x.runtime) {
 j["runtime"] = x.runtime;
@@ -1282,9 +1335,14 @@ j["version"] = x.version;
 
 inline void from_json(const json & j, RuntimeConfigure& x) {
 x.deviceMode = get_stack_optional<std::vector<DeviceOption>>(j, "device_mode");
+x.devices = get_stack_optional<std::vector<std::string>>(j, "devices");
 x.disableXdp = get_stack_optional<bool>(j, "disable_xdp");
+x.enableAtspi = get_stack_optional<bool>(j, "enable_atspi");
+x.enablePipewire = get_stack_optional<bool>(j, "enable_pipewire");
 x.env = get_stack_optional<std::map<std::string, std::string>>(j, "env");
 x.extDefs = get_stack_optional<std::map<std::string, std::vector<ExtensionDefine>>>(j, "ext_defs");
+x.instances = get_stack_optional<std::map<std::string, RuntimeConfigure>>(j, "instances");
+x.mounts = get_stack_optional<std::vector<Mount>>(j, "mounts");
 }
 
 inline void to_json(json & j, const RuntimeConfigure & x) {
@@ -1292,8 +1350,17 @@ j = json::object();
 if (x.deviceMode) {
 j["device_mode"] = x.deviceMode;
 }
+if (x.devices) {
+j["devices"] = x.devices;
+}
 if (x.disableXdp) {
 j["disable_xdp"] = x.disableXdp;
+}
+if (x.enableAtspi) {
+j["enable_atspi"] = x.enableAtspi;
+}
+if (x.enablePipewire) {
+j["enable_pipewire"] = x.enablePipewire;
 }
 if (x.env) {
 j["env"] = x.env;
@@ -1301,6 +1368,25 @@ j["env"] = x.env;
 if (x.extDefs) {
 j["ext_defs"] = x.extDefs;
 }
+if (x.instances) {
+j["instances"] = x.instances;
+}
+if (x.mounts) {
+j["mounts"] = x.mounts;
+}
+}
+
+inline void from_json(const json & j, TaskState& x) {
+x.message = j.at("message").get<std::string>();
+x.progress = j.at("progress").get<double>();
+x.state = j.at("state").get<State>();
+}
+
+inline void to_json(json & j, const TaskState & x) {
+j = json::object();
+j["message"] = x.message;
+j["progress"] = x.progress;
+j["state"] = x.state;
 }
 
 inline void from_json(const json & j, UabLayer& x) {
@@ -1384,6 +1470,7 @@ x.interactionMessageType = get_stack_optional<InteractionMessageType>(j, "Intera
 x.interactionReply = get_stack_optional<InteractionReply>(j, "InteractionReply");
 x.interactionRequest = get_stack_optional<InteractionRequest>(j, "InteractionRequest");
 x.layerInfo = get_stack_optional<LayerInfo>(j, "LayerInfo");
+x.mount = get_stack_optional<Mount>(j, "Mount");
 x.ociConfigurationPatch = get_stack_optional<OciConfigurationPatch>(j, "OCIConfigurationPatch");
 x.packageInfo = get_stack_optional<PackageInfo>(j, "PackageInfo");
 x.packageInfoDisplay = get_stack_optional<PackageInfoDisplay>(j, "PackageInfoDisplay");
@@ -1409,6 +1496,7 @@ x.repositoryCache = get_stack_optional<RepositoryCache>(j, "RepositoryCache");
 x.runContextConfig = get_stack_optional<RunContextConfig>(j, "RunContextConfig");
 x.runtimeConfigure = get_stack_optional<RuntimeConfigure>(j, "RuntimeConfigure");
 x.state = get_stack_optional<State>(j, "State");
+x.taskState = get_stack_optional<TaskState>(j, "TaskState");
 x.uabMetaInfo = get_stack_optional<UabMetaInfo>(j, "UABMetaInfo");
 x.upgradeListResult = get_stack_optional<UpgradeListResult>(j, "UpgradeListResult");
 x.xdgDirectoryPermissions = get_stack_optional<std::vector<XdgDirectoryPermission>>(j, "XDGDirectoryPermissions");
@@ -1481,6 +1569,9 @@ j["InteractionRequest"] = x.interactionRequest;
 }
 if (x.layerInfo) {
 j["LayerInfo"] = x.layerInfo;
+}
+if (x.mount) {
+j["Mount"] = x.mount;
 }
 if (x.ociConfigurationPatch) {
 j["OCIConfigurationPatch"] = x.ociConfigurationPatch;
@@ -1557,6 +1648,9 @@ j["RuntimeConfigure"] = x.runtimeConfigure;
 if (x.state) {
 j["State"] = x.state;
 }
+if (x.taskState) {
+j["TaskState"] = x.taskState;
+}
 if (x.uabMetaInfo) {
 j["UABMetaInfo"] = x.uabMetaInfo;
 }
@@ -1570,7 +1664,7 @@ j["XDGDirectoryPermissions"] = x.xdgDirectoryPermissions;
 
 inline void from_json(const json & j, DeviceOption & x) {
 if (j == "passthru") x = DeviceOption::Passthru;
-else { throw std::runtime_error("Input JSON does not conform to schema!"); }
+else { throw std::runtime_error("Cannot deserialize to enumeration \"DeviceOption\""); }
 }
 
 inline void to_json(json & j, const DeviceOption & x) {
@@ -1586,7 +1680,7 @@ else if (j == "Install") x = InteractionMessageType::Install;
 else if (j == "Uninstall") x = InteractionMessageType::Uninstall;
 else if (j == "Unknown") x = InteractionMessageType::Unknown;
 else if (j == "Upgrade") x = InteractionMessageType::Upgrade;
-else { throw std::runtime_error("Input JSON does not conform to schema!"); }
+else { throw std::runtime_error("Cannot deserialize to enumeration \"InteractionMessageType\""); }
 }
 
 inline void to_json(json & j, const InteractionMessageType & x) {
@@ -1608,7 +1702,7 @@ else if (j == "Processing") x = State::Processing;
 else if (j == "Queued") x = State::Queued;
 else if (j == "Succeed") x = State::Succeed;
 else if (j == "Unknown") x = State::Unknown;
-else { throw std::runtime_error("Input JSON does not conform to schema!"); }
+else { throw std::runtime_error("Cannot deserialize to enumeration \"State\""); }
 }
 
 inline void to_json(json & j, const State & x) {
@@ -1626,7 +1720,7 @@ default: throw std::runtime_error("Unexpected value in enumeration \"State\": " 
 
 inline void from_json(const json & j, Version & x) {
 if (j == "1") x = Version::The1;
-else { throw std::runtime_error("Input JSON does not conform to schema!"); }
+else { throw std::runtime_error("Cannot deserialize to enumeration \"Version\""); }
 }
 
 inline void to_json(json & j, const Version & x) {

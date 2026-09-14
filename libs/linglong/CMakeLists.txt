@@ -35,10 +35,10 @@ pfl_add_library(
   src/linglong/cli/printer.h
   src/linglong/cli/terminal_notifier.cpp
   src/linglong/cli/terminal_notifier.h
-  src/linglong/common/dbus/properties_forwarder.cpp
-  src/linglong/common/dbus/properties_forwarder.h
   src/linglong/common/dbus/register.cpp
   src/linglong/common/dbus/register.h
+  src/linglong/common/cli/repo.cpp
+  src/linglong/common/cli/repo.h
   src/linglong/common/formatter.cpp
   src/linglong/common/formatter.h
   src/linglong/common/gkeyfile_wrapper.h
@@ -109,8 +109,6 @@ pfl_add_library(
   src/linglong/runtime/container_builder.h
   src/linglong/runtime/container.cpp
   src/linglong/runtime/container.h
-  src/linglong/runtime/host_nvidia_extension.cpp
-  src/linglong/runtime/host_nvidia_extension.h
   src/linglong/runtime/layer.cpp
   src/linglong/runtime/layer.h
   src/linglong/runtime/overlayfs_driver.cpp

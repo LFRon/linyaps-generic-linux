@@ -1,27 +1,24 @@
-/*
- * SPDX-FileCopyrightText: 2025 - 2026 UnionTech Software Technology Co., Ltd.
- *
+/* SPDX-FileCopyrightText: 2025 - 2026 UnionTech Software Technology Co., Ltd.  + *
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
 
 #include "linglong/runtime/run_context.h"
 
 #include "linglong/cdi/cdi.h"
+#include "linglong/cli/cli.h"
 #include "linglong/common/display.h"
 #include "linglong/common/strings.h"
 #include "linglong/extension/extension.h"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/runtime/container_builder.h"
-#include "linglong/runtime/host_nvidia_extension.h"
 #include "linglong/runtime/overlayfs_driver.h"
 #include "linglong/utils/log/log.h"
 
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
-#include <string_view>
-#include <unordered_set>
 #include <utility>
 
 namespace linglong::runtime {
@@ -29,64 +26,21 @@ namespace linglong::runtime {
 namespace {
 
 constexpr const char *runContextConfigVersion = "1";
-constexpr std::string_view kNvidiaExtensionPrefix =
-  extension::ExtensionImplNVIDIADisplayDriver::Identify;
 
-bool isNvidiaDriverExtensionName(std::string_view name)
+void ensureMountSrcType(std::vector<api::types::v1::Mount> &mounts)
 {
-    return name.rfind(kNvidiaExtensionPrefix, 0) == 0;
-}
-
-std::string mergePathValues(const std::string &preferred, const std::string &existing)
-{
-    std::vector<std::string> ordered;
-    std::unordered_set<std::string> seen;
-    for (const auto &part : common::strings::split(
-           preferred, ':', common::strings::splitOption::SkipEmpty)) {
-        auto value = std::string(part);
-        if (seen.insert(value).second) {
-            ordered.push_back(std::move(value));
-        }
-    }
-    for (const auto &part : common::strings::split(
-           existing, ':', common::strings::splitOption::SkipEmpty)) {
-        auto value = std::string(part);
-        if (seen.insert(value).second) {
-            ordered.push_back(std::move(value));
-        }
-    }
-    return common::strings::join(ordered, ':');
-}
-
-void mergeEnv(std::map<std::string, std::string> &base,
-              const std::map<std::string, std::string> &extra)
-{
-    static const std::unordered_set<std::string> pathKeys = {
-        "LD_LIBRARY_PATH",
-        "EGL_EXTERNAL_PLATFORM_CONFIG_DIRS",
-        "__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS",
-        "__EGL_VENDOR_LIBRARY_DIRS",
-        "VK_ICD_FILENAMES",
-        "VK_ADD_DRIVER_FILES",
-    };
-
-    for (const auto &[key, value] : extra) {
-        if (value.empty()) {
+    for (auto &m : mounts) {
+        if (m.srcType && !m.srcType->empty()) {
             continue;
         }
-
-        if (pathKeys.find(key) != pathKeys.end()) {
-            auto it = base.find(key);
-            auto merged = mergePathValues(value, it != base.end() ? it->second : "");
-            if (!merged.empty()) {
-                base[key] = std::move(merged);
-            }
-            continue;
-        }
-
-        auto it = base.find(key);
-        if (it == base.end() || it->second.empty()) {
-            base[key] = value;
+        std::error_code ec;
+        auto srcPath = std::filesystem::path(m.source);
+        if (!std::filesystem::exists(srcPath, ec)) {
+            m.srcType = std::nullopt;
+        } else if (std::filesystem::is_directory(srcPath, ec)) {
+            m.srcType = "dir";
+        } else {
+            m.srcType = "file";
         }
     }
 }
@@ -105,16 +59,130 @@ std::optional<std::string> timezoneFromPath(const std::filesystem::path &path,
     return relative.string();
 }
 
+utils::error::Result<std::vector<api::types::v1::CdiDeviceEntry>>
+filterCDIDevices(const std::vector<api::types::v1::CdiDeviceEntry> &allDevices,
+                 const std::vector<std::string> &requestedDevices)
+{
+    LINGLONG_TRACE(fmt::format("filter CDI devices {}", fmt::join(requestedDevices, ", ")));
+
+    std::vector<api::types::v1::CdiDeviceEntry> result;
+    for (const auto &deviceStr : requestedDevices) {
+        auto device = common::strings::split(deviceStr, '=');
+        if (device.size() != 2) {
+            return LINGLONG_ERR(fmt::format("invalid device format: {}", deviceStr));
+        }
+
+        auto entry = std::find_if(allDevices.begin(),
+                                  allDevices.end(),
+                                  [&device](const api::types::v1::CdiDeviceEntry &entry) {
+                                      return entry.kind == device[0] && entry.name == device[1];
+                                  });
+        if (entry == allDevices.end()) {
+            return LINGLONG_ERR(fmt::format("device not found: {}", deviceStr));
+        }
+
+        result.emplace_back(*entry);
+    }
+
+    return result;
+}
+
 } // namespace
 
 RunContext::~RunContext() = default;
+
+auto ResolveOptions::applyRuntimeConfig(const api::types::v1::RuntimeConfigure &runtimeConfig)
+  -> utils::error::Result<void>
+{
+    LINGLONG_TRACE("apply runtime config to resolve options");
+
+    if (runtimeConfig.extDefs) {
+        this->externalExtensionDefs = *runtimeConfig.extDefs;
+    }
+    if (runtimeConfig.mounts) {
+        this->mounts = *runtimeConfig.mounts;
+    }
+    return LINGLONG_OK;
+}
+
+auto ResolveOptions::applyCliRunOptions(const cli::RunOptions &options)
+  -> utils::error::Result<void>
+{
+    LINGLONG_TRACE("apply cli run options to resolve options");
+
+    this->baseRef = options.base;
+    this->cdiSpecDirs = options.cdiSpecDir;
+    this->runtimeRef = options.runtime;
+    if (!options.extensions.empty()) {
+        this->extensionRefs = options.extensions;
+    }
+    this->instance = options.instance;
+    return LINGLONG_OK;
+}
+
+auto ResolveOptions::applyOptions(
+  const std::optional<api::types::v1::RuntimeConfigure> &runtimeConfig,
+  const cli::RunOptions &options) -> utils::error::Result<void>
+{
+    LINGLONG_TRACE("apply runtime config and cli run options to resolve options");
+
+    if (runtimeConfig) {
+        auto result = this->applyRuntimeConfig(*runtimeConfig);
+        if (!result) {
+            return LINGLONG_ERR(result);
+        }
+    }
+
+    auto result = this->applyCliRunOptions(options);
+    if (!result) {
+        return LINGLONG_ERR(result);
+    }
+
+    this->cdiDevices.reset();
+    std::optional<std::vector<std::string>> requestedCDIDevices;
+    if (!options.cdiDevices.empty()) {
+        requestedCDIDevices = options.cdiDevices;
+    } else if (runtimeConfig && runtimeConfig->devices) {
+        requestedCDIDevices = runtimeConfig->devices;
+    }
+
+    if (requestedCDIDevices && requestedCDIDevices->empty()) {
+        this->cdiDevices = std::vector<api::types::v1::CdiDeviceEntry>{};
+        return LINGLONG_OK;
+    }
+
+    auto allCDIDevices = cdi::getCDIDevices(this->cdiSpecDirs, std::nullopt);
+    if (!allCDIDevices) {
+        return LINGLONG_ERR(allCDIDevices);
+    }
+
+    if (requestedCDIDevices) {
+        auto devices = filterCDIDevices(*allCDIDevices, *requestedCDIDevices);
+        if (!devices) {
+            return LINGLONG_ERR(devices);
+        }
+        this->cdiDevices = std::move(*devices);
+        return LINGLONG_OK;
+    }
+
+    auto nvidiaAllDevice =
+      std::find_if(allCDIDevices->begin(),
+                   allCDIDevices->end(),
+                   [](const api::types::v1::CdiDeviceEntry &device) {
+                       return device.kind == "nvidia.com/gpu" && device.name == "all";
+                   });
+    if (nvidiaAllDevice != allCDIDevices->end()) {
+        LogD("{}={} detected", nvidiaAllDevice->kind, nvidiaAllDevice->name);
+        this->cdiDevices = std::vector<api::types::v1::CdiDeviceEntry>{ *nvidiaAllDevice };
+    }
+
+    return LINGLONG_OK;
+}
 
 utils::error::Result<void> RunContext::resolve(const linglong::package::Reference &runnable,
                                                const ResolveOptions &opts)
 {
     LINGLONG_TRACE("resolve RunContext from runnable " + runnable.toString());
-    hostNvidiaExtensionName.reset();
-    contextCfg.hostNvidiaExtension.reset();
 
     auto layer = RuntimeLayer::create(runnable, *this);
     if (!layer) {
@@ -134,12 +202,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
                 return LINGLONG_ERR(runtimeFuzzyRef);
             }
 
-            auto ref = repo.clearReference(*runtimeFuzzyRef,
-                                           {
-                                             .forceRemote = false,
-                                             .fallbackToRemote = false,
-                                             .semanticMatching = true,
-                                           });
+            auto ref = repo.clearReferenceLocal(*runtimeFuzzyRef, true);
             if (!ref) {
                 return LINGLONG_ERR("ref doesn't exist " + runtimeFuzzyRef->toString());
             }
@@ -163,12 +226,7 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
             return LINGLONG_ERR(baseFuzzyRef);
         }
 
-        auto ref = repo.clearReference(*baseFuzzyRef,
-                                       {
-                                         .forceRemote = false,
-                                         .fallbackToRemote = false,
-                                         .semanticMatching = true,
-                                       });
+        auto ref = repo.clearReferenceLocal(*baseFuzzyRef, true);
         if (!ref) {
             return LINGLONG_ERR(ref);
         }
@@ -239,22 +297,31 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
         return LINGLONG_ERR("failed to resolve timezone", timezoneRet);
     }
 
-    if (opts.cdiDevices && !(opts.cdiDevicesAutoDetected && hostNvidiaExtensionName)) {
+    auto networkConfRet = resolveNetworkConf();
+    if (!networkConfRet) {
+        return LINGLONG_ERR("failed to resolve network configuration", networkConfRet);
+    }
+
+    resolveHostDynamic();
+
+    if (opts.cdiDevices) {
         contextCfg.cdiDevices = opts.cdiDevices.value();
-    } else if (opts.cdiDevicesAutoDetected && hostNvidiaExtensionName) {
-        LogI("skip auto-detected NVIDIA CDI because host NVIDIA driver fallback is active");
+    }
+    contextCfg.instance = opts.instance;
+
+    if (opts.mounts) {
+        contextCfg.mounts = *opts.mounts;
+        ensureMountSrcType(*contextCfg.mounts);
     }
 
     // all reference are cleard , we can get actual layer directory now
-    return resolveLayer(opts.depsBinaryOnly, opts.appModules.value_or(std::vector<std::string>{}));
+    return resolveLayer(opts.depsExcludeDev, opts.appModules.value_or(std::vector<std::string>{}));
 }
 
 utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProject &target,
                                                const std::filesystem::path &buildOutput)
 {
     LINGLONG_TRACE("resolve RunContext from builder project " + target.package.id);
-    hostNvidiaExtensionName.reset();
-    contextCfg.hostNvidiaExtension.reset();
 
     auto targetRef = package::Reference::fromBuilderProject(target);
     if (!targetRef) {
@@ -272,38 +339,14 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
         return LINGLONG_ERR("can't resolve run context from package kind " + target.package.kind);
     }
 
-    auto baseFuzzyRef = package::FuzzyReference::parse(target.base);
-    if (!baseFuzzyRef) {
-        return LINGLONG_ERR(baseFuzzyRef);
-    }
-
-    auto ref = repo.clearReference(*baseFuzzyRef,
-                                   {
-                                     .forceRemote = false,
-                                     .fallbackToRemote = false,
-                                     .semanticMatching = true,
-                                   });
-    if (!ref) {
-        return LINGLONG_ERR(ref);
-    }
-    auto res = RuntimeLayer::create(std::move(ref).value(), *this);
-    if (!res) {
-        return LINGLONG_ERR(res);
-    }
-    baseLayer = std::move(res).value();
-
+    auto base = target.base;
     if (target.runtime) {
         auto runtimeFuzzyRef = package::FuzzyReference::parse(*target.runtime);
         if (!runtimeFuzzyRef) {
             return LINGLONG_ERR(runtimeFuzzyRef);
         }
 
-        ref = repo.clearReference(*runtimeFuzzyRef,
-                                  {
-                                    .forceRemote = false,
-                                    .fallbackToRemote = false,
-                                    .semanticMatching = true,
-                                  });
+        auto ref = repo.clearReferenceLocal(*runtimeFuzzyRef, true);
         if (!ref) {
             return LINGLONG_ERR("ref doesn't exist " + runtimeFuzzyRef->toString());
         }
@@ -313,31 +356,41 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
         }
         runtimeLayer = std::move(res).value();
 
-        const auto &info = runtimeLayer->getCachedItem().info;
-        auto fuzzyRef = package::FuzzyReference::parse(info.base);
-        if (!fuzzyRef) {
-            return LINGLONG_ERR(fuzzyRef);
-        }
-        auto ref = repo.clearReference(*fuzzyRef,
-                                       {
-                                         .forceRemote = false,
-                                         .fallbackToRemote = false,
-                                         .semanticMatching = true,
-                                       });
-        if (!ref || *ref != baseLayer->getReference()) {
-            auto msg = fmt::format("Base is not compatible with runtime. \n - Current base: {}\n - "
-                                   "Current runtime: {}\n - Base required by runtime: {}",
-                                   baseLayer->getReference().toString(),
-                                   runtimeLayer->getReference().toString(),
-                                   info.base);
-            return LINGLONG_ERR(msg);
+        if (!base) {
+            base = runtimeLayer->getCachedItem().info.base;
         }
     }
+
+    if (!base) {
+        return LINGLONG_ERR("at least one of base or runtime must be specified");
+    }
+
+    auto baseFuzzyRef = package::FuzzyReference::parse(*base);
+    if (!baseFuzzyRef) {
+        return LINGLONG_ERR(baseFuzzyRef);
+    }
+
+    auto ref = repo.clearReferenceLocal(*baseFuzzyRef, true);
+    if (!ref) {
+        return LINGLONG_ERR(ref);
+    }
+    auto res = RuntimeLayer::create(std::move(ref).value(), *this);
+    if (!res) {
+        return LINGLONG_ERR(res);
+    }
+    baseLayer = std::move(res).value();
 
     auto timezoneRet = resolveTimeZone();
     if (!timezoneRet) {
         return LINGLONG_ERR("failed to resolve timezone", timezoneRet);
     }
+
+    auto networkConfRet = resolveNetworkConf();
+    if (!networkConfRet) {
+        return LINGLONG_ERR("failed to resolve network configuration", networkConfRet);
+    }
+
+    resolveHostDynamic();
 
     return resolveLayer(false, {});
 }
@@ -345,8 +398,6 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProj
 utils::error::Result<void> RunContext::resolve(const api::types::v1::RunContextConfig &config)
 {
     LINGLONG_TRACE("resolve RunContext from config");
-    hostNvidiaExtensionName.reset();
-    contextCfg.hostNvidiaExtension.reset();
 
     if (config.version != runContextConfigVersion) {
         return LINGLONG_ERR(fmt::format("run context config version mismatch: config version {}, "
@@ -354,7 +405,6 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::RunContextC
                                         config.version,
                                         runContextConfigVersion));
     }
-    hostNvidiaExtensionName = config.hostNvidiaExtension;
 
     auto createLayer = [this](const std::string &refStr) -> utils::error::Result<RuntimeLayer> {
         LINGLONG_TRACE("create runtime layer");
@@ -374,8 +424,10 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::RunContextC
 
         return std::move(layer).value();
     };
-    auto findTargetLayer = [this, &_linglong_trace_message](const std::string &targetRefStr)
+    auto findTargetLayer = [this](const std::string &targetRefStr)
       -> utils::error::Result<std::reference_wrapper<RuntimeLayer>> {
+        LINGLONG_TRACE("find target layer");
+
         auto fuzzyRef = package::FuzzyReference::parse(targetRefStr);
         if (!fuzzyRef) {
             return LINGLONG_ERR("failed to parse target layer reference", fuzzyRef);
@@ -468,13 +520,39 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::RunContextC
                 if (extLayer.getCachedItem().info.kind != "extension") {
                     return LINGLONG_ERR("invalid extension kind in config.extensions");
                 }
+
+                api::types::v1::ExtensionDefine extDef;
+                const auto &targetInfo = targetLayer->get().getCachedItem().info;
+                const auto *matchedDef = [&]() -> const api::types::v1::ExtensionDefine * {
+                    if (!targetInfo.extensions) {
+                        return nullptr;
+                    }
+                    for (const auto &def : *targetInfo.extensions) {
+                        std::string name = def.name;
+                        auto ext = extension::ExtensionFactory::makeExtension(name);
+                        if (ext->shouldEnable(name) && name == extLayer.getReference().id) {
+                            return &def;
+                        }
+                    }
+                    return nullptr;
+                }();
+
+                if (matchedDef) {
+                    extDef = *matchedDef;
+                } else {
+                    LogW("extension {} not found in target layer {}'s extensions, "
+                         "using manual extension define",
+                         extLayer.getReference().toString(),
+                         targetLayer->get().getReference().toString());
+                    auto manualDefs = makeManualExtensionDefine({ extensionRefStr });
+                    if (!manualDefs) {
+                        return LINGLONG_ERR(manualDefs);
+                    }
+                    extDef = std::move(manualDefs->front());
+                }
+
                 extLayer.setExtensionInfo(RuntimeLayer::ExtensionRuntimeLayerInfo{
-                  .extensionInfo =
-                    api::types::v1::ExtensionDefine{
-                      .directory = "/opt/extensions/" + extLayer.getReference().id,
-                      .name = extLayer.getReference().id,
-                      .version = extLayer.getReference().version.toString(),
-                    },
+                  .extensionInfo = std::move(extDef),
                   .extensionLayer = std::ref(extLayer),
                   .forRef = targetRefStr,
                 });
@@ -485,10 +563,13 @@ utils::error::Result<void> RunContext::resolve(const api::types::v1::RunContextC
     if (config.cdiDevices) {
         contextCfg.cdiDevices = config.cdiDevices.value();
     }
-    contextCfg.hostNvidiaExtension = config.hostNvidiaExtension;
 
     contextCfg.overlayfs = config.overlayfs;
+    contextCfg.resolvConf = config.resolvConf;
     contextCfg.timezone = config.timezone;
+    contextCfg.instance = config.instance;
+    contextCfg.hostDynamic = config.hostDynamic;
+    contextCfg.mounts = config.mounts;
     contextCfg.version = runContextConfigVersion;
 
     return resolveLayer(false, {});
@@ -525,37 +606,33 @@ utils::error::Result<void> RunContext::setupCDIDevices(generator::ContainerCfgBu
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
+utils::error::Result<void> RunContext::resolveLayer(bool depsExcludeDev,
                                                     const std::vector<std::string> &appModules)
 {
     LINGLONG_TRACE("resolve layers");
 
-    std::optional<std::string> subRef;
-    if (appLayer) {
-        const auto &info = appLayer->getCachedItem().info;
-        if (info.uuid) {
-            subRef = info.uuid;
-        }
+    std::optional<std::vector<std::string>> depsExcludeModules;
+    if (depsExcludeDev) {
+        depsExcludeModules = std::vector<std::string>{ "develop" };
     }
-
-    std::vector<std::string> depsModules;
-    if (depsBinaryOnly) {
-        depsModules.emplace_back("binary");
-    }
-    auto ref = baseLayer->resolveLayer(depsModules, subRef);
+    auto ref = baseLayer->resolveLayer(std::nullopt, depsExcludeModules);
     if (!ref.has_value()) {
         return LINGLONG_ERR("failed to resolve base layer", ref);
     }
 
     if (appLayer) {
-        auto ref = appLayer->resolveLayer(appModules);
+        std::optional<std::vector<std::string>> appIncludeModules;
+        if (!appModules.empty()) {
+            appIncludeModules = appModules;
+        }
+        auto ref = appLayer->resolveLayer(appIncludeModules);
         if (!ref.has_value()) {
             return LINGLONG_ERR("failed to resolve app layer", ref);
         }
     }
 
     if (runtimeLayer) {
-        auto ref = runtimeLayer->resolveLayer(depsModules, subRef);
+        auto ref = runtimeLayer->resolveLayer(std::nullopt, depsExcludeModules);
         if (!ref.has_value()) {
             return LINGLONG_ERR("failed to resolve runtime layer", ref);
         }
@@ -569,6 +646,7 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
 
         const auto &extensionOf = ext.getExtensionInfo();
         if (!extensionOf) {
+            LogW("failed getExtensionInfo, skip");
             continue;
         }
 
@@ -595,10 +673,10 @@ utils::error::Result<void> RunContext::resolveLayer(bool depsBinaryOnly,
                 defaultValue = allowed->second;
             }
 
-            std::string res =
-              common::strings::replaceSubstring(env.second,
-                                                "$PREFIX",
-                                                "/opt/extensions/" + ext.getReference().id);
+            std::string res = common::strings::replaceSubstring(
+              env.second,
+              "$PREFIX",
+              generator::ContainerCfgBuilder::extensionMountPoint(ext.getReference().id).string());
             auto &value = environment[env.first];
             if (value.empty()) {
                 value = defaultValue;
@@ -658,9 +736,56 @@ utils::error::Result<void> RunContext::resolveOverlayMode(std::optional<std::str
         mode = *parsedMode;
     }
 
-    auto driver = OverlayFSDriver::create(mode);
-    contextCfg.overlayfs = std::string(OverlayFSDriver::modeToString(driver->mode()));
+    auto resolvedMode = selectOverlayMode(mode);
+    if (!resolvedMode) {
+        return LINGLONG_ERR("resolve overlayfs mode", resolvedMode);
+    }
 
+    contextCfg.overlayfs = std::string(OverlayFSDriver::modeToString(*resolvedMode));
+
+    return LINGLONG_OK;
+}
+
+auto RunContext::selectOverlayMode(utils::OverlayMode requestedMode) const
+  -> utils::error::Result<utils::OverlayMode>
+{
+    return OverlayFSDriver::resolveOverlayMode(requestedMode);
+}
+
+utils::error::Result<void> RunContext::resolveNetworkConf()
+{
+    LINGLONG_TRACE("resolve network configuration");
+
+    const std::filesystem::path path{ "/etc/resolv.conf" };
+    std::error_code ec;
+    auto status = std::filesystem::symlink_status(path, ec);
+    if (ec) {
+        if (ec == std::errc::no_such_file_or_directory) {
+            contextCfg.resolvConf = std::nullopt;
+            return LINGLONG_OK;
+        }
+        return LINGLONG_ERR(fmt::format("failed to get status of {}", path), ec);
+    }
+
+    if (!std::filesystem::exists(status)) {
+        contextCfg.resolvConf = std::nullopt;
+        return LINGLONG_OK;
+    }
+
+    if (std::filesystem::is_symlink(status)) {
+        auto target = std::filesystem::canonical(path, ec);
+        if (ec) {
+            if (ec == std::errc::no_such_file_or_directory) {
+                contextCfg.resolvConf = std::nullopt;
+                return LINGLONG_OK;
+            }
+            return LINGLONG_ERR(fmt::format("failed to resolve symlink {}", path), ec);
+        }
+        contextCfg.resolvConf = target.string();
+        return LINGLONG_OK;
+    }
+
+    contextCfg.resolvConf = path.string();
     return LINGLONG_OK;
 }
 
@@ -677,6 +802,10 @@ utils::error::Result<void> RunContext::resolveTimeZone()
     std::error_code ec;
     auto localtimeStatus = std::filesystem::symlink_status(localtimePath, ec);
     if (ec) {
+        if (ec == std::errc::no_such_file_or_directory) {
+            contextCfg.timezone = "UTC";
+            return LINGLONG_OK;
+        }
         return LINGLONG_ERR(fmt::format("failed to get status of {}", localtimePath), ec);
     }
 
@@ -713,6 +842,39 @@ utils::error::Result<void> RunContext::resolveTimeZone()
     }
 
     return LINGLONG_OK;
+}
+
+void RunContext::resolveHostDynamic()
+{
+    LINGLONG_TRACE("resolve host dynamic paths");
+
+    constexpr std::array<const char *, 0> paths{};
+
+    std::vector<api::types::v1::Mount> hostDynamic;
+    hostDynamic.reserve(paths.size());
+    for (const auto *rawPath : paths) {
+        hostDynamic.emplace_back(api::types::v1::Mount{
+          .destination = rawPath,
+          .options = std::vector<std::string>{ "rbind", "ro", "rslave" },
+          .source = rawPath,
+          .srcType = std::nullopt,
+          .type = "bind",
+        });
+    }
+
+    ensureMountSrcType(hostDynamic);
+    hostDynamic.erase(std::remove_if(hostDynamic.begin(),
+                                     hostDynamic.end(),
+                                     [](const auto &mount) {
+                                         return !mount.srcType;
+                                     }),
+                      hostDynamic.end());
+
+    if (hostDynamic.empty()) {
+        contextCfg.hostDynamic.reset();
+        return;
+    }
+    contextCfg.hostDynamic = std::move(hostDynamic);
 }
 
 utils::error::Result<void> RunContext::resolveLayerExtensions(
@@ -765,18 +927,9 @@ RunContext::resolveExtension(RuntimeLayer &targetLayer,
             version = extDef.version;
         }
         auto fuzzyRef = package::FuzzyReference::create(channel, name, version, std::nullopt);
-        auto ref =
-          repo.clearReference(*fuzzyRef, { .fallbackToRemote = false, .semanticMatching = true });
+        auto ref = repo.clearReferenceLocal(*fuzzyRef, true);
         if (!ref) {
             LogD("extension is not installed: {}", fuzzyRef->toString());
-            if (isNvidiaDriverExtensionName(name)) {
-                if (!hostNvidiaExtensionName) {
-                    hostNvidiaExtensionName = name;
-                    contextCfg.hostNvidiaExtension = name;
-                    LogI("use host NVIDIA driver fallback for {}", name);
-                }
-                continue;
-            }
             if (skipOnNotFound) {
                 continue;
             }
@@ -817,7 +970,7 @@ RunContext::makeManualExtensionDefine(const std::vector<std::string> &refs)
         }
 
         extDefs.emplace_back(api::types::v1::ExtensionDefine{
-          .directory = "/opt/extensions/" + fuzzyRef->id,
+          .directory = generator::ContainerCfgBuilder::extensionMountPoint(fuzzyRef->id).string(),
           .name = fuzzyRef->id,
           .version = fuzzyRef->version.value_or(""),
         });
@@ -903,6 +1056,9 @@ utils::error::Result<void> RunContext::fillContextCfg(
     if (contextCfg.timezone) {
         builder.setTimezone(*contextCfg.timezone);
     }
+    if (contextCfg.resolvConf) {
+        builder.setResolvConf(*contextCfg.resolvConf);
+    }
 
     if (!baseLayer) {
         return LINGLONG_ERR("run context doesn't resolved");
@@ -929,7 +1085,7 @@ utils::error::Result<void> RunContext::fillContextCfg(
     std::vector<ocppi::runtime::config::types::Mount> extensionMounts{};
     if (extensionOutput) {
         extensionMounts.push_back(ocppi::runtime::config::types::Mount{
-          .destination = "/opt/extensions/" + targetId,
+          .destination = generator::ContainerCfgBuilder::extensionMountPoint(targetId),
           .gidMappings = {},
           .options = { { "rbind" } },
           .source = extensionOutput,
@@ -957,7 +1113,7 @@ utils::error::Result<void> RunContext::fillContextCfg(
             continue;
         }
         extensionMounts.push_back(ocppi::runtime::config::types::Mount{
-          .destination = "/opt/extensions/" + name,
+          .destination = generator::ContainerCfgBuilder::extensionMountPoint(name),
           .gidMappings = {},
           .options = { { "rbind", "ro" } },
           .source = ext.getLayerDir()->filesDirPath(),
@@ -965,57 +1121,6 @@ utils::error::Result<void> RunContext::fillContextCfg(
           .uidMappings = {},
         });
     }
-
-    if (hostNvidiaExtensionName) {
-        auto hasNvidiaCdi = [&]() {
-            if (!contextCfg.cdiDevices) {
-                return false;
-            }
-
-            return std::any_of(contextCfg.cdiDevices->begin(),
-                               contextCfg.cdiDevices->end(),
-                               [](const api::types::v1::CdiDeviceEntry &device) {
-                                   return device.kind == "nvidia.com/gpu";
-                               });
-        }();
-        auto hostExt =
-          prepareHostNvidiaExtension(bundlePath, *hostNvidiaExtensionName, !hasNvidiaCdi);
-        if (!hostExt) {
-            return LINGLONG_ERR(hostExt);
-        }
-
-        if (hostExt->has_value()) {
-            auto hostNvidiaExtension = std::move(hostExt->value());
-            const bool mountHostExtension =
-              !(extensionOutput && hostNvidiaExtension.name == targetId);
-            if (mountHostExtension) {
-                extensionMounts.push_back(ocppi::runtime::config::types::Mount{
-                  .destination = "/opt/extensions/" + hostNvidiaExtension.name,
-                  .gidMappings = {},
-                  .options = { { "rbind", "ro" } },
-                  .source = hostNvidiaExtension.root.string(),
-                  .type = "bind",
-                  .uidMappings = {},
-                });
-
-                for (const auto &node : hostNvidiaExtension.deviceNodes) {
-                    builder.addExtraMount(ocppi::runtime::config::types::Mount{
-                      .destination = node.path,
-                      .options = { { "bind" } },
-                      .source = node.hostPath.value_or(node.path),
-                      .type = "bind",
-                    });
-                }
-
-                if (!hostNvidiaExtension.extraMounts.empty()) {
-                    builder.addExtraMounts(hostNvidiaExtension.extraMounts);
-                }
-
-                mergeEnv(environment, hostNvidiaExtension.env);
-            }
-        }
-    }
-
     if (!extensionMounts.empty()) {
         builder.setExtensionMounts(extensionMounts);
     }
@@ -1157,15 +1262,38 @@ utils::error::Result<std::filesystem::path> RunContext::getRuntimeLayerPath() co
     return runtimeLayer->getLayerDir()->path();
 }
 
-utils::error::Result<api::types::v1::RepositoryCacheLayersItem> RunContext::getCachedAppItem()
+utils::error::Result<std::reference_wrapper<RuntimeLayer>> RunContext::getTargetLayer()
 {
-    LINGLONG_TRACE("get cached app item");
+    LINGLONG_TRACE("get target layer");
 
-    if (!appLayer) {
-        return LINGLONG_ERR("no app layer exist");
+    if (appLayer) {
+        return std::ref(*appLayer);
+    }
+    if (runtimeLayer) {
+        return std::ref(*runtimeLayer);
+    }
+    if (baseLayer) {
+        return std::ref(*baseLayer);
     }
 
-    return appLayer->getCachedItem();
+    return LINGLONG_ERR("no layer resolved");
+}
+
+utils::error::Result<api::types::v1::RepositoryCacheLayersItem> RunContext::getCachedTargetItem()
+{
+    LINGLONG_TRACE("get cached target item");
+
+    if (appLayer) {
+        return appLayer->getCachedItem();
+    }
+    if (runtimeLayer) {
+        return runtimeLayer->getCachedItem();
+    }
+    if (baseLayer) {
+        return baseLayer->getCachedItem();
+    }
+
+    return LINGLONG_ERR("no layer resolved");
 }
 
 } // namespace linglong::runtime

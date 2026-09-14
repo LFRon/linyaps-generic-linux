@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2025 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2025-2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
@@ -8,6 +8,7 @@
 #include "common/tempdir.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/filelock.h"
+#include "linglong/utils/log/formatter.h"
 
 #include <chrono>
 #include <filesystem>
@@ -29,12 +30,12 @@ TEST_F(FileLockTest, CreateWithMissingFile)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Read, true);
     ASSERT_TRUE(result);
     EXPECT_TRUE(std::filesystem::exists(temp_path));
 
     const auto &lock = std::move(result).value();
-    EXPECT_EQ(lock.type(), LockType::Read); // Default type
+    EXPECT_EQ(lock.type(), LockType::Read);
     EXPECT_FALSE(lock.isLocked());
 }
 
@@ -43,7 +44,7 @@ TEST_F(FileLockTest, CreateWithoutMissingFileFails)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, false);
+    auto result = FileLock::create(temp_path, LockType::Read, false);
     ASSERT_FALSE(result);
 }
 
@@ -55,7 +56,7 @@ TEST_F(FileLockTest, CreateOnExistingFile)
     std::ofstream file(temp_path);
     file.close();
 
-    auto result = FileLock::create(temp_path, false);
+    auto result = FileLock::create(temp_path, LockType::Read, false);
     ASSERT_TRUE(result);
 
     const auto &lock = std::move(result).value();
@@ -67,7 +68,7 @@ TEST_F(FileLockTest, LockUnlockRead)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path);
+    auto result = FileLock::create(temp_path, LockType::Read, true);
     ASSERT_TRUE(result);
     auto lock = std::move(result).value();
 
@@ -86,7 +87,7 @@ TEST_F(FileLockTest, LockUnlockWrite)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result);
     auto lock = std::move(result).value();
 
@@ -105,7 +106,7 @@ TEST_F(FileLockTest, TryLockSuccess)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result);
     auto lock = std::move(result).value();
 
@@ -122,7 +123,7 @@ TEST_F(FileLockTest, TryLockFailureInterProcess)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result);
     auto lock1 = std::move(result).value();
 
@@ -131,7 +132,7 @@ TEST_F(FileLockTest, TryLockFailureInterProcess)
 
     const pid_t pid = fork();
     if (pid == 0) { // Child process
-        auto result_child = FileLock::create(temp_path, false);
+        auto result_child = FileLock::create(temp_path, LockType::Write, false);
         if (!result_child) {
             _exit(1);
         }
@@ -157,7 +158,7 @@ TEST_F(FileLockTest, TryLockForSuccess)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result);
     auto lock = std::move(result).value();
 
@@ -172,7 +173,7 @@ TEST_F(FileLockTest, TryLockForFailure)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result);
     auto lock1 = std::move(result).value();
 
@@ -181,7 +182,7 @@ TEST_F(FileLockTest, TryLockForFailure)
 
     const pid_t pid = fork();
     if (pid == 0) { // Child
-        auto result_child = FileLock::create(temp_path, false);
+        auto result_child = FileLock::create(temp_path, LockType::Write, false);
         if (!result_child) {
             _exit(1);
         }
@@ -202,80 +203,19 @@ TEST_F(FileLockTest, TryLockForFailure)
     }
 }
 
-// Test relock from Read to Write
-TEST_F(FileLockTest, RelockReadToWrite)
-{
-    TempDir temp_dir;
-    auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
-    ASSERT_TRUE(result);
-    auto lock = std::move(result).value();
-
-    EXPECT_TRUE(lock.lock(LockType::Read));
-    EXPECT_EQ(lock.type(), LockType::Read);
-
-    auto relock_result = lock.relock(LockType::Write);
-    ASSERT_TRUE(relock_result);
-    EXPECT_EQ(lock.type(), LockType::Write);
-    EXPECT_TRUE(lock.isLocked());
-}
-
-// Test relock from Write to Read
-TEST_F(FileLockTest, RelockWriteToRead)
-{
-    TempDir temp_dir;
-    auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
-    ASSERT_TRUE(result);
-    auto lock = std::move(result).value();
-
-    EXPECT_TRUE(lock.lock(LockType::Write));
-    EXPECT_EQ(lock.type(), LockType::Write);
-
-    auto relock_result = lock.relock(LockType::Read);
-    ASSERT_TRUE(relock_result);
-    EXPECT_EQ(lock.type(), LockType::Read);
-    EXPECT_TRUE(lock.isLocked());
-}
-
-// Test relock when not locked fails
-TEST_F(FileLockTest, RelockNotLocked)
-{
-    TempDir temp_dir;
-    auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
-    ASSERT_TRUE(result);
-    auto lock = std::move(result).value();
-
-    auto relock_result = lock.relock(LockType::Write);
-    // Since not locked, relock should just return OK if same type, but test behavior
-    // Actually, relock assumes locked, but code checks if type == new_type, returns OK
-    // But to test properly:
-    EXPECT_TRUE(
-      relock_result); // Since type_ is Read by default, changing to Write would attempt to lock
-    // Wait, relock is for changing type while locked.
-    // If not locked, it shouldn't be called, but let's see code: relock doesn't check if locked.
-    // It just sets the new flock.
-    // So if not locked, it would effectively lock it.
-    auto lock_result = lock.lock(LockType::Read);
-    ASSERT_TRUE(lock_result);
-    auto relock = lock.relock(LockType::Read);
-    ASSERT_TRUE(relock);
-}
-
 // Test multiple read locks possible (shared)
 TEST_F(FileLockTest, MultipleReadLocks)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result1 = FileLock::create(temp_path);
+    auto result1 = FileLock::create(temp_path, LockType::Read, true);
     ASSERT_TRUE(result1);
     auto lock1 = std::move(result1).value();
     EXPECT_TRUE(lock1.lock(LockType::Read));
 
     const auto pid = ::fork();
     if (pid == 0) {
-        auto result2 = FileLock::create(temp_path);
+        auto result2 = FileLock::create(temp_path, LockType::Read, false);
         if (!result2) {
             _exit(1);
         }
@@ -300,14 +240,14 @@ TEST_F(FileLockTest, WriteLockExclusive)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result1 = FileLock::create(temp_path);
+    auto result1 = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result1);
     auto lock1 = std::move(result1).value();
     EXPECT_TRUE(lock1.lock(LockType::Write));
 
     const auto pid = ::fork();
     if (pid == 0) {
-        auto result2 = FileLock::create(temp_path, false);
+        auto result2 = FileLock::create(temp_path, LockType::ReadWrite, false);
         if (!result2) {
             _exit(1);
         }
@@ -338,7 +278,7 @@ TEST_F(FileLockTest, LockAfterFork)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result);
     auto lock = std::move(result).value();
     EXPECT_TRUE(lock.lock(LockType::Write));
@@ -371,10 +311,10 @@ TEST_F(FileLockTest, NoDuplicateLockSameProcess)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result1 = FileLock::create(temp_path, true);
+    auto result1 = FileLock::create(temp_path, LockType::Read, true);
     ASSERT_TRUE(result1);
 
-    auto result2 = FileLock::create(temp_path, false);
+    auto result2 = FileLock::create(temp_path, LockType::Read, false);
     ASSERT_FALSE(result2);
     EXPECT_THAT(result2.error().message(),
                 ::testing::HasSubstr("process already holds a lock on file"));
@@ -385,7 +325,7 @@ TEST_F(FileLockTest, MoveConstructor)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result);
     auto lock1 = std::move(result).value();
     EXPECT_TRUE(lock1.lock(LockType::Write));
@@ -400,14 +340,13 @@ TEST_F(FileLockTest, MoveAssignment)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result1 = FileLock::create(temp_path, true);
+    auto result1 = FileLock::create(temp_path, LockType::Write, true);
     ASSERT_TRUE(result1);
     auto lock1 = std::move(result1).value();
     EXPECT_TRUE(lock1.lock(LockType::Write));
 
-    const std::filesystem::path other_path =
-      std::filesystem::temp_directory_path() / ("other_" + std::to_string(::getpid()) + ".lock");
-    auto result2 = FileLock::create(other_path, true);
+    const auto other_path = temp_dir.path() / "other.lock";
+    auto result2 = FileLock::create(other_path, LockType::Write, true);
     ASSERT_TRUE(result2);
     auto lock2 = std::move(result2).value();
 
@@ -415,6 +354,9 @@ TEST_F(FileLockTest, MoveAssignment)
     EXPECT_TRUE(lock2.isLocked());
     EXPECT_EQ(lock2.type(), LockType::Write);
     EXPECT_FALSE(lock1.isLocked());
+
+    auto reopened = FileLock::create(other_path, LockType::Write, false);
+    ASSERT_TRUE(reopened) << fmt::format("{}", reopened.error());
 }
 
 // Test tryLock when already locked same type
@@ -422,7 +364,7 @@ TEST_F(FileLockTest, TryLockAlreadyLockedSameType)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Read, true);
     ASSERT_TRUE(result);
     auto lock = std::move(result).value();
     EXPECT_TRUE(lock.lock(LockType::Read));
@@ -436,7 +378,7 @@ TEST_F(FileLockTest, LockAlreadyLockedDiffType)
 {
     TempDir temp_dir;
     auto temp_path = temp_dir.path() / "test_filelock.lock";
-    auto result = FileLock::create(temp_path, true);
+    auto result = FileLock::create(temp_path, LockType::Read, true);
     ASSERT_TRUE(result);
     auto lock = std::move(result).value();
     EXPECT_TRUE(lock.lock(LockType::Read));
@@ -444,5 +386,5 @@ TEST_F(FileLockTest, LockAlreadyLockedDiffType)
     auto lock_result = lock.lock(LockType::Write);
     ASSERT_FALSE(lock_result);
     EXPECT_THAT(lock_result.error().message(),
-                ::testing::HasSubstr("use relock to change lock type"));
+                ::testing::HasSubstr("failed to lock with different type"));
 }

@@ -9,13 +9,21 @@
 #include "linglong/api/types/v1/BuilderProject.hpp"
 #include "linglong/api/types/v1/ContainerProcessStateInfo.hpp"
 #include "linglong/api/types/v1/ExtensionDefine.hpp"
+#include "linglong/api/types/v1/Mount.hpp"
 #include "linglong/api/types/v1/RunContextConfig.hpp"
+#include "linglong/api/types/v1/RuntimeConfigure.hpp"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/layer.h"
 #include "linglong/utils/error/error.h"
+#include "linglong/utils/overlayfs.h"
 #include "ocppi/runtime/config/types/Generators.hpp"
 
 #include <filesystem>
+#include <functional>
+
+namespace linglong::cli {
+struct RunOptions;
+}
 
 namespace linglong::generator {
 class ContainerCfgBuilder;
@@ -25,15 +33,23 @@ namespace linglong::runtime {
 
 struct ResolveOptions
 {
-    bool depsBinaryOnly{ false };
+    bool depsExcludeDev{ false };
     std::optional<std::vector<std::string>> appModules;
     std::optional<std::string> baseRef;
     std::optional<std::vector<api::types::v1::CdiDeviceEntry>> cdiDevices;
-    bool cdiDevicesAutoDetected{ false };
+    std::vector<std::string> cdiSpecDirs{ "/etc/cdi", "/var/run/cdi" };
     std::optional<std::string> runtimeRef;
     std::optional<std::vector<std::string>> extensionRefs;
+    std::optional<std::string> instance;
     std::optional<std::map<std::string, std::vector<api::types::v1::ExtensionDefine>>>
       externalExtensionDefs;
+    std::optional<std::vector<api::types::v1::Mount>> mounts;
+
+    auto applyRuntimeConfig(const api::types::v1::RuntimeConfigure &runtimeConfig)
+      -> utils::error::Result<void>;
+    auto applyCliRunOptions(const cli::RunOptions &options) -> utils::error::Result<void>;
+    auto applyOptions(const std::optional<api::types::v1::RuntimeConfigure> &runtimeConfig,
+                      const cli::RunOptions &options) -> utils::error::Result<void>;
 };
 
 class RunContext
@@ -44,7 +60,7 @@ public:
     {
     }
 
-    ~RunContext();
+    virtual ~RunContext();
 
     utils::error::Result<void> resolve(const linglong::package::Reference &runnable,
                                        const ResolveOptions &opts = ResolveOptions{});
@@ -83,15 +99,27 @@ public:
         return appLayer;
     }
 
+    [[nodiscard]] const std::list<RuntimeLayer> &getExtensionLayers() const noexcept
+    {
+        return extensionLayers;
+    }
+
     [[nodiscard]] utils::error::Result<std::filesystem::path> getBaseLayerPath() const;
     [[nodiscard]] utils::error::Result<std::filesystem::path> getRuntimeLayerPath() const;
 
-    utils::error::Result<api::types::v1::RepositoryCacheLayersItem> getCachedAppItem();
+    [[nodiscard]] utils::error::Result<std::reference_wrapper<RuntimeLayer>> getTargetLayer();
+
+    [[nodiscard]] utils::error::Result<api::types::v1::RepositoryCacheLayersItem>
+    getCachedTargetItem();
 
     [[nodiscard]] bool hasRuntime() const noexcept { return !!runtimeLayer; }
 
+protected:
+    virtual auto selectOverlayMode(utils::OverlayMode requestedMode) const
+      -> utils::error::Result<utils::OverlayMode>;
+
 private:
-    utils::error::Result<void> resolveLayer(bool depsBinaryOnly,
+    utils::error::Result<void> resolveLayer(bool depsExcludeDev,
                                             const std::vector<std::string> &appModules);
     utils::error::Result<void> resolveLayerExtensions(
       RuntimeLayer &layer,
@@ -112,14 +140,15 @@ private:
         &externalExtensionDefs);
     utils::error::Result<void>
     resolveOverlayMode(std::optional<std::string> requestedMode = std::nullopt);
+    utils::error::Result<void> resolveNetworkConf();
     utils::error::Result<void> resolveTimeZone();
+    void resolveHostDynamic();
 
     repo::OSTreeRepo &repo;
     std::optional<RuntimeLayer> baseLayer;
     std::optional<RuntimeLayer> runtimeLayer;
     std::optional<RuntimeLayer> appLayer;
     std::list<RuntimeLayer> extensionLayers;
-    std::optional<std::string> hostNvidiaExtensionName;
 
     std::string targetId;
     std::optional<std::filesystem::path> appOutput;

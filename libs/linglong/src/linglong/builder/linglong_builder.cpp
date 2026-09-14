@@ -62,6 +62,9 @@ std::vector<std::string> Builder::privilegeBuilderCaps = {
 
 namespace {
 
+constexpr auto builderUtilsID = "cn.org.linyaps.builder.utils";
+constexpr auto minimumBuilderUtilsVersion = "0.0.4.0";
+
 utils::error::Result<package::Reference>
 currentReference(const api::types::v1::BuilderProject &project)
 {
@@ -106,13 +109,17 @@ fetchSources(const std::vector<api::types::v1::BuilderProjectSource> &sources,
     return LINGLONG_OK;
 }
 
-utils::error::Result<void> pullDependency(const package::Reference &ref,
-                                          repo::OSTreeRepo &repo,
-                                          const std::string &module) noexcept
+} // namespace
+
+namespace detail {
+
+utils::error::Result<void> pullResolvedRef(const package::ReferenceWithRepo &refRepo,
+                                           repo::OSTreeRepo &repo,
+                                           const std::string &module) noexcept
 {
+    const auto &ref = refRepo.reference;
     LINGLONG_TRACE("pull " + ref.toString());
 
-    // 如果依赖已存在，则直接使用
     if (repo.getLayerDir(ref, module)) {
         return LINGLONG_OK;
     }
@@ -139,10 +146,7 @@ utils::error::Result<void> pullDependency(const package::Reference &ref,
                      [&tmpTask]() {
                          tmpTask.Cancel();
                      });
-    auto res =
-      repo.pull(tmpTask,
-                package::ReferenceWithRepo{ .repo = repo.getDefaultRepo(), .reference = ref },
-                module);
+    auto res = repo.pull(tmpTask, refRepo, module);
     if (!res) {
         return LINGLONG_ERR(res);
     }
@@ -150,9 +154,93 @@ utils::error::Result<void> pullDependency(const package::Reference &ref,
     return LINGLONG_OK;
 }
 
-} // namespace
+utils::error::Result<DependencyReference>
+clearDependency(const std::string &fuzzyRefStr,
+                repo::OSTreeRepo &repo,
+                bool useRemote,
+                std::optional<std::string> module) noexcept
+{
+    LINGLONG_TRACE("clear dependency " + fuzzyRefStr);
 
-namespace detail {
+    auto fuzzyRef = package::FuzzyReference::parse(fuzzyRefStr);
+    if (!fuzzyRef) {
+        return LINGLONG_ERR("invalid ref " + fuzzyRefStr, fuzzyRef);
+    }
+
+    std::optional<package::Reference> localRef;
+    auto localResult = repo.clearReferenceLocal(*fuzzyRef, true);
+    if (localResult) {
+        localRef = std::move(localResult).value();
+    }
+    if (localRef && module && !repo.getLayerDir(*localRef, *module)) {
+        localRef.reset();
+    }
+
+    if (localRef && fuzzyRef->version && *fuzzyRef->version == localRef->version.toString()) {
+        return DependencyReference{ std::nullopt, std::move(localRef) };
+    }
+
+    if (!useRemote) {
+        if (localRef) {
+            return DependencyReference{ std::nullopt, std::move(localRef) };
+        }
+        return LINGLONG_ERR(fmt::format("failed to get local ref {}", fuzzyRef->toString()),
+                            localResult);
+    }
+
+    std::optional<package::ReferenceWithRepo> remoteRef;
+    auto remoteResult = repo.latestRemoteReference(*fuzzyRef);
+    if (remoteResult) {
+        remoteRef = std::move(remoteResult).value();
+    }
+
+    bool preferRemote =
+      remoteRef && (!localRef || remoteRef->reference.version > localRef->version);
+    if (!preferRemote && !localRef) {
+        return LINGLONG_ERR(fmt::format("ref doesn't exist {}", fuzzyRef->toString()));
+    }
+
+    if (!preferRemote) {
+        remoteRef.reset();
+    }
+
+    return DependencyReference{ std::move(remoteRef), std::move(localRef) };
+}
+
+utils::error::Result<package::Reference> pullDependency(const std::string &fuzzyRefStr,
+                                                        repo::OSTreeRepo &repo,
+                                                        const std::string &module) noexcept
+{
+    LINGLONG_TRACE("pull dependency " + fuzzyRefStr);
+
+    auto ref = clearDependency(fuzzyRefStr,
+                               repo,
+                               true,
+                               module == "binary" ? std::nullopt : std::optional{ module });
+    if (!ref) {
+        return LINGLONG_ERR(ref);
+    }
+
+    auto [refRepo, localRef] = std::move(*ref);
+    if (!refRepo) {
+        return std::move(*localRef);
+    }
+
+    auto pullRes = pullResolvedRef(*refRepo, repo, module);
+    if (!pullRes) {
+        if (localRef) {
+            LogW("failed to pull version {}, use local version {}: {}",
+                 refRepo->reference.toString(),
+                 localRef->toString(),
+                 pullRes.error().message());
+            return std::move(*localRef);
+        }
+        return LINGLONG_ERR("failed to pull version " + refRepo->reference.toString(), pullRes);
+    }
+
+    return std::move(refRepo->reference);
+}
+
 void mergeOutput(const std::vector<std::filesystem::path> &src,
                  const std::filesystem::path &dest,
                  const std::vector<std::string> &targets,
@@ -432,27 +520,24 @@ Builder::ensureUtils(const std::string &id, const package::Architecture &arch) n
         return LINGLONG_ERR(fuzzyRef);
     }
 
-    // always try to get newest version from remote
-    auto ref = repo.clearReference(
-      *fuzzyRef,
-      { .forceRemote = true, .fallbackToRemote = true, .semanticMatching = true });
-    auto localRef = repo.clearReference(
-      *fuzzyRef,
-      { .forceRemote = false, .fallbackToRemote = false, .semanticMatching = true });
-    if (localRef) {
-        if (!ref || localRef->version > ref->version) {
-            ref = std::move(localRef);
-            LogD("use local tools {}", ref->toString());
-        }
-    }
-
+    auto ref = detail::pullDependency(fuzzyRef->toString(), this->repo, "binary");
     if (!ref) {
-        return LINGLONG_ERR("failed to find utils " + id, ref);
+        return LINGLONG_ERR("failed to get utils " + id, ref);
     }
 
-    auto res = pullDependency(*ref, this->repo, "binary");
-    if (!res) {
-        return LINGLONG_ERR("failed to get utils " + id, res);
+    if (id == builderUtilsID) {
+        auto minimumVersion = package::Version::parse(minimumBuilderUtilsVersion);
+        if (!minimumVersion) {
+            return LINGLONG_ERR(fmt::format("failed to parse minimum builder-utils version {}",
+                                            minimumBuilderUtilsVersion),
+                                minimumVersion);
+        }
+        if (ref->version < *minimumVersion) {
+            return LINGLONG_ERR(
+              fmt::format("builder-utils {} is too old; version {} or newer is required",
+                          ref->version.toString(),
+                          minimumBuilderUtilsVersion));
+        }
     }
 
     auto layerItem = this->repo.getLayerItem(*ref);
@@ -464,52 +549,28 @@ Builder::ensureUtils(const std::string &id, const package::Architecture &arch) n
     // assumes these dependencies are available for the current architecture,
     // this requires the same version of `build-utils` to be built for both
     // the target and the current architectures.
-    auto baseRef = clearDependency(info.base, false, true);
+    auto baseRef = detail::pullDependency(info.base, this->repo, "binary");
     if (!baseRef) {
-        return LINGLONG_ERR("base not exist: " + info.base);
-    }
-    if (!pullDependency(*baseRef, this->repo, "binary")) {
-        return LINGLONG_ERR("failed to pull base binary " + info.base);
+        return LINGLONG_ERR("base not exist: " + info.base, baseRef);
     }
 
     if (info.runtime) {
-        auto runtimeRef = clearDependency(info.runtime.value(), false, true);
+        auto runtimeRef = detail::pullDependency(info.runtime.value(), this->repo, "binary");
         if (!runtimeRef) {
-            return LINGLONG_ERR("runtime not exist: " + info.runtime.value());
-        }
-        if (!pullDependency(*runtimeRef, this->repo, "binary")) {
-            return LINGLONG_ERR("failed to pull runtime binary " + info.runtime.value());
+            return LINGLONG_ERR("runtime not exist: " + info.runtime.value(), runtimeRef);
         }
     }
 
     return ref;
 }
 
-utils::error::Result<package::Reference> Builder::clearDependency(const std::string &ref,
-                                                                  bool forceRemote,
-                                                                  bool fallbackToRemote) noexcept
-{
-    LINGLONG_TRACE("clear dependency");
-
-    auto fuzzyRef = package::FuzzyReference::parse(ref);
-    if (!fuzzyRef) {
-        return LINGLONG_ERR("invalid ref " + ref);
-    }
-
-    auto res = repo.clearReference(*fuzzyRef,
-                                   { .forceRemote = forceRemote,
-                                     .fallbackToRemote = fallbackToRemote,
-                                     .semanticMatching = true });
-    if (!res) {
-        return LINGLONG_ERR(fmt::format("ref doesn't exist {}", fuzzyRef->toString()));
-    }
-
-    return res;
-}
-
 utils::error::Result<void> Builder::buildStagePullDependency() noexcept
 {
     LINGLONG_TRACE("build stage pull dependency");
+
+    if (!this->project->base && !this->project->runtime) {
+        return LINGLONG_ERR("at least one of base or runtime must be specified");
+    }
 
     printMessage("[Processing Dependency]");
     printMessage(QString("%1%2%3%4")
@@ -520,66 +581,126 @@ utils::error::Result<void> Builder::buildStagePullDependency() noexcept
                    .toStdString(),
                  2);
 
-    auto baseRef = clearDependency(this->project->base, !this->buildOptions.skipPullDepend, false);
-    if (!baseRef) {
-        return LINGLONG_ERR("base dependency error", baseRef);
-    }
+    auto handleDependency =
+      [this](const std::string &refStr) -> utils::error::Result<package::Reference> {
+        LINGLONG_TRACE("handle dependency " + refStr);
 
+        auto printStatus = [](const package::Reference &ref,
+                              std::string_view module,
+                              std::string_view status) {
+            printReplacedText(
+              fmt::format("{:<35}{:<15}{:<15}{}\n", ref.id, ref.version.toString(), module, status),
+              2);
+        };
+
+        auto ref = detail::clearDependency(refStr, this->repo, !this->buildOptions.skipPullDepend);
+        if (!ref) {
+            return LINGLONG_ERR(ref);
+        }
+
+        const package::Reference *resolvedRef = nullptr;
+        auto &[refRepo, localRef] = *ref;
+        if (!refRepo) {
+            const auto &local = *localRef;
+            resolvedRef = &local;
+            // binary module is install
+            printStatus(local, "binary", "complete");
+
+            // try pull develop module if skipPullDepend is not set
+            if (!this->buildOptions.skipPullDepend) {
+                auto res = detail::pullDependency(localRef->toString(), this->repo, "develop");
+                if (!res) {
+                    LogW("failed to pull develop module of {}: {}", refStr, res.error().message());
+                }
+            }
+        } else {
+            // use remote reference
+            resolvedRef = &refRepo->reference;
+            auto res = detail::pullResolvedRef(*refRepo, this->repo, "binary");
+            if (!res) {
+                if (!localRef) {
+                    return LINGLONG_ERR(res);
+                }
+
+                LogW("failed to pull binary module of {}, use local version {}: {}",
+                     refRepo->reference.toString(),
+                     localRef->toString(),
+                     res.error());
+                printStatus(*localRef, "binary", "complete");
+
+                auto layerDir = this->repo.getLayerDir(*localRef, "develop");
+                if (!layerDir) {
+                    auto developRes =
+                      detail::pullDependency(localRef->toString(), this->repo, "develop");
+                    if (!developRes) {
+                        LogW("failed to pull develop module of {}: {}",
+                             refStr,
+                             developRes.error().message());
+                    }
+                    layerDir = this->repo.getLayerDir(*localRef, "develop");
+                }
+
+                printStatus(*localRef, "develop", layerDir ? "complete" : "missing");
+
+                return *localRef;
+            }
+            printStatus(refRepo->reference, "binary", "complete");
+
+            res = detail::pullResolvedRef(*refRepo, this->repo, "develop");
+            if (!res) {
+                LogW("failed to pull develop module of {}: {}",
+                     refRepo->reference.toString(),
+                     res.error().message());
+            }
+        }
+
+        auto layerDir = this->repo.getLayerDir(*resolvedRef, "develop");
+        printStatus(*resolvedRef, "develop", layerDir ? "complete" : "missing");
+
+        return *resolvedRef;
+    };
+
+    std::optional<std::string> runtimeBase;
     std::optional<package::Reference> runtimeRef;
     if (this->project->runtime) {
-        auto ref =
-          clearDependency(*this->project->runtime, !this->buildOptions.skipPullDepend, false);
-        if (!ref) {
-            return LINGLONG_ERR("runtime dependency error", ref);
+        auto resolvedRuntime = handleDependency(*this->project->runtime);
+        if (!resolvedRuntime) {
+            return LINGLONG_ERR(resolvedRuntime);
         }
-        runtimeRef = std::move(ref).value();
+        runtimeRef = *resolvedRuntime;
+
+        auto runtimeItem = this->repo.getLayerItem(*runtimeRef);
+        if (!runtimeItem) {
+            return LINGLONG_ERR("failed to get runtime information", runtimeItem);
+        }
+        if (this->project->base) {
+            runtimeBase = runtimeItem->info.base;
+        } else {
+            this->project->base = runtimeItem->info.base;
+        }
     }
 
-    if (!this->buildOptions.skipPullDepend) {
-        auto ref = pullDependency(*baseRef, this->repo, "binary");
-        if (!ref.has_value()) {
-            return LINGLONG_ERR("failed to pull base binary " + baseRef->toString(), ref);
+    auto res = handleDependency(*this->project->base);
+    if (!res) {
+        return LINGLONG_ERR(res);
+    }
+
+    if (runtimeBase) {
+        auto runtimeBaseFuzzyRef = package::FuzzyReference::parse(*runtimeBase);
+        if (!runtimeBaseFuzzyRef) {
+            return LINGLONG_ERR("failed to parse base required by runtime", runtimeBaseFuzzyRef);
+        }
+        if (!runtimeBaseFuzzyRef->version) {
+            return LINGLONG_ERR("base version required by runtime is missing");
         }
 
-        printReplacedText(fmt::format("{:<35}{:<15}{:<15}complete\n",
-                                      baseRef->id,
-                                      baseRef->version.toString(),
-                                      "binary"),
-                          2);
-
-        ref = pullDependency(*baseRef, this->repo, "develop");
-        if (!ref.has_value()) {
-            return LINGLONG_ERR("failed to pull base develop " + baseRef->toString(), ref);
-        }
-
-        printReplacedText(fmt::format("{:<35}{:<15}{:<15}complete\n",
-                                      baseRef->id,
-                                      baseRef->version.toString(),
-                                      "develop"),
-                          2);
-
-        if (runtimeRef) {
-            ref = pullDependency(*runtimeRef, this->repo, "binary");
-            if (!ref.has_value()) {
-                return LINGLONG_ERR("failed to pull runtime binary " + runtimeRef->toString(), ref);
-            }
-
-            printReplacedText(fmt::format("{:<35}{:<15}{:<15}complete\n",
-                                          runtimeRef->id,
-                                          runtimeRef->version.toString(),
-                                          "binary"),
-                              2);
-            ref = pullDependency(*runtimeRef, this->repo, "develop");
-            if (!ref.has_value()) {
-                return LINGLONG_ERR("failed to pull runtime develop " + runtimeRef->toString(),
-                                    ref);
-            }
-
-            printReplacedText(fmt::format("{:<35}{:<15}{:<15}complete\n",
-                                          runtimeRef->id,
-                                          runtimeRef->version.toString(),
-                                          "develop"),
-                              2);
+        if (!res->semanticMatch(*runtimeBaseFuzzyRef)) {
+            return LINGLONG_ERR(
+              fmt::format("base is not compatible with runtime. \n - Current base: {}\n - "
+                          "Current runtime: {}\n - base required by runtime: {}",
+                          res->toString(),
+                          runtimeRef->toString(),
+                          *runtimeBase));
         }
     }
 
@@ -1169,7 +1290,7 @@ utils::error::Result<void> Builder::commitToLocalRepo() noexcept
         .version = project.package.version,
     };
 
-    info.base = project.base;
+    info.base = *project.base;
     if (project.runtime) {
         info.runtime = project.runtime;
     }
@@ -1290,7 +1411,7 @@ utils::error::Result<void> Builder::build(const QStringList &args) noexcept
     }
 
     if (!(res = buildStageFetchSource())) {
-        return LINGLONG_ERR("stage fetch srouce error", res);
+        return LINGLONG_ERR("stage fetch source error", res);
     }
 
     if (!(res = buildStagePullDependency())) {
@@ -1353,105 +1474,85 @@ utils::error::Result<void> Builder::exportUAB(const ExportOption &option,
             LogE("couldn't remove export working directory, please remove it manually.");
         }
     });
-    package::UABPackager packager(workingDir, exportWorkingDir);
+
     auto exportOpts = option;
     if (exportOpts.compressor.empty()) {
         LogI("Compressor not specified, defaulting to lz4 for UAB export.");
         exportOpts.compressor = "lz4";
     }
-
     if (exportOpts.modules.empty()) {
         exportOpts.modules.emplace_back("binary");
     }
 
-    const bool distributedOnly = !exportOpts.ref.empty();
+    auto curRef = [this, &exportOpts]() -> utils::error::Result<package::Reference> {
+        LINGLONG_TRACE("get export reference");
 
-    const bool underProject = this->project.has_value();
-    auto curRef = [this,
-                   &exportOpts,
-                   underProject,
-                   distributedOnly]() -> utils::error::Result<package::Reference> {
-        LINGLONG_TRACE("get current reference");
-
-        if (distributedOnly) {
+        if (!exportOpts.ref.empty()) {
             auto fuzzyRef = package::FuzzyReference::parse(exportOpts.ref);
             if (!fuzzyRef) {
                 return LINGLONG_ERR("fuzzy ref", fuzzyRef);
             }
 
-            auto targetRef = this->repo.clearReference(*fuzzyRef, { .fallbackToRemote = false });
+            auto targetRef = this->repo.clearReferenceLocal(*fuzzyRef);
             if (!targetRef) {
                 return LINGLONG_ERR("clear ref", targetRef);
             }
-
             return targetRef;
         }
 
-        if (!underProject) {
-            return LINGLONG_ERR("not under project");
+        if (!this->project) {
+            return LINGLONG_ERR("not under project and --ref is not specified");
         }
-
-        if (underProject && this->project->package.kind != "app") {
-            return LINGLONG_ERR(
-              fmt::format("can't export {} kind UAB in executable mode, if you want to export UAB "
-                          "in distributed mode, please use --ref option instead",
-                          this->project->package.kind));
-        }
-
         return currentReference(*this->project);
     }();
-
     if (!curRef) {
         return LINGLONG_ERR(curRef);
     }
 
-    // Retrieves static files from the ll-builder-utils matching the target architecture if
-    // available, including uab-header, uab-loader, ll-box. Fallback to defaults if ll-builder-utils
-    // is not found or fails.
-    auto ref = ensureUtils("cn.org.linyaps.builder.utils", curRef->arch);
-    if (ref) {
+    package::UABPackager packager(exportWorkingDir);
+    packager.setCompressor(exportOpts.compressor);
+
+    // Only the architecture-matched UAB header is needed by either mode. Exec mode generates its
+    // own loader, and neither mode embeds ll-box.
+    auto utilsRef = ensureUtils(builderUtilsID, curRef->arch);
+    if (utilsRef) {
         LogD("using static files from cn.org.linyaps.builder.utils");
         std::vector<std::string> args{
             "/opt/apps/cn.org.linyaps.builder.utils/files/bin/ll-builder-export",
             "--get-header",
             "/project/.uabBuild/uab-header",
-            "--get-loader",
-            "/project/.uabBuild/uab-loader",
         };
 
-        if (!distributedOnly) {
-            args.emplace_back("--get-box");
-            args.emplace_back("/project/.uabBuild/ll-box");
-        }
-
-        auto res = runFromRepo(*ref, args);
-        if (res) {
+        auto utilsResult = runFromRepo(*utilsRef, args);
+        if (utilsResult) {
             std::error_code ec;
-            if (std::filesystem::exists(exportWorkingDir / "uab-header", ec)
-                && std::filesystem::exists(exportWorkingDir / "uab-loader", ec)) {
+            const bool hasHeader = std::filesystem::exists(exportWorkingDir / "uab-header", ec);
+            if (hasHeader) {
                 packager.setDefaultHeader(exportWorkingDir / "uab-header");
-                packager.setDefaultLoader(exportWorkingDir / "uab-loader");
-            }
-
-            if (!distributedOnly && std::filesystem::exists(exportWorkingDir / "ll-box", ec)) {
-                packager.setDefaultBox(exportWorkingDir / "ll-box");
+            } else {
+                return LINGLONG_ERR(
+                  "builder utils did not provide uab-header for target architecture "
+                  + curRef->arch.toString());
             }
         } else {
-            LogW("run builder utils error: {}", res.error());
+            return LINGLONG_ERR("failed to get UAB utilities for target architecture "
+                                  + curRef->arch.toString(),
+                                utilsResult);
         }
     } else {
-        LogW("failed to get builder utils for arch {}: {}", curRef->arch.toString(), ref.error());
+        return LINGLONG_ERR("failed to get builder utils for target architecture "
+                              + curRef->arch.toString(),
+                            utilsRef);
     }
 
-    // Using the packdir tools matching current architecture
-    const auto &arch = package::Architecture::currentCPUArchitecture();
-    if (arch != curRef->arch) {
-        ref = ensureUtils("cn.org.linyaps.builder.utils", arch);
+    // Use packdir from builder-utils matching the host architecture.
+    const auto &hostArch = package::Architecture::currentCPUArchitecture();
+    if (hostArch != curRef->arch) {
+        utilsRef = ensureUtils(builderUtilsID, hostArch);
     }
-
-    if (ref) {
+    if (utilsRef) {
         auto utilsBundler =
-          [&ref, &exportOpts, this](
+          [&utilsRef, &exportOpts, this](
             const std::filesystem::path &bundleFile,
             const std::filesystem::path &bundleDir) -> utils::error::Result<void> {
             LINGLONG_TRACE("use utils to bundle file");
@@ -1469,17 +1570,17 @@ utils::error::Result<void> Builder::exportUAB(const ExportOption &option,
                 || common::strings::starts_with(relativeBundleDir.string(), "../")) {
                 return LINGLONG_ERR("file must be in project directory");
             }
+
             std::vector<std::string> args{
                 "/opt/apps/cn.org.linyaps.builder.utils/files/bin/ll-builder-export",
                 "--packdir",
                 fmt::format("{}:{}",
                             std::filesystem::path{ "/project" } / relativeBundleDir,
-                            std::filesystem::path{ "/project" } / relativeBundleFile)
+                            std::filesystem::path{ "/project" } / relativeBundleFile),
+                "-z",
+                exportOpts.compressor,
             };
-
-            args.emplace_back("-z");
-            args.emplace_back(exportOpts.compressor);
-            return runFromRepo(*ref, args);
+            return runFromRepo(*utilsRef, args);
         };
         packager.setBundleCB(utilsBundler);
     } else {
@@ -1492,125 +1593,76 @@ utils::error::Result<void> Builder::exportUAB(const ExportOption &option,
             uabFile = outputFile;
         } else {
             std::error_code ec;
-            uabFile = std::filesystem::canonical(outputFile, ec);
+            uabFile = std::filesystem::weakly_canonical(outputFile, ec);
             if (ec) {
                 return LINGLONG_ERR(fmt::format("failed to get canonical path {}", outputFile), ec);
             }
         }
     } else {
-        uabFile = workingDir / uabExportFilename(*curRef);
+        uabFile = workingDir / uabExportFilename(*curRef, exportOpts.mode);
     }
 
-    // export single ref
-    if (distributedOnly) {
+    std::optional<package::TempLayerDir> temporaryMergedModuleDir;
+    if (exportOpts.mode == ExportMode::Exec) {
+        if (std::find(exportOpts.modules.cbegin(), exportOpts.modules.cend(), "binary")
+            == exportOpts.modules.cend()) {
+            return LINGLONG_ERR("binary module is required in UABX mode");
+        }
+
+        auto binaryLayerDir = this->repo.getLayerDir(*curRef, "binary");
+        if (!binaryLayerDir) {
+            return LINGLONG_ERR("binary module is required in UABX mode", binaryLayerDir);
+        }
+
+        auto info = binaryLayerDir->info();
+        if (!info) {
+            return LINGLONG_ERR(info);
+        }
+        if (info->kind != "app") {
+            return LINGLONG_ERR("only app packages can be exported in UABX mode");
+        }
+
+        auto layerDir = *binaryLayerDir;
+        if (exportOpts.modules.size() > 1) {
+            auto mergedLayerDir = this->repo.createTempMergedModuleDir(*curRef, exportOpts.modules);
+            if (!mergedLayerDir) {
+                return LINGLONG_ERR("failed to merge modules for UABX export", mergedLayerDir);
+            }
+            temporaryMergedModuleDir = std::move(*mergedLayerDir);
+            layerDir = temporaryMergedModuleDir->layerDir();
+        }
+
+        if (auto ret = packager.appendLayer(std::move(layerDir)); !ret) {
+            return LINGLONG_ERR(ret);
+        }
+    } else {
         for (const auto &module : exportOpts.modules) {
             auto layerDir = this->repo.getLayerDir(*curRef, module);
             if (!layerDir) {
                 return LINGLONG_ERR(layerDir);
             }
 
-            auto ret = packager.appendLayer(*layerDir);
-            if (!ret) {
+            if (auto ret = packager.appendLayer(*layerDir); !ret) {
                 return LINGLONG_ERR(ret);
             }
         }
-        auto ret = packager.pack(uabFile, true);
-        if (!ret) {
-            return LINGLONG_ERR(ret);
+    }
+
+    auto packagerMode = package::UABPackagerMode::Distribution;
+    if (exportOpts.mode == ExportMode::Exec) {
+        if (!exportOpts.iconPath.empty()) {
+            if (auto ret = packager.setIcon(exportOpts.iconPath); !ret) {
+                return LINGLONG_ERR(ret);
+            }
         }
 
-        return LINGLONG_OK;
-    }
-
-    // if we get there, project must be set
-    if (!underProject) {
-        return LINGLONG_ERR("project is not set");
-    }
-
-    if (!option.iconPath.empty()) {
-        if (auto ret = packager.setIcon(option.iconPath); !ret) {
-            return LINGLONG_ERR(ret);
+        if (!exportOpts.loader.empty()) {
+            packager.setLoader(exportOpts.loader);
         }
+        packagerMode = package::UABPackagerMode::Exec;
     }
 
-    if (underProject && this->project->exclude) {
-        auto ret = packager.exclude(project->exclude.value());
-        if (!ret) {
-            return LINGLONG_ERR(ret);
-        }
-    }
-
-    if (underProject && this->project->include) {
-        auto ret = packager.include(project->include.value());
-        if (!ret) {
-            return LINGLONG_ERR(ret);
-        }
-    }
-
-    if (this->project->runtime) {
-        auto ret = packager.loadBlackList();
-        if (!ret) {
-            return LINGLONG_ERR(ret);
-        }
-
-        // load needed libraries
-        ret = packager.loadNeededFiles();
-        if (!ret) {
-            return LINGLONG_ERR(ret);
-        }
-    }
-
-    auto baseRef = clearDependency(this->project->base, false, false);
-    if (!baseRef) {
-        return LINGLONG_ERR(baseRef);
-    }
-
-    auto baseDir = this->repo.getLayerDir(*baseRef);
-    if (!baseDir) {
-        return LINGLONG_ERR(baseDir);
-    }
-
-    auto ret = packager.appendLayer(*baseDir);
-    if (!ret) {
-        return LINGLONG_ERR(ret);
-    }
-
-    if (!option.compressor.empty()) {
-        packager.setCompressor(option.compressor.c_str());
-    }
-
-    if (this->project->runtime) {
-        auto runtimeRef = clearDependency(this->project->runtime.value(), false, false);
-        if (!runtimeRef) {
-            return LINGLONG_ERR(runtimeRef);
-        }
-
-        auto runtimeDir = this->repo.getLayerDir(*runtimeRef);
-        if (!runtimeDir) {
-            return LINGLONG_ERR(runtimeDir);
-        }
-
-        auto ret = packager.appendLayer(*runtimeDir);
-        if (!ret) {
-            return LINGLONG_ERR(ret);
-        }
-    }
-
-    auto appDir = this->repo.getLayerDir(*curRef);
-    if (!appDir) {
-        return LINGLONG_ERR(appDir);
-    }
-
-    ret = packager.appendLayer(*appDir); // app layer must be the last of appended layer
-    if (!ret) {
-        return LINGLONG_ERR(ret);
-    }
-
-    if (!option.loader.empty()) {
-        packager.setLoader(option.loader.c_str());
-    }
-
-    if (auto ret = packager.pack(uabFile, false); !ret) {
+    if (auto ret = packager.pack(uabFile, packagerMode); !ret) {
         return LINGLONG_ERR(ret);
     }
 
@@ -1769,7 +1821,7 @@ utils::error::Result<void> Builder::run(std::vector<std::string> modules,
 
     runtime::RunContext runContext(this->repo);
     linglong::runtime::ResolveOptions opts;
-    opts.depsBinaryOnly = !debug;
+    opts.depsExcludeDev = !debug;
     opts.appModules = std::move(modules);
     if (!extensions.empty()) {
         opts.extensionRefs = extensions;
@@ -2121,7 +2173,7 @@ void Builder::takeTerminalForeground()
 void Builder::printBasicInfo()
 {
     printMessage("[Builder info]");
-    printMessage(std::string("Linglong Builder Version: ") + LINGLONG_VERSION, 2);
+    printMessage(std::string("Linglong Builder Version: ") + LINGLONG_VERSION_FULL, 2);
     printMessage("[Build Target]");
     const auto &project = *this->project;
     printMessage(project.package.id, 2);
@@ -2154,13 +2206,14 @@ bool Builder::checkDeprecatedInstallFile()
     return !std::filesystem::exists(installFilepath, ec);
 }
 
-std::string Builder::uabExportFilename(const linglong::package::Reference &ref)
+std::string Builder::uabExportFilename(const linglong::package::Reference &ref, ExportMode mode)
 {
-    return fmt::format("{}_{}_{}_{}.uab",
+    return fmt::format("{}_{}_{}_{}.{}",
                        ref.id,
                        ref.version.toString(),
                        ref.arch.toString(),
-                       ref.channel);
+                       ref.channel,
+                       mode == ExportMode::Exec ? "uabx" : "uab");
 }
 
 std::string Builder::layerExportFilename(const linglong::package::Reference &ref,
@@ -2172,4 +2225,28 @@ std::string Builder::layerExportFilename(const linglong::package::Reference &ref
                        ref.arch.toString(),
                        module);
 }
+
+utils::error::Result<void> Builder::cleanBuildArtifacts() noexcept
+{
+    LINGLONG_TRACE("clean build artifacts");
+
+    std::error_code ec;
+    if (!std::filesystem::exists(this->internalDir, ec)) {
+        return LINGLONG_OK;
+    }
+
+    auto ret = utils::makeDirectoryTreeRemovable(this->internalDir);
+    if (!ret) {
+        return LINGLONG_ERR("failed to make directory tree removable", ret);
+    }
+
+    std::filesystem::remove_all(this->internalDir, ec);
+    if (ec) {
+        return LINGLONG_ERR(
+          fmt::format("failed to remove {}: {}", this->internalDir.string(), ec.message()));
+    }
+
+    return LINGLONG_OK;
+}
+
 } // namespace linglong::builder

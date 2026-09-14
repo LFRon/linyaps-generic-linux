@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2025 UnionTech Software Technology Co., Ltd.
+ * SPDX-FileCopyrightText: 2025 - 2026 UnionTech Software Technology Co., Ltd.
  *
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
@@ -9,6 +9,7 @@
 #include "linglong/utils/error/error.h"
 
 #include <filesystem>
+#include <vector>
 
 namespace linglong::utils {
 
@@ -17,6 +18,11 @@ MergeRuntimeConfig(const std::vector<linglong::api::types::v1::RuntimeConfigure>
 utils::error::Result<linglong::api::types::v1::RuntimeConfigure>
 loadRuntimeConfig(const std::filesystem::path &path);
 utils::error::Result<std::optional<linglong::api::types::v1::RuntimeConfigure>>
-loadRuntimeConfig(const std::string &appId);
+loadRuntimeConfig(const std::string &appId, const std::string &instance = "");
+
+utils::error::Result<std::optional<linglong::api::types::v1::RuntimeConfigure>>
+loadRuntimeConfig(const std::vector<std::filesystem::path> &configDirs,
+                  const std::string &appId,
+                  const std::string &instance = "");
 
 } // namespace linglong::utils

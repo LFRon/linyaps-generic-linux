@@ -32,6 +32,10 @@ inline splitOption operator&(splitOption a, splitOption b)
 
 bool stringEqual(std::string_view str1, std::string_view str2, bool caseSensitive = false) noexcept;
 
+std::string_view trim_left(std::string_view str, std::string_view chars = " ") noexcept;
+
+std::string_view trim_right(std::string_view str, std::string_view chars = " ") noexcept;
+
 std::string_view trim(std::string_view str, std::string_view chars = " ") noexcept;
 
 std::vector<std::string_view> split(std::string_view str,
@@ -51,6 +55,8 @@ bool ends_with(std::string_view str, std::string_view suffix) noexcept;
 bool contains(std::string_view str, std::string_view suffix) noexcept;
 
 std::string quoteBashArg(std::string arg) noexcept;
+
+std::string generateRandomString(std::size_t length) noexcept;
 
 std::optional<std::string> decode_url(std::string_view url) noexcept;
 
