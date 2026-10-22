@@ -147,6 +147,8 @@ public:
     fetchRefMetaData(const package::ReferenceWithRepo &refRepo,
                      const std::string &module = "binary",
                      bool fetchPackageInfo = false) noexcept;
+    virtual utils::error::Result<api::types::v1::PackageInfoV2> fetchRemotePackageInfo(
+      const package::ReferenceWithRepo &refRepo, const std::string &module = "binary") noexcept;
     virtual utils::error::Result<RefStatistics>
     getRefStatistics(const RefMetaData &meta) const noexcept;
 
@@ -281,6 +283,10 @@ protected:
     virtual utils::error::Result<bool> shouldExportSignData() const noexcept;
     utils::error::Result<void> exportAppEntries(
       const std::filesystem::path &, const api::types::v1::RepositoryCacheLayersItem &) noexcept;
+    // Export a single wrapper script named after the appid to entries/bin
+    utils::error::Result<void>
+    exportAppBinaries(const std::filesystem::path &rootEntriesDir,
+                      const api::types::v1::RepositoryCacheLayersItem &item) noexcept;
     utils::error::Result<void> unexportLayerSignData(
       const std::filesystem::path &, const api::types::v1::RepositoryCacheLayersItem &) noexcept;
     utils::error::Result<void> unexportAppEntries(

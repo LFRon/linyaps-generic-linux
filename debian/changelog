@@ -1,3 +1,9 @@
+linglong (1.15.0-1) unstable; urgency=medium
+
+  * Follow OpenAtom-Linyaps upstream
+
+ -- LFRon <ronforever@outlook.com>  Thu, 22 Oct 2026 17:23:00 +0800
+
 linglong (1.15.0-0) unstable; urgency=medium
 
   * Follow OpenAtom-Linyaps upstream
