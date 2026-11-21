@@ -725,6 +725,11 @@ OSTreeRepo::create(std::filesystem::path repoRoot, api::types::v1::RepoConfigV2 
         } else {
             return LINGLONG_ERR("failed to load config", res);
         }
+    } else {
+        auto validated = validateConfig(cfg);
+        if (!validated) {
+            return LINGLONG_ERR("invalid repo config", validated);
+        }
     }
 
     auto repo = std::unique_ptr<OSTreeRepo>(new OSTreeRepo(std::move(repoRoot), std::move(cfg)));
@@ -2661,7 +2666,6 @@ void OSTreeRepo::updateSharedInfo() noexcept
     auto desktopExportPath = std::string{ LINGLONG_EXPORT_PATH } + "/applications";
     auto customApplicationDir = this->repoDir / "entries" / desktopExportPath;
     auto mimeDataDir = this->repoDir / "entries/share/mime";
-    auto glibSchemasDir = this->repoDir / "entries/share/glib-2.0/schemas";
 
     std::vector<std::string> desktopDirs;
     std::error_code ec;
@@ -2691,14 +2695,6 @@ void OSTreeRepo::updateSharedInfo() noexcept
         auto ret = utils::Cmd("update-mime-database").exec({ mimeDataDir });
         if (!ret) {
             LogW("failed to update mime type database in {}: {}", mimeDataDir, ret.error());
-        }
-    }
-
-    // 更新 glib-2.0/schemas
-    if (std::filesystem::exists(glibSchemasDir, ec)) {
-        auto ret = utils::Cmd("glib-compile-schemas").exec({ glibSchemasDir });
-        if (!ret) {
-            LogW("failed to update schemas in {}: {}", glibSchemasDir, ret.error());
         }
     }
 }

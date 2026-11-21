@@ -28,7 +28,7 @@ namespace {
 
 void print_sys_error(std::string_view msg, int error) noexcept
 {
-    fmt::println(stderr, "{}: {}", msg, ::strerror(error));
+    fmt::print(stderr, "{}: {}\n", msg, ::strerror(error));
 }
 
 void print_sys_error(std::string_view msg) noexcept
@@ -40,7 +40,7 @@ void print_info(std::string_view msg) noexcept
 {
     static const auto is_debug = ::getenv("LINYAPS_INIT_VERBOSE_OUTPUT") != nullptr;
     if (is_debug) {
-        fmt::println(stderr, "{}", msg);
+        fmt::print(stderr, "{}\n", msg);
     }
 }
 
@@ -268,18 +268,23 @@ public:
         }
 
         if (pid == 0) {
+            // This is the child: every failure path has to _exit, not return.
+            // Returning here hands ChildProcess{} back to the caller *in the
+            // child*, so the child keeps running whatever the parent runs next.
+            // setpgid(0, 0) is exactly the call that fails with EPERM when the
+            // process is already a session leader, which ll-init is as PID 1.
             if (::setpgid(0, 0) == -1) {
                 print_sys_error("failed to set process group");
-                return ChildProcess{};
+                ::_exit(EXIT_FAILURE);
             }
 
             if (::tcsetpgrp(0, ::getpid()) == -1 && errno != ENOTTY) {
                 print_sys_error("failed to set terminal process group");
-                return ChildProcess{};
+                ::_exit(EXIT_FAILURE);
             }
 
             if (!mask.restore()) {
-                return ChildProcess{};
+                ::_exit(EXIT_FAILURE);
             }
 
             ::execvp(args[0], const_cast<char *const *>(args.data()));
@@ -654,10 +659,6 @@ int delegate_run(int argc, char **argv) noexcept
 
     auto stdin_is_tty = ::isatty(STDIN_FILENO) == 1;
     auto args = parse_args(argc, argv);
-    if (args.empty()) {
-        print_info("no arguments provided for delegate run");
-        return 0;
-    }
 
     int tty_fd{ -1 };
     if (stdin_is_tty) {
@@ -729,11 +730,6 @@ int run_init(int argc, char **argv) noexcept
     }
 
     auto args = parse_args(argc, argv);
-    if (args.empty()) {
-        print_info("no arguments provided");
-        return -1;
-    }
-
     auto child = ChildProcess::spawn(args, sigmask);
     if (!child) {
         print_info("failed to run child process");
@@ -798,6 +794,11 @@ int run_init(int argc, char **argv) noexcept
 
 int main(int argc, char **argv) // NOLINT
 {
+    if (argc <= 1) {
+        print_info("usage: ll-init <command> [args...]");
+        return -1;
+    }
+
     if (::getpid() != 1) {
         return delegate_run(argc, argv);
     }

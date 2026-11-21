@@ -20,6 +20,7 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <unistd.h>
 
 namespace {
@@ -174,6 +175,22 @@ TEST(PipeSet, CreateProducesThreePipes)
     EXPECT_TRUE(set->stdinPipe.has_value());
     EXPECT_TRUE(set->stdoutPipe.has_value());
     EXPECT_TRUE(set->stderrPipe.has_value());
+}
+
+TEST(PipeSet, CloseParentEndsKeepsChildEndsOpen)
+{
+    auto pipes = PipeSet::create();
+    ASSERT_TRUE(pipes.has_value());
+
+    pipes->closeParentEnds();
+
+    // child-facing ends stay open, parent-facing ends are closed
+    EXPECT_NE(::fcntl(pipes->stdinPipe->readEnd(), F_GETFD), -1);
+    EXPECT_NE(::fcntl(pipes->stdoutPipe->writeEnd(), F_GETFD), -1);
+    EXPECT_NE(::fcntl(pipes->stderrPipe->writeEnd(), F_GETFD), -1);
+    EXPECT_EQ(::fcntl(pipes->stdinPipe->writeEnd(), F_GETFD), -1);
+    EXPECT_EQ(::fcntl(pipes->stdoutPipe->readEnd(), F_GETFD), -1);
+    EXPECT_EQ(::fcntl(pipes->stderrPipe->readEnd(), F_GETFD), -1);
 }
 
 TEST(RingBuffer, CreateRejectsZeroCapacity)
@@ -360,4 +377,102 @@ TEST(IOForwarder, ForwardsDataFromPipeToPipe)
     EXPECT_TRUE(forwarder.isFinished());
 }
 
+TEST(IOForwarder, PullMarksEofWhenSourceCloses)
+{
+    auto loop = EventLoop::create();
+    ASSERT_TRUE(loop.has_value());
+
+    auto src = Pipe::create(O_CLOEXEC | O_NONBLOCK);
+    auto dst = Pipe::create(O_CLOEXEC | O_NONBLOCK);
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+
+    IOForwarder forwarder{ *loop };
+    forwarder.setSrc(src->readEnd());
+    forwarder.setDst(dst->writeEnd());
+
+    src->closeReadEnd();
+    forwarder.pull();
+    EXPECT_TRUE(forwarder.bufferEmpty());
+    EXPECT_TRUE(forwarder.isFinished());
+}
+
+TEST(IOForwarder, PushFailureMarksDstFailedAndClearsBuffer)
+{
+    auto loop = EventLoop::create();
+    ASSERT_TRUE(loop.has_value());
+
+    auto src = Pipe::create(O_CLOEXEC | O_NONBLOCK);
+    auto dst = Pipe::create(O_CLOEXEC | O_NONBLOCK);
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+
+    IOForwarder forwarder{ *loop };
+    forwarder.setSrc(src->readEnd());
+    forwarder.setDst(dst->writeEnd());
+
+    const std::string payload = "discarded";
+    ASSERT_EQ(::write(src->writeEnd(), payload.data(), payload.size()),
+              static_cast<ssize_t>(payload.size()));
+
+    forwarder.pull();
+    ASSERT_FALSE(forwarder.bufferEmpty());
+
+    auto previous = ::signal(SIGPIPE, SIG_IGN);
+    dst->closeWriteEnd();
+    forwarder.push();
+    ::signal(SIGPIPE, previous);
+
+    EXPECT_TRUE(forwarder.bufferEmpty());
+    EXPECT_TRUE(forwarder.isFinished());
+}
+
+TEST(IOForwarder, PushRegistersWriteWatchWhenDestinationWouldBlock)
+{
+    auto loop = EventLoop::create();
+    ASSERT_TRUE(loop.has_value());
+
+    auto src = Pipe::create(O_CLOEXEC | O_NONBLOCK);
+    auto dst = Pipe::create(O_CLOEXEC | O_NONBLOCK);
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+
+    int flags = ::fcntl(dst->readEnd(), F_GETFL, 0);
+    ASSERT_NE(flags, -1);
+    ASSERT_NE(::fcntl(dst->readEnd(), F_SETFL, flags | O_NONBLOCK), -1);
+
+    std::array<char, 4096> fill{};
+    while (::write(dst->writeEnd(), fill.data(), fill.size()) > 0) { }
+
+    IOForwarder forwarder{ *loop };
+    forwarder.setSrc(src->readEnd());
+    forwarder.setDst(dst->writeEnd());
+
+    const std::string payload = "queued payload";
+    ASSERT_EQ(::write(src->writeEnd(), payload.data(), payload.size()),
+              static_cast<ssize_t>(payload.size()));
+
+    forwarder.drive();
+    EXPECT_FALSE(forwarder.bufferEmpty());
+    EXPECT_TRUE(forwarder.needsWriteWatch());
+
+    std::array<char, 8192> drain{};
+    while (::read(dst->readEnd(), drain.data(), drain.size()) > 0) { }
+
+    forwarder.onDstWritable();
+    EXPECT_TRUE(forwarder.bufferEmpty());
+    EXPECT_FALSE(forwarder.needsWriteWatch());
+}
+
+TEST(IOForwarder, InvalidDescriptorsAreNoops)
+{
+    auto loop = EventLoop::create();
+    ASSERT_TRUE(loop.has_value());
+
+    IOForwarder forwarder{ *loop };
+    forwarder.drive();
+    EXPECT_TRUE(forwarder.bufferEmpty());
+    EXPECT_FALSE(forwarder.isFinished());
+    EXPECT_FALSE(forwarder.needsWriteWatch());
+}
 } // namespace

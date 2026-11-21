@@ -65,6 +65,26 @@ using ocppi::runtime::config::types::RootfsPropagation;
 
 namespace {
 
+// 00env.sh is sourced by the container shell, so only names accepted by
+// `export` may be serialized; an invalid name would break the whole script.
+bool isValidEnvKey(std::string_view key) noexcept
+{
+    const auto isAlpha = [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    };
+    const auto isDigit = [](char c) {
+        return c >= '0' && c <= '9';
+    };
+
+    if (key.empty() || (!isAlpha(key.front()) && key.front() != '_')) {
+        return false;
+    }
+
+    return std::all_of(key.begin() + 1, key.end(), [&](char c) {
+        return isAlpha(c) || isDigit(c) || c == '_';
+    });
+}
+
 bool bindIfExist(std::vector<Mount> &mounts,
                  std::filesystem::path source,
                  std::string destination = "",
@@ -594,26 +614,6 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindHostRoot() noexcept
     return *this;
 }
 
-ContainerCfgBuilder &ContainerCfgBuilder::bindHostStatics() noexcept
-{
-    std::vector<std::filesystem::path> statics{
-        "/etc/machine-id",
-        // FIXME: support for host /etc/ssl, ref https://github.com/p11-glue/p11-kit
-        "/usr/lib/locale",
-        "/usr/share/fonts",
-        "/usr/share/icons",
-        "/usr/share/themes",
-        "/var/cache/fontconfig",
-    };
-
-    hostStaticsMount = std::vector<Mount>{};
-    for (const auto &loc : statics) {
-        bindIfExist(*hostStaticsMount, loc);
-    }
-
-    return *this;
-}
-
 ContainerCfgBuilder &ContainerCfgBuilder::bindHome(std::filesystem::path hostHome) noexcept
 {
     homePath = hostHome;
@@ -992,9 +992,23 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
         return true;
     };
 
-    auto *value = getenv("XDG_DATA_HOME");
-    std::filesystem::path XDG_DATA_HOME =
-      value ? std::filesystem::path{ value } : *homePath / ".local" / "share";
+    // XDG base directory spec: empty or relative overrides are invalid, fall back
+    // to the default location instead of mounting a broken host path
+    auto xdgHomeDir = [](const char *name,
+                         const std::filesystem::path &fallback) -> std::filesystem::path {
+        const auto *value = getenv(name);
+        if (value == nullptr || *value == '\0') {
+            return fallback;
+        }
+        std::filesystem::path dir{ value };
+        if (!dir.is_absolute()) {
+            LogW("ignoring non-absolute {} value: {}", name, value);
+            return fallback;
+        }
+        return dir;
+    };
+
+    auto XDG_DATA_HOME = xdgHomeDir("XDG_DATA_HOME", *homePath / ".local" / "share");
     std::string containerDataHome = containerHome + "/.local/share";
     if (XDG_DATA_HOME != containerDataHome) {
         if (!mountDir(XDG_DATA_HOME, containerDataHome)) {
@@ -1016,9 +1030,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
         return std::filesystem::path{};
     };
 
-    value = getenv("XDG_CONFIG_HOME");
-    std::filesystem::path XDG_CONFIG_HOME =
-      value ? std::filesystem::path{ value } : *homePath / ".config";
+    auto XDG_CONFIG_HOME = xdgHomeDir("XDG_CONFIG_HOME", *homePath / ".config");
     std::filesystem::path XDGConfigHome = XDG_CONFIG_HOME;
     auto privateConfigPath = checkPrivatePath("config");
     if (!privateConfigPath.empty()) {
@@ -1032,9 +1044,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
     }
     environment["XDG_CONFIG_HOME"] = containerConfigHome;
 
-    value = getenv("XDG_CACHE_HOME");
-    std::filesystem::path XDG_CACHE_HOME =
-      value ? std::filesystem::path{ value } : *homePath / ".cache";
+    auto XDG_CACHE_HOME = xdgHomeDir("XDG_CACHE_HOME", *homePath / ".cache");
     std::filesystem::path XDGCacheHome = XDG_CACHE_HOME;
     auto privateCachePath = checkPrivatePath("cache");
     if (!privateCachePath.empty()) {
@@ -1048,9 +1058,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildMountHome() noexcept
     }
     environment["XDG_CACHE_HOME"] = containerCacheHome;
 
-    value = getenv("XDG_STATE_HOME");
-    std::filesystem::path XDG_STATE_HOME =
-      value ? std::filesystem::path{ value } : *homePath / ".local" / "state";
+    auto XDG_STATE_HOME = xdgHomeDir("XDG_STATE_HOME", *homePath / ".local" / "state");
     auto privateStatePath = checkPrivatePath("state");
     if (!privateStatePath.empty()) {
         XDG_STATE_HOME = privateStatePath;
@@ -1545,19 +1553,15 @@ utils::error::Result<void> ContainerCfgBuilder::buildEnv() noexcept
 
     auto env = std::vector<std::string>{};
     for (const auto &[key, value] : environment) {
+        if (!isValidEnvKey(key)) {
+            continue;
+        }
+
         env.emplace_back(key + "=" + value);
 
-        // here we process environment variables with single quotes.
-        // A=a'b ===> A='a'\''b'
-        std::string escaped;
-        for (auto it = value.begin(); it != value.end(); ++it) {
-            if (*it == '\'') {
-                escaped.append(R"('\'')");
-            } else {
-                escaped.push_back(*it);
-            }
-        }
-        ofs << "export " << key << "='" << escaped << "'" << std::endl;
+        // Serialize the value as one shell argument; quoting rules are owned by
+        // quoteBashArg so they cannot drift from other shell call sites.
+        ofs << "export " << key << '=' << common::strings::quoteBashArg(value) << std::endl;
     }
     ofs.close();
 
@@ -1909,10 +1913,6 @@ utils::error::Result<void> ContainerCfgBuilder::mergeMount() noexcept
 
     if (hostRootMount) {
         std::move(hostRootMount->begin(), hostRootMount->end(), std::back_inserter(mounts));
-    }
-
-    if (hostStaticsMount) {
-        std::move(hostStaticsMount->begin(), hostStaticsMount->end(), std::back_inserter(mounts));
     }
 
     if (homeMount) {

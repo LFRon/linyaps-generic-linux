@@ -21,6 +21,8 @@
 
 #include <CLI/CLI.hpp>
 
+#include <QDBusError>
+
 namespace linglong::runtime {
 class RunContext;
 }
@@ -36,6 +38,8 @@ struct PackageManager1InstallParameters;
 namespace linglong::cli {
 
 class Printer;
+
+utils::error::ErrorCode errorCodeFromDBus(QDBusError::ErrorType type) noexcept;
 
 // 全局选项（仅用于verbose等通用选项）
 struct GlobalOptions
@@ -232,11 +236,14 @@ protected:
 private:
     [[nodiscard]] static utils::error::Result<void>
     RequestDirectories(const api::types::v1::PackageInfoV2 &info) noexcept;
+
+protected:
     [[nodiscard]] std::vector<std::string> filePathMapping(
       const std::vector<std::string> &command, const RunOptions &options) const noexcept;
     static std::string mappingFile(const std::filesystem::path &file) noexcept;
     static std::string mappingUrl(std::string_view url) noexcept;
 
+private:
     static void filterPackageInfosByType(
       std::map<std::string, std::vector<api::types::v1::PackageInfoV2>> &list,
       const std::string &type) noexcept;
@@ -250,7 +257,7 @@ private:
                                              const std::vector<std::string> &command) noexcept;
     int installFromFile(const QFileInfo &fileInfo,
                         const api::types::v1::CommonOptions &commonOptions);
-    int setRepoConfig(const QVariantMap &config);
+    utils::error::Result<void> setRepoConfig(const QVariantMap &config);
     utils::error::Result<std::vector<api::types::v1::UpgradeListResult>> listUpgradable();
     utils::error::Result<std::filesystem::path> ensureCache(runtime::RunContext &context) noexcept;
     void updateAM() noexcept;
@@ -271,7 +278,8 @@ private:
 
         reply.waitForFinished();
         if (reply.isError()) {
-            return LINGLONG_ERR(reply.error().message().toStdString(), reply.error().type());
+            return LINGLONG_ERR(reply.error().message().toStdString(),
+                                errorCodeFromDBus(reply.error().type()));
         }
 
         auto result = common::serialize::fromQVariantMap<T>(reply.value());

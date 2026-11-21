@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "../../common/tempdir.h"
 #include "../mocks/linglong_builder_mock.h"
+#include "common/test_process.h"
+#include "configure.h"
 #include "linglong/builder/builder_directory.h"
 #include "linglong/builder/linglong_builder.h"
 #include "linglong/builder/source_cache.h"
+#include "linglong/utils/cmd.h"
 #include "linglong/utils/env.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/file.h"
@@ -15,28 +19,17 @@
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include <sys/wait.h>
 #include <unistd.h>
 
-static void expectProjectProcessSuccess(pid_t pid)
-{
-    ASSERT_GT(pid, 0);
-    int status = 0;
-    pid_t waited;
-    do {
-        waited = ::waitpid(pid, &status, 0);
-    } while (waited < 0 && errno == EINTR);
-
-    ASSERT_EQ(waited, pid);
-    ASSERT_TRUE(WIFEXITED(status));
-    EXPECT_EQ(WEXITSTATUS(status), 0);
-}
+using linglong::test::TestProcess;
 
 TEST(LinglongBuilder, YamlPathPreservesFileSymlinksForExplicitAndDefaultLookup)
 {
@@ -121,18 +114,9 @@ TEST(LinglongBuilder, BuilderLocksYamlEntryDirectoryAcrossWorkingDirectories)
         ASSERT_TRUE(builder.cleanBuildArtifacts());
 
         for (const auto &directory : { workingDir.path(), yamlDirectory }) {
-            const auto pid = ::fork();
-            if (pid == 0) {
-                ::alarm(10);
-                linglong::builder::BuilderMock competing(directory);
-                competing.projectYamlFile = manifest.string();
-                auto result = competing.cleanBuildArtifacts();
-                ::_exit(!result
-                            && result.error().message().find("already in use") != std::string::npos
-                          ? 0
-                          : 1);
-            }
-            expectProjectProcessSuccess(pid);
+            TestProcess competing(
+              { "builder", "operation-conflict", directory.string(), manifest.string(), "clean" });
+            ASSERT_EQ(competing.wait(), 0) << competing.stderrOutput();
         }
 
         // The target's directory has its own resource lock and remains independent.
@@ -167,23 +151,10 @@ TEST(LinglongBuilder, BuilderReleasesWorkingDirectoryLockWhenYamlDirectoryIsBusy
     std::filesystem::create_directory(yamlDirectory);
     auto held = linglong::builder::BuilderDirectoryLayout(yamlDirectory).lockProject();
     ASSERT_TRUE(held);
-    // Initialize shared mock resources before forking.
-    linglong::builder::BuilderMock builder(workingDir.path());
-    builder.projectYamlFile = (yamlDirectory / "linglong.yaml").string();
 
-    const auto pid = ::fork();
-    if (pid == 0) {
-        ::alarm(10);
-        auto result = builder.cleanBuildArtifacts();
-        if (result || result.error().message().find("already in use") == std::string::npos) {
-            ::_exit(1);
-        }
-
-        // The failed Builder is still alive; it must not retain the first lock.
-        auto released = linglong::builder::BuilderDirectoryLayout(workingDir.path()).lockProject();
-        ::_exit(released && released->isLocked() ? 0 : 2);
-    }
-    expectProjectProcessSuccess(pid);
+    TestProcess competing(
+      { "builder", "yaml-conflict", workingDir.path().string(), yamlDirectory.string() });
+    ASSERT_EQ(competing.wait(), 0) << competing.stderrOutput();
 }
 
 TEST(LinglongBuilder, ProjectLockRejectsConcurrentProcessesAndDirectoryAliases)
@@ -200,20 +171,9 @@ TEST(LinglongBuilder, ProjectLockRejectsConcurrentProcessesAndDirectoryAliases)
     ASSERT_TRUE(lock->isLocked());
 
     for (const auto &path : { project, project / ".", alias }) {
-        const auto pid = ::fork();
-        if (pid == 0) {
-            ::alarm(10);
-            auto conflicting = linglong::builder::BuilderDirectoryLayout(path).lockProject();
-            if (conflicting
-                || conflicting.error().message().find("already in use") == std::string::npos) {
-                ::_exit(1);
-            }
-
-            auto independent =
-              linglong::builder::BuilderDirectoryLayout(otherProject.path()).lockProject();
-            ::_exit(independent && independent->isLocked() ? 0 : 2);
-        }
-        expectProjectProcessSuccess(pid);
+        TestProcess competing(
+          { "builder", "check-conflict", path.string(), otherProject.path().string() });
+        ASSERT_EQ(competing.wait(), 0) << competing.stderrOutput();
     }
 }
 
@@ -233,16 +193,8 @@ TEST(LinglongBuilder, ProjectLockSurvivesCleanAndCanBeAcquiredAfterRelease)
     EXPECT_FALSE(std::filesystem::exists(directories.root()));
     EXPECT_TRUE(std::filesystem::is_regular_file(workingDir.path() / ".ll-builder.lock"));
 
-    const auto pid = ::fork();
-    if (pid == 0) {
-        ::alarm(10);
-        auto conflicting = directories.lockProject();
-        ::_exit(!conflicting
-                    && conflicting.error().message().find("already in use") != std::string::npos
-                  ? 0
-                  : 1);
-    }
-    expectProjectProcessSuccess(pid);
+    TestProcess competing({ "builder", "check-conflict", workingDir.path().string() });
+    ASSERT_EQ(competing.wait(), 0) << competing.stderrOutput();
 
     held.reset();
     auto acquired = directories.lockProject();
@@ -254,13 +206,8 @@ TEST(LinglongBuilder, ProjectLockIsReleasedWhenProcessExits)
 {
     TempDir workingDir;
     linglong::builder::BuilderDirectoryLayout directories(workingDir.path());
-    const auto pid = ::fork();
-    if (pid == 0) {
-        auto lock = directories.lockProject();
-        // Exit without destructors to verify that a leftover file does not keep the project busy.
-        ::_exit(lock && lock->isLocked() ? 0 : 1);
-    }
-    expectProjectProcessSuccess(pid);
+    TestProcess child({ "builder", "lock-and-exit", workingDir.path().string() });
+    ASSERT_EQ(child.wait(), 0) << child.stderrOutput();
 
     ASSERT_TRUE(std::filesystem::is_regular_file(workingDir.path() / ".ll-builder.lock"));
     auto acquired = directories.lockProject();
@@ -271,49 +218,21 @@ TEST(LinglongBuilder, ProjectLockIsReleasedWhenProcessExits)
 TEST(LinglongBuilder, ProjectOperationsRejectBusyProjectBeforeDoingWork)
 {
     TempDir workingDir;
-    linglong::builder::BuilderMock builder(linglong::api::types::v1::BuilderProject{},
-                                           workingDir.path());
     auto lock = linglong::builder::BuilderDirectoryLayout(workingDir.path()).lockProject();
     ASSERT_TRUE(lock);
 
-    for (int operation = 0; operation < 8; ++operation) {
+    for (const auto *operation : { "build",
+                                   "clean",
+                                   "run",
+                                   "export-uab",
+                                   "export-layer",
+                                   "push",
+                                   "generate-lock",
+                                   "update-lock" }) {
         SCOPED_TRACE(operation);
-        const auto pid = ::fork();
-        if (pid == 0) {
-            ::alarm(10);
-            linglong::utils::error::Result<void> result;
-            switch (operation) {
-            case 0:
-                result = builder.build();
-                break;
-            case 1:
-                result = builder.cleanBuildArtifacts();
-                break;
-            case 2:
-                result = builder.run({}, {});
-                break;
-            case 3:
-                result = builder.exportUAB({});
-                break;
-            case 4:
-                result = builder.exportLayer({});
-                break;
-            case 5:
-                result = builder.push("binary");
-                break;
-            case 6:
-                result = builder.processProjectLock(linglong::builder::ProjectLockMode::Generate);
-                break;
-            case 7:
-                result = builder.processProjectLock(linglong::builder::ProjectLockMode::Update);
-                break;
-            }
-
-            ::_exit(!result && result.error().message().find("already in use") != std::string::npos
-                      ? 0
-                      : 1);
-        }
-        expectProjectProcessSuccess(pid);
+        TestProcess competing(
+          { "builder", "operation-conflict", workingDir.path().string(), "", operation });
+        ASSERT_EQ(competing.wait(), 0) << competing.stderrOutput();
     }
     EXPECT_FALSE(std::filesystem::exists(workingDir.path() / "linglong"));
     EXPECT_FALSE(std::filesystem::exists(workingDir.path() / ".uabBuild"));
@@ -331,16 +250,8 @@ TEST(LinglongBuilder, BuilderReusesProjectLockUntilItsResourcesAreDestroyed)
         ASSERT_TRUE(builder.cleanBuildArtifacts());
         ASSERT_TRUE(builder.cleanBuildArtifacts());
 
-        const auto pid = ::fork();
-        if (pid == 0) {
-            ::alarm(10);
-            auto conflicting = directories.lockProject();
-            ::_exit(!conflicting
-                        && conflicting.error().message().find("already in use") != std::string::npos
-                      ? 0
-                      : 1);
-        }
-        expectProjectProcessSuccess(pid);
+        TestProcess competing({ "builder", "check-conflict", workingDir.path().string() });
+        ASSERT_EQ(competing.wait(), 0) << competing.stderrOutput();
     }
 
     auto acquired = directories.lockProject();
@@ -912,4 +823,675 @@ TEST(LinglongBuilder, CleanWithPermissionIssue)
     auto result = builder.cleanBuildArtifacts();
     ASSERT_TRUE(result.has_value()) << result.error().message();
     EXPECT_FALSE(fs::exists(linglongDir));
+}
+
+namespace {
+
+linglong::api::types::v1::BuilderProject makeProjectForBuilderBehavior()
+{
+    linglong::api::types::v1::BuilderProject project;
+    project.build = "make demo";
+    project.version = "1";
+    project.package.id = "org.example.demo";
+    project.package.name = "Demo";
+    project.package.version = "1.0.0.0";
+    project.package.kind = "app";
+    project.package.description = "demo";
+    return project;
+}
+
+std::string readTextFile(const std::filesystem::path &path)
+{
+    std::ifstream input(path);
+    return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
+}
+
+} // namespace
+
+TEST(LinglongBuilder, ExportUABRejectsMissingProjectWithoutRef)
+{
+    TempDir workingDir;
+    linglong::builder::BuilderMock builder(workingDir.path());
+
+    auto result = builder.exportUAB({});
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(),
+                ::testing::HasSubstr("not under project and --ref is not specified"));
+}
+
+TEST(LinglongBuilder, ExportLayerRejectsProjectWithoutImportedModules)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.exportLayer({});
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("no "));
+}
+
+TEST(LinglongBuilder, RuntimeCheckSkipsNonAppProject)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.runtimeCheck();
+    EXPECT_TRUE(result) << result.error().message();
+}
+
+TEST(LinglongBuilder, BuildRejectsLockedBuildWithSkipFetchSource)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+    builder.setBuildOptions({ .skipFetchSource = true, .locked = true });
+
+    auto result = builder.build();
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("stage prepare error"));
+}
+
+TEST(LinglongBuilder, BuildRejectsAppWithoutCommand)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.build();
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("stage prepare error"));
+}
+
+TEST(LinglongBuilder, BuildRejectsDeprecatedInstallFile)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    project.command = std::vector<std::string>{ "/usr/bin/demo" };
+    std::ofstream(workingDir.path() / (project.package.id + ".install")) << "install";
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.build();
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("stage prepare error"));
+}
+
+TEST(LinglongBuilder, BuildRejectsInvalidProjectVersion)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    project.package.version = "not-a-version";
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.build();
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("stage prepare error"));
+}
+
+TEST(LinglongBuilder, BuildRejectsLockedBuildWithoutLockFile)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "extension";
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+    builder.setBuildOptions({ .locked = true });
+
+    auto result = builder.build();
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("stage prepare error"));
+}
+
+TEST(LinglongBuilder, PushRejectsBuilderWithoutProject)
+{
+    TempDir workingDir;
+    linglong::builder::BuilderMock builder(workingDir.path());
+
+    auto result = builder.push("binary");
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("not under project"));
+}
+
+TEST(LinglongBuilder, PushRequiresRepoNameWhenRepoUrlIsGiven)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.push("binary", "https://example.com/repo");
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("--repo-name is required"));
+}
+
+TEST(LinglongBuilder, PushRejectsUnknownRepoName)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    linglong::builder::BuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.push("binary", "", "missing-repo");
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("is not found in repo config"));
+}
+
+TEST(LinglongBuilder, ExtractLayerRejectsMissingFile)
+{
+    TempDir workingDir;
+    auto result = linglong::builder::Builder::extractLayer(
+      QString::fromStdString((workingDir.path() / "missing.layer").string()),
+      QString::fromStdString((workingDir.path() / "out").string()));
+    EXPECT_FALSE(result);
+}
+
+TEST(LinglongBuilder, ImportLayerRejectsMissingPath)
+{
+    TempDir workingDir;
+    auto repoRoot = workingDir.path() / "repo";
+    ASSERT_TRUE(std::filesystem::create_directories(repoRoot));
+    auto created = linglong::repo::OSTreeRepo::create(
+      repoRoot,
+      linglong::api::types::v1::RepoConfigV2{
+        .defaultRepo = "stable",
+        .repos = { linglong::api::types::v1::Repo{ .name = "stable",
+                                                   .url = "file:///nonexistent" } },
+        .version = 2,
+      });
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto repo = std::move(*created);
+
+    auto result =
+      linglong::builder::Builder::importLayer(*repo, workingDir.path() / "does-not-exist");
+    EXPECT_FALSE(result);
+}
+
+TEST(LinglongBuilder, ImportLayerRejectsDirectoryWithoutInfo)
+{
+    TempDir workingDir;
+    auto repoRoot = workingDir.path() / "repo";
+    ASSERT_TRUE(std::filesystem::create_directories(repoRoot));
+    auto created = linglong::repo::OSTreeRepo::create(
+      repoRoot,
+      linglong::api::types::v1::RepoConfigV2{
+        .defaultRepo = "stable",
+        .repos = { linglong::api::types::v1::Repo{ .name = "stable",
+                                                   .url = "file:///nonexistent" } },
+        .version = 2,
+      });
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto repo = std::move(*created);
+
+    auto layerDir = workingDir.path() / "layer-no-info";
+    ASSERT_TRUE(std::filesystem::create_directories(layerDir / "files"));
+    std::ofstream(layerDir / "files" / "payload") << "content";
+
+    auto result = linglong::builder::Builder::importLayer(*repo, layerDir);
+    EXPECT_FALSE(result);
+}
+
+TEST(LinglongBuilder, ImportLayerImportsValidDirectory)
+{
+    TempDir workingDir;
+    auto repoRoot = workingDir.path() / "repo";
+    ASSERT_TRUE(std::filesystem::create_directories(repoRoot));
+    auto created = linglong::repo::OSTreeRepo::create(
+      repoRoot,
+      linglong::api::types::v1::RepoConfigV2{
+        .defaultRepo = "stable",
+        .repos = { linglong::api::types::v1::Repo{ .name = "stable",
+                                                   .url = "file:///nonexistent" } },
+        .version = 2,
+      });
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto repo = std::move(*created);
+
+    auto layerDir = workingDir.path() / "layer";
+    ASSERT_TRUE(std::filesystem::create_directories(layerDir / "files"));
+    std::ofstream(layerDir / "files" / "payload") << "content";
+
+    linglong::api::types::v1::PackageInfoV2 info{
+        .arch = std::vector<std::string>{ "x86_64" },
+        .channel = "main",
+        .id = "org.example.imported",
+        .kind = "app",
+        .packageInfoV2Module = "binary",
+        .version = "1.0.0",
+    };
+    std::ofstream(layerDir / "info.json") << nlohmann::json(info).dump();
+
+    auto result = linglong::builder::Builder::importLayer(*repo, layerDir);
+    ASSERT_TRUE(result) << result.error().message();
+
+    auto ref = linglong::package::Reference::parse("main:org.example.imported/1.0.0/x86_64");
+    ASSERT_TRUE(ref.has_value());
+    auto resolved = repo->getLayerDir(*ref, "binary");
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().message();
+}
+
+TEST(LinglongBuilder, ProcessProjectLockGenerateAndUpdateFetchGitSourceAndRecordLocalBase)
+{
+    TempDir workingDir;
+    const auto repoRoot = workingDir.path() / "repo";
+    ASSERT_TRUE(std::filesystem::create_directories(repoRoot));
+    auto created = linglong::repo::OSTreeRepo::create(repoRoot,
+                                                      linglong::api::types::v1::RepoConfigV2{
+                                                        .defaultRepo = "stable",
+                                                        .repos = { linglong::api::types::v1::Repo{
+                                                          .name = "stable",
+                                                          .url = "file:///nonexistent",
+                                                        } },
+                                                        .version = 2,
+                                                      });
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto repo = std::move(*created);
+
+    const auto baseDir = workingDir.path() / "base-layer";
+    ASSERT_TRUE(std::filesystem::create_directories(baseDir / "files"));
+    std::ofstream(baseDir / "files" / "libbase.so") << "base payload";
+    linglong::api::types::v1::PackageInfoV2 baseInfo{
+        .arch = std::vector<std::string>{ "x86_64" },
+        .channel = "main",
+        .id = "org.example.base",
+        .kind = "runtime",
+        .packageInfoV2Module = "binary",
+        .version = "1.0.0",
+    };
+    std::ofstream(baseDir / "info.json") << nlohmann::json(baseInfo).dump();
+    auto imported = linglong::builder::Builder::importLayer(*repo, baseDir);
+    ASSERT_TRUE(imported) << imported.error().message();
+
+    const auto sourceDir = workingDir.path() / "source";
+    ASSERT_TRUE(std::filesystem::create_directories(sourceDir));
+    std::ofstream(sourceDir / "hello.txt") << "hello from git";
+    linglong::utils::Cmd git("git");
+    if (!git.exists()) {
+        GTEST_SKIP() << "git is not available";
+    }
+    ASSERT_TRUE(git.exec({ "-C", sourceDir.string(), "init", "-q" })) << "git init failed";
+    ASSERT_TRUE(git.exec({ "-C",
+                           sourceDir.string(),
+                           "-c",
+                           "user.name=linglong-test",
+                           "-c",
+                           "user.email=linglong-test@example.com",
+                           "add",
+                           "." }));
+    ASSERT_TRUE(git.exec({ "-C",
+                           sourceDir.string(),
+                           "-c",
+                           "user.name=linglong-test",
+                           "-c",
+                           "user.email=linglong-test@example.com",
+                           "commit",
+                           "-qm",
+                           "initial" }));
+    auto commit = git.exec({ "-C", sourceDir.string(), "rev-parse", "HEAD" });
+    ASSERT_TRUE(commit) << commit.error().message();
+    auto commitId = *commit;
+    while (!commitId.empty() && (commitId.back() == '\n' || commitId.back() == '\r')) {
+        commitId.pop_back();
+    }
+    ASSERT_FALSE(commitId.empty());
+
+    linglong::api::types::v1::BuilderProject project;
+    project.build = "true";
+    project.command = std::vector<std::string>{ "/bin/true" };
+    project.version = "1";
+    project.package.id = "org.example.lock";
+    project.package.name = "Lock";
+    project.package.version = "1.0.0";
+    project.package.kind = "app";
+    project.package.description = "lock generation";
+    project.base = "main:org.example.base/1.0.0/x86_64";
+    project.sources = std::vector<linglong::api::types::v1::BuilderProjectSource>{
+        linglong::api::types::v1::BuilderProjectSource{
+          .commit = commitId,
+          .kind = "git",
+          .name = "source",
+          .url = sourceDir.string(),
+        },
+    };
+
+    auto ociCLI = ocppi::cli::crun::Crun::New("/bin/false");
+    ASSERT_TRUE(ociCLI);
+    linglong::runtime::ContainerBuilder containerBuilder(**ociCLI);
+    linglong::api::types::v1::BuilderConfig cfg{ .repo = "", .version = 1 };
+    linglong::builder::Builder builder(std::move(project),
+                                       workingDir.path(),
+                                       *repo,
+                                       containerBuilder,
+                                       cfg);
+    builder.projectYamlFile = (workingDir.path() / "linglong.yaml").string();
+    builder.setBuildOptions(linglong::builder::BuilderBuildOptions{ .skipPullDepend = true });
+
+    auto generated = builder.processProjectLock(linglong::builder::ProjectLockMode::Generate);
+    ASSERT_TRUE(generated) << generated.error().message();
+
+    const auto lockPath = workingDir.path() / "linglong.lock";
+    ASSERT_TRUE(std::filesystem::exists(lockPath));
+    std::ifstream lockInput(lockPath);
+    const std::string lockContent{ std::istreambuf_iterator<char>(lockInput),
+                                   std::istreambuf_iterator<char>() };
+    EXPECT_NE(lockContent.find("org.example.base"), std::string::npos);
+    EXPECT_NE(lockContent.find(commitId), std::string::npos);
+
+    auto updated = builder.processProjectLock(linglong::builder::ProjectLockMode::Update);
+    EXPECT_TRUE(updated) << updated.error().message();
+}
+
+namespace linglong::test {
+
+int runBuilderHelper(const std::vector<std::string> &arguments)
+{
+    using namespace linglong::builder;
+    utils::EnvironmentVariableGuard backtrace("LINYAPS_BACKTRACE", "1");
+    const auto expectConflict = [](const auto &result) {
+        if (result) {
+            std::cerr << "operation succeeded while the project was locked\n";
+            return false;
+        }
+        const auto message = result.error().message();
+        if (message.find("already in use") == std::string::npos) {
+            std::cerr << message << '\n';
+            return false;
+        }
+        return true;
+    };
+
+    if ((arguments.size() == 2 || arguments.size() == 3) && arguments[0] == "check-conflict") {
+        if (!expectConflict(BuilderDirectoryLayout(arguments[1]).lockProject())) {
+            return 1;
+        }
+        if (arguments.size() == 3) {
+            auto independent = BuilderDirectoryLayout(arguments[2]).lockProject();
+            if (!independent) {
+                std::cerr << independent.error().message() << '\n';
+                return 1;
+            }
+            return independent->isLocked() ? 0 : 1;
+        }
+        return 0;
+    }
+
+    if (arguments.size() == 2 && arguments[0] == "lock-and-exit") {
+        auto lock = BuilderDirectoryLayout(arguments[1]).lockProject();
+        if (!lock || !lock->isLocked()) {
+            std::cerr << "failed to acquire project lock\n";
+            return 1;
+        }
+        // Verify kernel cleanup without running any destructors.
+        ::_exit(0);
+    }
+
+    if (arguments.size() == 3 && arguments[0] == "yaml-conflict") {
+        BuilderMock builder(arguments[1]);
+        builder.projectYamlFile = (std::filesystem::path(arguments[2]) / "linglong.yaml").string();
+        if (!expectConflict(builder.cleanBuildArtifacts())) {
+            return 1;
+        }
+
+        // The failed Builder is still alive; it must not retain the first lock.
+        auto released = BuilderDirectoryLayout(arguments[1]).lockProject();
+        if (!released) {
+            std::cerr << released.error().message() << '\n';
+            return 1;
+        }
+        return released->isLocked() ? 0 : 1;
+    }
+
+    if (arguments.size() == 4 && arguments[0] == "operation-conflict") {
+        BuilderMock builder(api::types::v1::BuilderProject{}, arguments[1]);
+        builder.projectYamlFile = arguments[2];
+        utils::error::Result<void> result;
+        const auto &operation = arguments[3];
+        if (operation == "build") {
+            result = builder.build();
+        } else if (operation == "clean") {
+            result = builder.cleanBuildArtifacts();
+        } else if (operation == "run") {
+            result = builder.run({}, {});
+        } else if (operation == "export-uab") {
+            result = builder.exportUAB({});
+        } else if (operation == "export-layer") {
+            result = builder.exportLayer({});
+        } else if (operation == "push") {
+            result = builder.push("binary");
+        } else if (operation == "generate-lock") {
+            result = builder.processProjectLock(ProjectLockMode::Generate);
+        } else if (operation == "update-lock") {
+            result = builder.processProjectLock(ProjectLockMode::Update);
+        } else {
+            std::cerr << "invalid builder operation\n";
+            return 2;
+        }
+        return expectConflict(result) ? 0 : 1;
+    }
+
+    std::cerr << "invalid builder helper arguments\n";
+    return 2;
+}
+
+} // namespace linglong::test
+
+namespace {
+
+class HelperPathBuilder : public linglong::builder::BuilderMock
+{
+public:
+    using BuilderMock::BuilderMock;
+
+    void setHelperPath(std::filesystem::path path) { helperPath = std::move(path); }
+
+    std::filesystem::path builderHelperPath() const override { return helperPath; }
+
+private:
+    std::filesystem::path helperPath;
+};
+
+} // namespace
+
+TEST(LinglongBuilder, DefaultBuilderHelperPathMatchesConfiguredHelper)
+{
+    TempDir workingDir;
+    linglong::builder::BuilderMock builder(workingDir.path());
+
+    EXPECT_EQ(builder.builderHelperPath(), std::filesystem::path{ LINGLONG_BUILDER_HELPER });
+}
+
+TEST(LinglongBuilder, PrepareReportsMissingOverriddenBuilderHelper)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    HelperPathBuilder builder(std::move(project), workingDir.path());
+    builder.projectYamlFile = (workingDir.path() / "linglong.yaml").string();
+    builder.setHelperPath(workingDir.path() / "missing-helper");
+
+    auto result = builder.buildStagePrepare();
+
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("builder helper doesn't exists"));
+}
+
+TEST(LinglongBuilder, PrepareUsesOverriddenBuilderHelperPath)
+{
+    TempDir workingDir;
+    const auto helper = workingDir.path() / "helper";
+    std::filesystem::create_directories(helper);
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    HelperPathBuilder builder(std::move(project), workingDir.path());
+    builder.projectYamlFile = (workingDir.path() / "linglong.yaml").string();
+    builder.setHelperPath(helper);
+
+    auto result = builder.buildStagePrepare();
+
+    ASSERT_TRUE(result) << result.error().message();
+    EXPECT_TRUE(std::filesystem::exists(workingDir.path() / "linglong"));
+}
+
+TEST(LinglongBuilder, EntryScriptUsesOverriddenHelperPath)
+{
+    TempDir workingDir;
+    const auto helper = workingDir.path() / "helper";
+    std::filesystem::create_directories(helper);
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    HelperPathBuilder builder(std::move(project), workingDir.path());
+    builder.projectYamlFile = (workingDir.path() / "linglong.yaml").string();
+    builder.setHelperPath(helper);
+    ASSERT_TRUE(builder.buildStagePrepare()) << "failed to prepare builder state";
+
+    auto result = builder.generateEntryScript();
+
+    ASSERT_TRUE(result) << result.error().message();
+    const auto script = readTextFile(workingDir.path() / "linglong" / "entry.sh");
+    const auto expected = std::string{ "#!/bin/bash\n"
+                                       "set -e\n"
+                                       "\n"
+                                       "# This file is generated by `build` in linglong.yaml\n"
+                                       "# DO NOT EDIT IT\n"
+                                       "\n"
+                                       "# enable strip symbols\n"
+                                       "export CFLAGS=\"-g $CFLAGS\"\n"
+                                       "export CXXFLAGS=\"-g $CFLAGS\"\n"
+                                       "make demo\n"
+                                       "# POST BUILD PROCESS\n" }
+      + (helper / "symbols-strip.sh").string() + "\n" + (helper / "compile-schemas.sh").string()
+      + "\n";
+    EXPECT_EQ(script, expected);
+}
+
+TEST(LinglongBuilder, EntryScriptSkipsStripScriptWhenRequested)
+{
+    TempDir workingDir;
+    const auto helper = workingDir.path() / "helper";
+    std::filesystem::create_directories(helper);
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    HelperPathBuilder builder(std::move(project), workingDir.path());
+    builder.projectYamlFile = (workingDir.path() / "linglong.yaml").string();
+    builder.setHelperPath(helper);
+    builder.setBuildOptions({ .skipStripSymbols = true });
+    ASSERT_TRUE(builder.buildStagePrepare()) << "failed to prepare builder state";
+
+    auto result = builder.generateEntryScript();
+
+    ASSERT_TRUE(result) << result.error().message();
+    const auto script = readTextFile(workingDir.path() / "linglong" / "entry.sh");
+    EXPECT_THAT(script, ::testing::Not(::testing::HasSubstr("symbols-strip.sh")));
+    EXPECT_THAT(script, ::testing::HasSubstr((helper / "compile-schemas.sh").string()));
+}
+
+TEST(LinglongBuilder, BuildDependsScriptContainsAptPackages)
+{
+    TempDir workingDir;
+    const auto helper = workingDir.path() / "helper";
+    std::filesystem::create_directories(helper);
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    project.buildext = linglong::api::types::v1::BuilderProjectBuildEXT{
+        .apt =
+          linglong::api::types::v1::Apt{
+            .buildDepends = std::vector<std::string>{ "cmake", "ninja-build" },
+          },
+    };
+    HelperPathBuilder builder(std::move(project), workingDir.path());
+    builder.projectYamlFile = (workingDir.path() / "linglong.yaml").string();
+    builder.setHelperPath(helper);
+    ASSERT_TRUE(builder.buildStagePrepare()) << "failed to prepare builder state";
+
+    auto result = builder.generateBuildDependsScript();
+
+    ASSERT_TRUE(result) << result.error().message();
+    EXPECT_TRUE(*result);
+    const auto script = readTextFile(workingDir.path() / "linglong" / "buildext.sh");
+    EXPECT_THAT(script, ::testing::HasSubstr("apt -y install cmake ninja-build"));
+}
+
+TEST(LinglongBuilder, DependsScriptContainsAptPackages)
+{
+    TempDir workingDir;
+    const auto helper = workingDir.path() / "helper";
+    std::filesystem::create_directories(helper);
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    project.buildext = linglong::api::types::v1::BuilderProjectBuildEXT{
+        .apt =
+          linglong::api::types::v1::Apt{
+            .depends = std::vector<std::string>{ "libfoo", "libbar" },
+          },
+    };
+    HelperPathBuilder builder(std::move(project), workingDir.path());
+    builder.projectYamlFile = (workingDir.path() / "linglong.yaml").string();
+    builder.setHelperPath(helper);
+    ASSERT_TRUE(builder.buildStagePrepare()) << "failed to prepare builder state";
+
+    auto result = builder.generateDependsScript();
+
+    ASSERT_TRUE(result) << result.error().message();
+    EXPECT_TRUE(*result);
+    const auto script = readTextFile(workingDir.path() / "linglong" / "buildext.sh");
+    EXPECT_THAT(script,
+                ::testing::HasSubstr("apt -o APT::Sandbox::User=root -y install libfoo libbar"));
+}
+
+TEST(LinglongBuilder, DependsScriptsReturnFalseWithoutBuildExtension)
+{
+    TempDir workingDir;
+    const auto helper = workingDir.path() / "helper";
+    std::filesystem::create_directories(helper);
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    HelperPathBuilder builder(std::move(project), workingDir.path());
+    builder.projectYamlFile = (workingDir.path() / "linglong.yaml").string();
+    builder.setHelperPath(helper);
+    ASSERT_TRUE(builder.buildStagePrepare()) << "failed to prepare builder state";
+
+    auto buildDepends = builder.generateBuildDependsScript();
+    auto depends = builder.generateDependsScript();
+
+    ASSERT_TRUE(buildDepends) << buildDepends.error().message();
+    ASSERT_TRUE(depends) << depends.error().message();
+    EXPECT_FALSE(*buildDepends);
+    EXPECT_FALSE(*depends);
+}
+
+namespace {
+
+class MissingHelperBuilderMock : public linglong::builder::BuilderMock
+{
+public:
+    using BuilderMock::BuilderMock;
+
+protected:
+    std::filesystem::path builderHelperPath() const override
+    {
+        return "/nonexistent/linglong/builder/helper";
+    }
+};
+
+} // namespace
+
+TEST(LinglongBuilder, BuildReportsMissingBuilderHelperForRuntimeProject)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "runtime";
+    MissingHelperBuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.build();
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("stage prepare error"));
+}
+
+TEST(LinglongBuilder, BuildReportsMissingBuilderHelperForExtensionProject)
+{
+    TempDir workingDir;
+    auto project = makeProjectForBuilderBehavior();
+    project.package.kind = "extension";
+    MissingHelperBuilderMock builder(std::move(project), workingDir.path());
+
+    auto result = builder.build();
+    ASSERT_FALSE(result);
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("stage prepare error"));
 }

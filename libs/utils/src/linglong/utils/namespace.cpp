@@ -42,7 +42,11 @@ utils::error::Result<std::string> getUserName(uid_t uid)
     struct passwd *result{ nullptr };
     auto res = getpwuid_r(uid, &pw, buf.data(), buf.size(), &result);
     if (res != 0) {
-        return LINGLONG_ERR(fmt::format("failed to get user name {}", res).c_str());
+        return LINGLONG_ERR(
+          fmt::format("failed to get user name: {}", common::error::errorString(res)).c_str());
+    }
+    if (result == nullptr) {
+        return LINGLONG_ERR("failed to get user name: entry not found");
     }
 
     return result->pw_name;
@@ -196,6 +200,31 @@ utils::error::Result<void> raiseAmbientCapabilities()
     return LINGLONG_OK;
 }
 
+utils::error::Result<std::vector<std::string>> buildIdMapArguments(
+  pid_t pid, uid_t hostID, uid_t namespaceID, const std::vector<SubuidRange> &ranges)
+{
+    LINGLONG_TRACE("build id map arguments");
+    auto cid = static_cast<unsigned long>(namespaceID);
+    auto args = std::vector<std::string>{ std::to_string(pid),
+                                          std::to_string(cid),
+                                          std::to_string(hostID),
+                                          "1" };
+    for (const auto &range : ranges) {
+        unsigned long count = 0;
+        try {
+            count = std::stoul(range.count);
+        } catch (const std::invalid_argument &) {
+            return LINGLONG_ERR(fmt::format("invalid subuid count: {}", range.count));
+        } catch (const std::out_of_range &) {
+            return LINGLONG_ERR(fmt::format("subuid count out of range: {}", range.count));
+        }
+        args.insert(args.end(),
+                    { std::to_string(cid + 1), range.subuid, std::to_string(count - namespaceID) });
+        cid += count;
+    }
+    return args;
+}
+
 utils::error::Result<void> mappingTool(pid_t pid, bool isUid, uid_t namespaceID, bool autoMapping)
 {
     LINGLONG_TRACE("mapping tool");
@@ -217,28 +246,12 @@ utils::error::Result<void> mappingTool(pid_t pid, bool isUid, uid_t namespaceID,
         return LINGLONG_ERR("failed to get subuid range", ranges.error());
     }
 
-    unsigned long containerID = namespaceID;
-    auto args = std::vector<std::string>{ std::to_string(pid),
-                                          std::to_string(containerID),
-                                          std::to_string(hostID),
-                                          "1" };
-    for (const auto &range : *ranges) {
-        unsigned long count = 0;
-        try {
-            count = std::stoul(range.count);
-        } catch (const std::invalid_argument &e) {
-            return LINGLONG_ERR(fmt::format("invalid subuid count: {}", range.count));
-        } catch (const std::out_of_range &e) {
-            return LINGLONG_ERR(fmt::format("subuid count out of range: {}", range.count));
-        }
-
-        args.insert(
-          args.end(),
-          { std::to_string(containerID + 1), range.subuid, std::to_string(count - namespaceID) });
-        containerID += count;
+    auto args = buildIdMapArguments(pid, hostID, namespaceID, *ranges);
+    if (!args) {
+        return LINGLONG_ERR(args);
     }
 
-    auto res = cmd.exec(args);
+    auto res = cmd.exec(*args);
     if (!res) {
         return LINGLONG_ERR(fmt::format("{} failed", isUid ? "newuidmap" : "newgidmap"),
                             res.error());

@@ -867,6 +867,15 @@ void sortDependsTree(std::vector<DependsNode> &nodes)
 
 namespace linglong::cli {
 
+utils::error::ErrorCode errorCodeFromDBus(QDBusError::ErrorType type) noexcept
+{
+    if (type == QDBusError::AccessDenied) {
+        return utils::error::ErrorCode::PermissionDenied;
+    }
+
+    return utils::error::ErrorCode::Failed;
+}
+
 void Cli::onTaskEvent(const QString &event, const QVariantMap &data)
 {
     if (event == QStringLiteral("state")) {
@@ -955,7 +964,7 @@ void Cli::interaction(const QString &interactionId,
         LogE("internal error: notify failed");
         action = "no";
     } else {
-        action = notifyReply->action.value();
+        action = notifyReply->action.value_or(std::string{ "no" });
     }
 
     // FIXME: if the notifier is a DummyNotifier, treat the action as yes.(for deepin-app-store)
@@ -979,8 +988,8 @@ void Cli::interaction(const QString &interactionId,
       task->ReplyInteraction(interactionId, common::serialize::toQVariantMap(reply));
     dbusReply.waitForFinished();
     if (dbusReply.isError()) {
-        this->printer.printErr(
-          LINGLONG_ERRV(dbusReply.error().message().toStdString(), dbusReply.error().type()));
+        auto code = errorCodeFromDBus(dbusReply.error().type());
+        this->printer.printErr(LINGLONG_ERRV(dbusReply.error().message().toStdString(), code));
     }
 }
 
@@ -1278,7 +1287,7 @@ utils::error::Result<int> Cli::reuseContainer(const std::string &id,
             return LINGLONG_ERR(ret);
         }
     } else if (ioSetup->pipes) {
-        ioSetup->pipes->closeParentEnds();
+        ioSetup->pipes->closeChildEnds();
         masterOut.reset(ioSetup->pipes->stdinPipe->releaseWriteEnd());
         stdoutRead.reset(ioSetup->pipes->stdoutPipe->releaseReadEnd());
         stderrRead.reset(ioSetup->pipes->stderrPipe->releaseReadEnd());
@@ -2457,7 +2466,7 @@ int Cli::prune()
     auto pendingReply = (*pkgMan)->Prune();
     auto result = runTaskSync(pendingReply, TaskType::Prune);
     if (!result) {
-        this->printer.printErr(result.error());
+        handleCommonError(result.error());
         return -1;
     }
 
@@ -2844,11 +2853,7 @@ int Cli::repo(CLI::App *app, const common::cli::RepoOptions &options)
         .setConfig = [this](const api::types::v1::RepoConfigV2 &cfg) -> utils::error::Result<void> {
             LINGLONG_TRACE("set repo config to package manager");
 
-            auto ret = this->setRepoConfig(common::serialize::toQVariantMap(cfg));
-            if (ret != 0) {
-                return LINGLONG_ERR("failed to set repo config");
-            }
-            return LINGLONG_OK;
+            return this->setRepoConfig(common::serialize::toQVariantMap(cfg));
         },
     };
 
@@ -2859,31 +2864,29 @@ int Cli::repo(CLI::App *app, const common::cli::RepoOptions &options)
                                                   this->printer.printRepoConfig(cfg);
                                               } });
     if (!ret) {
-        this->printer.printErr(ret.error());
+        handleCommonError(ret.error());
         return -1;
     }
 
     return 0;
 }
 
-int Cli::setRepoConfig(const QVariantMap &config)
+utils::error::Result<void> Cli::setRepoConfig(const QVariantMap &config)
 {
     LINGLONG_TRACE("set repo config");
 
     auto pkgMan = this->getPkgMan();
     if (!pkgMan) {
-        this->printer.printErr(pkgMan.error());
-        return -1;
+        return LINGLONG_ERR(pkgMan);
     }
 
     auto reply = (*pkgMan)->SetConfiguration(config);
     reply.waitForFinished();
     if (reply.isError()) {
-        auto err = LINGLONG_ERRV(reply.error().message().toStdString());
-        this->printer.printErr(err);
-        return -1;
+        auto code = errorCodeFromDBus(reply.error().type());
+        return LINGLONG_ERR(reply.error().message().toStdString(), code);
     }
-    return 0;
+    return LINGLONG_OK;
 }
 
 int Cli::info(const InfoOptions &options)

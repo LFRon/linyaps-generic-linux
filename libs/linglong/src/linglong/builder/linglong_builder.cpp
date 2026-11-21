@@ -32,6 +32,7 @@
 #include "linglong/utils/serialize/json.h"
 #include "linglong/utils/serialize/packageinfo_handler.h"
 #include "linglong/utils/temporary_directory.h"
+#include "linglong/utils/xdp.h"
 #include "ocppi/runtime/RunOption.hpp"
 #include "project_lock.h"
 
@@ -150,8 +151,12 @@ utils::error::Result<void> pullResolvedRef(const package::ReferenceWithRepo &ref
     printReplacedText(
       fmt::format("{:<35}{:<15}{:<15}waiting ...", ref.id, ref.version.toString(), module),
       2);
+    // The connection must be scoped to tmpTask's lifetime: without a context
+    // object it outlives the stack-local task and a later cancel signal would
+    // invoke Cancel() on destroyed storage (use-after-free).
     QObject::connect(common::global::GlobalTaskControl::instance(),
                      &common::global::GlobalTaskControl::OnCancel,
+                     &tmpTask,
                      [&tmpTask]() {
                          tmpTask.Cancel();
                      });
@@ -524,6 +529,11 @@ auto Builder::lockProject() noexcept -> utils::error::Result<void>
     return LINGLONG_OK;
 }
 
+std::filesystem::path Builder::builderHelperPath() const
+{
+    return LINGLONG_BUILDER_HELPER;
+}
+
 utils::error::Result<void> Builder::buildStagePrepare() noexcept
 {
     LINGLONG_TRACE("build prepare");
@@ -561,10 +571,7 @@ utils::error::Result<void> Builder::buildStagePrepare() noexcept
     }
     projectRef = std::move(ref).value();
 
-    static QRegularExpression appIDReg(
-      "[a-zA-Z0-9][-a-zA-Z0-9]{0,62}(\\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62})+");
-    auto matches = appIDReg.match(QString::fromStdString(projectRef->id));
-    if (not(matches.isValid() && matches.hasMatch())) {
+    if (!utils::isValidXdgDesktopPortalId(projectRef->id)) {
         LogW("This app id does not follow the reverse domain name notation convention. "
              "See https://wikipedia.org/wiki/Reverse_domain_name_notation");
     }
@@ -580,7 +587,7 @@ utils::error::Result<void> Builder::buildStagePrepare() noexcept
         installPrefix = "/opt/extensions/" + this->project->package.id;
     }
 
-    if (!QFileInfo::exists(LINGLONG_BUILDER_HELPER)) {
+    if (!QFileInfo::exists(QString::fromStdString(builderHelperPath().string()))) {
         return LINGLONG_ERR("builder helper doesn't exists");
     }
 
@@ -1283,9 +1290,9 @@ utils::error::Result<bool> Builder::buildStageBuild(std::vector<std::string> arg
                 .source = directories.project(),
                 .type = "bind",
               },
-              ocppi::runtime::config::types::Mount{ .destination = LINGLONG_BUILDER_HELPER,
+              ocppi::runtime::config::types::Mount{ .destination = builderHelperPath(),
                                                     .options = { { "rbind", "ro" } },
-                                                    .source = LINGLONG_BUILDER_HELPER,
+                                                    .source = builderHelperPath(),
                                                     .type = "bind" },
             },
           },
@@ -2200,11 +2207,28 @@ linglong::utils::error::Result<void> Builder::push(const std::string &module,
         return LINGLONG_ERR(ref);
     }
 
-    if (repoName.empty() || repoUrl.empty()) {
+    if (repoName.empty() && repoUrl.empty()) {
         return repo.push(*ref, module);
     }
 
-    return repo.pushToRemote(repoName, repoUrl, *ref, module);
+    if (repoName.empty()) {
+        return LINGLONG_ERR("--repo-name is required when --repo-url is specified");
+    }
+
+    // 只给了仓库名时，从仓库配置里解析出对应的 URL，而不是静默回落到默认仓库
+    auto remoteUrl = repoUrl;
+    if (remoteUrl.empty()) {
+        auto remote = repo::getRepoByName(repo.getConfig(), repoName);
+        if (!remote) {
+            return LINGLONG_ERR(fmt::format(
+              "repository {} is not found in repo config, specify --repo-url or add it with "
+              "'ll-builder repo add'",
+              repoName));
+        }
+        remoteUrl = remote->url;
+    }
+
+    return repo.pushToRemote(repoName, remoteUrl, *ref, module);
 }
 
 utils::error::Result<void> Builder::importLayer(repo::OSTreeRepo &ostree,
@@ -2286,9 +2310,9 @@ utils::error::Result<void> Builder::run(std::vector<std::string> modules,
           .source = directories.project(),
           .type = "bind",
         },
-        ocppi::runtime::config::types::Mount{ .destination = LINGLONG_BUILDER_HELPER,
+        ocppi::runtime::config::types::Mount{ .destination = builderHelperPath(),
                                               .options = { { "rbind", "ro" } },
-                                              .source = LINGLONG_BUILDER_HELPER,
+                                              .source = builderHelperPath(),
                                               .type = "bind" },
     };
 
@@ -2459,8 +2483,7 @@ utils::error::Result<void> Builder::runtimeCheck()
     }
     printMessage("Start runtime check", 2);
     // 导出uab时需要使用main-check统计的信息，所以无论是否跳过检查，都需要执行main-check
-    auto args = std::vector<std::string>{ std::filesystem::path{ LINGLONG_BUILDER_HELPER }
-                                          / "main-check.sh" };
+    auto args = std::vector<std::string>{ builderHelperPath() / "main-check.sh" };
     if (package::Architecture::currentCPUArchitecture() != projectRef->arch) {
         args.push_back("--skip-ldd-check");
     }
@@ -2498,10 +2521,11 @@ set -e
     }
     scriptContent.append(project.build);
     scriptContent.push_back('\n');
+    scriptContent.append("# POST BUILD PROCESS\n");
     if (!this->buildOptions.skipStripSymbols) {
-        scriptContent.append("# POST BUILD PROCESS\n");
-        scriptContent.append(LINGLONG_BUILDER_HELPER "/symbols-strip.sh\n");
+        scriptContent.append((builderHelperPath() / "symbols-strip.sh").string() + "\n");
     }
+    scriptContent.append((builderHelperPath() / "compile-schemas.sh").string() + "\n");
 
     auto res = utils::writeFile(entry, scriptContent);
     if (!res) {

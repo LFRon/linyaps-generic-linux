@@ -27,6 +27,7 @@
 #include "linglong/package_manager/polkit_authority.h"
 #include "linglong/package_manager/ref_installation.h"
 #include "linglong/package_manager/uab_installation.h"
+#include "linglong/repo/config.h"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/runtime/run_context.h"
@@ -102,7 +103,9 @@ void checkPolkitAuthorizationAsync(const std::string &actionId,
           }
 
           if (!(*authResult)) {
-              callback(LINGLONG_ERR("not authorized", utils::error::ErrorCode::PermissionDenied));
+              callback(LINGLONG_ERR("not authorized by polkit; check that an authentication agent "
+                                    "is running and review journalctl -u polkit / PAM logs",
+                                    utils::error::ErrorCode::PermissionDenied));
               return;
           }
 
@@ -604,6 +607,12 @@ PackageManager::setConfigurationImpl(const QVariantMap &parameters) noexcept
     }
 
     const auto &cfgRef = *cfg;
+
+    auto validated = repo::validateConfig(cfgRef);
+    if (!validated) {
+        return LINGLONG_ERR(validated);
+    }
+
     const auto &curCfg = repo->getConfig();
 
     LogD("new config: {}", nlohmann::json(cfgRef).dump());
@@ -611,15 +620,6 @@ PackageManager::setConfigurationImpl(const QVariantMap &parameters) noexcept
     if (cfgRef == curCfg) {
         LogI("configuration not changed, ignore setting.");
         return LINGLONG_OK;
-    }
-    if (const auto &defaultRepo = cfg->defaultRepo;
-        std::find_if(cfg->repos.begin(),
-                     cfg->repos.end(),
-                     [&defaultRepo](const auto &repo) {
-                         return repo.alias.value_or(repo.name) == defaultRepo;
-                     })
-        == cfg->repos.end()) {
-        return LINGLONG_ERR("default repository is missing after updating configuration.");
     }
 
     auto result = this->repo->setConfig(*cfg);
@@ -882,9 +882,9 @@ auto PackageManager::InstallFromFile(const QDBusUnixFileDescriptor &fd,
           msg.service().toStdString(),
           [this, fdDup = fd, fileType, options, ctx](utils::error::Result<void> authResult) {
               if (!authResult) {
-                  ctx.connection.send(ctx.message.createErrorReply(
-                    QDBusError::AccessDenied,
-                    QString::fromStdString(authResult.error().message())));
+                  ctx.connection.send(
+                    ctx.message.createReply(toDBusReply(utils::error::ErrorCode::PermissionDenied,
+                                                        authResult.error().message())));
                   return;
               }
 
@@ -941,9 +941,9 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
           msg.service().toStdString(),
           [this, parameters, ctx](utils::error::Result<void> authResult) {
               if (!authResult) {
-                  ctx.connection.send(ctx.message.createErrorReply(
-                    QDBusError::AccessDenied,
-                    QString::fromStdString(authResult.error().message())));
+                  ctx.connection.send(
+                    ctx.message.createReply(toDBusReply(utils::error::ErrorCode::PermissionDenied,
+                                                        authResult.error().message())));
                   return;
               }
 
@@ -1021,9 +1021,9 @@ auto PackageManager::Uninstall(const QVariantMap &parameters) noexcept -> QVaria
           msg.service().toStdString(),
           [this, parameters, ctx](utils::error::Result<void> authResult) {
               if (!authResult) {
-                  ctx.connection.send(ctx.message.createErrorReply(
-                    QDBusError::AccessDenied,
-                    QString::fromStdString(authResult.error().message())));
+                  ctx.connection.send(
+                    ctx.message.createReply(toDBusReply(utils::error::ErrorCode::PermissionDenied,
+                                                        authResult.error().message())));
                   return;
               }
 
@@ -1225,9 +1225,9 @@ auto PackageManager::Update(const QVariantMap &parameters) noexcept -> QVariantM
           msg.service().toStdString(),
           [this, parameters, ctx](utils::error::Result<void> authResult) {
               if (!authResult) {
-                  ctx.connection.send(ctx.message.createErrorReply(
-                    QDBusError::AccessDenied,
-                    QString::fromStdString(authResult.error().message())));
+                  ctx.connection.send(
+                    ctx.message.createReply(toDBusReply(utils::error::ErrorCode::PermissionDenied,
+                                                        authResult.error().message())));
                   return;
               }
 
@@ -1679,9 +1679,8 @@ auto PackageManager::Prune() noexcept -> QVariantMap
           msg.service().toStdString(),
           [this, msg, conn](utils::error::Result<void> authResult) {
               if (!authResult) {
-                  conn.send(
-                    msg.createErrorReply(QDBusError::AccessDenied,
-                                         QString::fromStdString(authResult.error().message())));
+                  conn.send(msg.createReply(toDBusReply(utils::error::ErrorCode::PermissionDenied,
+                                                        authResult.error().message())));
                   return;
               }
 

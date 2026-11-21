@@ -14,6 +14,7 @@ configure_files(
   # find -regex '\.\/\(script\|share\|lib\|libexec\)\/.*' -type f -printf '%P\n'
   # | sort
   libexec/linglong/app-conf-generator
+  libexec/linglong/builder/helper/compile-schemas.sh
   libexec/linglong/builder/helper/config-check.sh
   libexec/linglong/builder/helper/ldd-check.sh
   libexec/linglong/builder/helper/main-check.sh
@@ -25,6 +26,7 @@ configure_files(
   libexec/linglong/font-cache-generator
   libexec/linglong/ld-cache-generator
   lib/linglong/container/README.md
+  lib/linglong/generate-path.sh
   lib/linglong/generate-xdg-data-dirs.sh
   lib/systemd/system-environment-generators/61-linglong
   lib/systemd/system/org.deepin.linglong.PackageManager.service
@@ -94,6 +96,7 @@ install(
 set(LIBEXEC_LINGLONG_BUILDER_DIR ${LIBEXEC_LINGLONG_DIR}/builder)
 install(
   PROGRAMS
+    ${CMAKE_CURRENT_BINARY_DIR}/libexec/linglong/builder/helper/compile-schemas.sh
     ${CMAKE_CURRENT_BINARY_DIR}/libexec/linglong/builder/helper/config-check.sh
     ${CMAKE_CURRENT_BINARY_DIR}/libexec/linglong/builder/helper/ldd-check.sh
     ${CMAKE_CURRENT_BINARY_DIR}/libexec/linglong/builder/helper/main-check.sh
@@ -102,7 +105,8 @@ install(
 
 # linglong
 install(
-  PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/lib/linglong/generate-xdg-data-dirs.sh
+  PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/lib/linglong/generate-path.sh
+           ${CMAKE_CURRENT_BINARY_DIR}/lib/linglong/generate-xdg-data-dirs.sh
   DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/linglong)
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/lib/linglong/container/README.md
@@ -140,6 +144,14 @@ install(
     ${CMAKE_CURRENT_BINARY_DIR}/lib/systemd/system-environment-generators/61-linglong
   DESTINATION ${SYSTEMD_SYSTEM_GENERATOR_PATH})
 
+set(SYSTEMD_USER_GENERATOR_PATH
+    ${CMAKE_INSTALL_PREFIX}/lib/systemd/user-environment-generators)
+
+install(
+  PROGRAMS
+    ${CMAKE_CURRENT_BINARY_DIR}/lib/systemd/system-environment-generators/61-linglong
+  DESTINATION ${SYSTEMD_USER_GENERATOR_PATH})
+
 install(
   PROGRAMS
     ${CMAKE_CURRENT_BINARY_DIR}/lib/systemd/user-generators/linglong-user-systemd-generator
@@ -164,7 +176,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/share/applications/linyaps.desktop
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/share/icons/linyaps.svg
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 
-# set linglong XDG_DATA_DIRS environment
+# Set PATH and XDG_DATA_DIRS for login shells and graphical sessions.
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/script/linglong.sh
         DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/profile.d)
 
@@ -172,6 +184,15 @@ install(
   FILES ${CMAKE_CURRENT_BINARY_DIR}/script/linglong.sh
   DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/X11/Xsession.d/
   RENAME 21linglong)
+
+if(ENABLE_TESTING)
+  add_test(
+    NAME linglong_environment
+    COMMAND
+      ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/tests/environment
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/environment_test.cmake)
+endif()
 
 # polkit actions
 install(

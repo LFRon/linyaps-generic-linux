@@ -17,8 +17,9 @@
 
 namespace linglong::driver::detect {
 
-NVIDIADriverDetector::NVIDIADriverDetector(std::string versionFilePath)
+NVIDIADriverDetector::NVIDIADriverDetector(std::string versionFilePath, std::string cliCommand)
     : versionFilePath_(std::move(versionFilePath))
+    , cliCommand_(std::move(cliCommand))
 {
 }
 
@@ -86,7 +87,14 @@ NVIDIADriverDetector::getPackageInfoFromRemoteRepo(const std::string &packageNam
     driverInfo.identify = getDriverIdentify();
     driverInfo.packageName = packageName;
     // Execute ll-cli search command to check driver package existence
-    auto ret = linglong::utils::Cmd("ll-cli").exec({ "--json", "search", packageName });
+    //
+    // ⚠️ 必须带 --no-progress：ll-cli 在 --json 模式下会把进度也打成 JSON
+    //    （{"message":"searching ...","percentage":0.0}），和搜索结果各占一行。
+    //    整段 stdout 交给 json::parse 会在第二行炸掉，
+    //    报 "Failed to parse search result JSON"，驱动检测直接失败 ——
+    //    结果就是无论仓库里有没有驱动包，这个功能都用不了。
+    auto ret =
+      linglong::utils::Cmd(cliCommand_).exec({ "--json", "--no-progress", "search", packageName });
     if (!ret) {
         return LINGLONG_ERR("Search command failed: " + ret.error().message());
     }
@@ -198,7 +206,8 @@ NVIDIADriverDetector::getInstalledGraphicsDriverInfo(const std::string &packageN
     driverInfo.identify = getDriverIdentify();
     driverInfo.packageName = packageName;
 
-    auto listResult = linglong::utils::Cmd("ll-cli").exec({ "--json", "list", "--type=extension" });
+    auto listResult =
+      linglong::utils::Cmd(cliCommand_).exec({ "--json", "list", "--type=extension" });
     if (!listResult) {
         return LINGLONG_ERR(listResult);
     }
